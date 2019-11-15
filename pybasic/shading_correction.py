@@ -9,11 +9,31 @@ import numpy as np
 from scipy.fftpack import dctn, idctn
 import tqdm
 
-
 class BaSiC(object):
-    def __init__(self, directory, estimate_darkfield=False, extension=".tif"):
-        self.directory = directory
+    def __init__(self, input, estimate_darkfield=False, extension=".tif", verbose=False):
+        """Input can either be:
+         - Path to a directory containing the images to process
+         - List of images path to process
+         - List of images as ndarray
+         - A stack of ndarrays of shape N_Images x Height x Width
+        """
+        self.input_type = None
         self.extension = extension
+        if isinstance(input, str) or isinstance(input, Path): # Directory
+            self.directory = input
+            self._sniff_input() # Get a list of files
+            self.input_type = "directory"
+        elif isinstance(input, np.ndarray):
+            self.img_stack = input
+            self.input_type = "images_stack"
+        elif isinstance(input, list) and (isinstance(input[0], str) or isinstance(input[0], Path)):
+            self.file_list = input
+            self.input_type = "files_list"
+        elif isinstance(input, list) and isinstance(input[0], np.ndarray):
+            self.img_stack = np.array(input)
+            self.input_type = "images_list"
+        else:
+            raise "input should either be a directory, a list of ndarrays, or a ndarray stack."
 
         # Optimizer parameters
         self.working_size = 128  # px : image resampling size to accelerate learning.
@@ -24,9 +44,7 @@ class BaSiC(object):
         self.max_reweightingIterations = 10
         self.reweighting_iteration = 0
         self.estimate_darkfield = estimate_darkfield
-
-        # Get a list of files
-        self._sniff_input()
+        self.verbose = verbose
 
     def _sniff_input(self):
         # Get a list of tiles to process
@@ -36,13 +54,20 @@ class BaSiC(object):
         self.files = file_list
         assert len(self.files) > 0, "No files were found in the input directory. Make sure you provided the right path and file extension. Aborting."
 
-    def _load_images(self):
+    def _load_images(self, img_stack = None):
         # Load the stack
-        img_stack = []
-        for this_file in tqdm.tqdm(self.files, "Loading the images"):
-            img = cv2.imread(str(this_file), cv2.IMREAD_ANYDEPTH)
-            img_stack.append(img)
-        self.img_stack = np.array(img_stack)
+        if img_stack is None:
+            img_stack = []
+            if self.verbose:
+                gen = tqdm.tqdm(self.files, "Loading the images")
+            else:
+                gen = self.files
+            for this_file in gen:
+                img = cv2.imread(str(this_file), cv2.IMREAD_ANYDEPTH)
+                img_stack.append(img)
+            self.img_stack = np.array(img_stack)
+        else:
+            self.img_stack = img_stack
         self.n_images = self.img_stack.shape[0]
 
         # Resample the images to accelerate learning
@@ -60,9 +85,11 @@ class BaSiC(object):
 
     def normalize(self, img, clip=True, epsilon=1e-6):
         img_p = (img.astype(np.float32) - self.darkfield_fullsize) / (self.flatfield_fullsize + epsilon)
-        if clip:
+        if clip and not(img.dtype in [np.float32, np.float64]):
+
             img_p[img_p < np.iinfo(img.dtype).min] = np.iinfo(img.dtype).min
             img_p[img_p > np.iinfo(img.dtype).max] = np.iinfo(img.dtype).max
+
         return img_p.astype(img.dtype)
 
     def write_images(self, directory, epsilon=1e-6):
@@ -84,9 +111,14 @@ class BaSiC(object):
             # Save the file
             cv2.imwrite(str(filename), img_p)
 
-    def prepare(self):
+    def prepare(self, img_stack=None):
         # Load the data
-        self._load_images()
+        if img_stack is not None:
+            self._load_images(img_stack)
+        elif self.input_type in ["directory", "files_list"]:
+            self._load_images()
+        elif self.input_type in ["images_stack", "images_list"]:
+            self._load_images(self.img_stack)
 
         # Initialize the regularization parameters
         mean_value = self.img_stack_resized.mean(axis=0)
@@ -104,8 +136,8 @@ class BaSiC(object):
         # Initialize the darkfield, flatfield, offset, and weights (for the L1 reweighted loss)
         self.offset = np.zeros([self.working_size]*2)
         self.flatfield = np.ones([self.working_size]*2)
-        self.darkfield = np.random.randn(self.working_size, self.working_size)
         self.flatfield_fullsize = np.ones(self.image_shape)
+        self.darkfield = np.random.randn(self.working_size, self.working_size)
         self.darkfield_fullsize = np.zeros(self.image_shape)
         self.W = np.ones_like(self.img_sort)
 
@@ -128,7 +160,7 @@ class BaSiC(object):
         last_darkfield = self.darkfield.copy()
 
         # Perform LADM optimization
-        Ib, Ir, D = inexact_alm_l1(self.img_sort, self.l_s, self.l_d, weight=self.W, estimateDarkField=self.estimate_darkfield)
+        Ib, Ir, D = inexact_alm_l1(self.img_sort, self.l_s, self.l_d, weight=self.W, estimateDarkField=self.estimate_darkfield, verbose=self.verbose)
 
         # Reshape the images.
         self.Ib = np.reshape(Ib, (self.n_images, self.working_size, self.working_size)) # Flat-field
@@ -156,12 +188,15 @@ class BaSiC(object):
             self.flag_reweigthing = False
 
     def run(self):
-        pbar = tqdm.tqdm(desc="Reweighting Iteration", total=self.max_reweightingIterations)
+        if self.verbose:
+            pbar = tqdm.tqdm(desc="Reweighting Iteration", total=self.max_reweightingIterations)
         while self.flag_reweigthing:
             self.update()
-            pbar.update()
+            if self.verbose:
+                pbar.update()
             # self.display_fields()
-        pbar.close()
+        if self.verbose:
+            pbar.close()
 
         # Reshape the flat and dark fields to the original shape
         self.flatfield_fullsize = cv2.resize(self.flatfield.T, self.image_shape, cv2.INTER_LINEAR).T
@@ -185,7 +220,7 @@ def shrink(theta, epsilon=1e-3):
     theta_p = np.sign(theta) * np.maximum(np.abs(theta) - epsilon, 0)
     return theta_p
 
-def inexact_alm_l1(imgs, l_s, l_d, tol=1e-6, maxIter=500, weight=1, estimateDarkField=True, rho=1.5):
+def inexact_alm_l1(imgs, l_s, l_d, tol=1e-6, maxIter=500, weight=1, estimateDarkField=True, rho=1.5, verbose=False):
     """l1 minimization using the inexact augmented Lagrange multiplier method for Sparse low rank matrix recovery.
     Parameters
     ----------
@@ -272,7 +307,8 @@ def inexact_alm_l1(imgs, l_s, l_d, tol=1e-6, maxIter=500, weight=1, estimateDark
 
     converged = False
     iteration = 0
-    pbar = tqdm.tqdm(desc="Iteration", total=maxIter)
+    if verbose:
+        pbar = tqdm.tqdm(desc="Iteration", total=maxIter)
     while not(converged) and (iteration < maxIter): # TODO: Add tqdm
         # 1. Compute DCT of the flat-field Sf(k), and Ib(k)
         S = np.reshape(idctn(Sf, norm='ortho'), (1,P*Q)) # Flat-field in spatial domain
@@ -346,7 +382,8 @@ def inexact_alm_l1(imgs, l_s, l_d, tol=1e-6, maxIter=500, weight=1, estimateDark
 
         # Evaluate convergence
         stopCriterion = np.linalg.norm(dY, "fro") / d_norm
-        pbar.update()
+        if verbose:
+            pbar.update()
         # pbar.set_description(f"Iteration (Criterion={stopCriterion:.3e})", refresh=False)
         if stopCriterion < tol:
             converged = True
@@ -355,7 +392,8 @@ def inexact_alm_l1(imgs, l_s, l_d, tol=1e-6, maxIter=500, weight=1, estimateDark
 
     if iteration == maxIter:
         print("Maximum iterations reached")
-    pbar.close()
+    if verbose:
+        pbar.close()
     # Update the darkfield, with
     D_field = D_field + B1*S
 
