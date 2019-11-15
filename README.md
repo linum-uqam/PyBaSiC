@@ -64,4 +64,5 @@ optional arguments:
   --output_darkfield_filename OUTPUT_DARKFIELD_FILENAME
                         Optional output flatfield filename (if none,
                         darkfield.tif will be saved in the output directory).
+  --verbose
 ```
