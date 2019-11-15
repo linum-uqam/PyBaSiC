@@ -23,10 +23,11 @@ if __name__ == "__main__":
                               help="Dark-field regularization parameter (set automatically if None)")
     parser.add_argument("--output_flatfield_filename", default=None, help="Optional output flatfield filename (if none, flatfield.tif will be saved in the output directory).")
     parser.add_argument("--output_darkfield_filename", default=None, help="Optional output flatfield filename (if none, darkfield.tif will be saved in the output directory).")
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     # Create the BaSiC shading correction object
-    optimizer = BaSiC(args.directory, estimate_darkfield=args.estimate_darkfield, extension=args.extension)
+    optimizer = BaSiC(args.directory, estimate_darkfield=args.estimate_darkfield, extension=args.extension, verbose=args.verbose)
 
     # Set some optimizer parameters
     optimizer.l_s = args.l_s
