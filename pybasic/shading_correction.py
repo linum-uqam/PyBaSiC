@@ -27,7 +27,7 @@ class BaSiC(object):
             self.img_stack = input
             self.input_type = "images_stack"
         elif isinstance(input, list) and (isinstance(input[0], str) or isinstance(input[0], Path)):
-            self.file_list = input
+            self.files = input
             self.input_type = "files_list"
         elif isinstance(input, list) and isinstance(input[0], np.ndarray):
             self.img_stack = np.array(input)
