@@ -8,20 +8,22 @@
 * **Demo data examples**: [Dropbox](https://www.dropbox.com/s/plznvzdjglrse3h/Demoexamples.zip?dl=0)
 
 ## Installation
-* Dependencies: `Anaconda3`, `Python >= 3.6`
-* Clone the repository
-* Install the conda environment for this module
-```bash
-conda env create -f environment.yml
+### Option 1: pip
+
 ```
-* Load the environment
-```bash
-conda activate pybasic
+pip install pybasic-illumination-correction
 ```
-* Install this python package.
-```bash
-pip install .
+
+### Option 2: poetry
+* You need [Poetry](https://python-poetry.org/).
+* Install with
 ```
+poetry install
+```
+
+This will create a virtual environment and install all the dependencies. To execute the `basic_shading_correction.py` script,
+activate the virtual environment with `poetry shell`, then execute the script with `python <path/to/script.py>`
+
 ## Usage
 The main script to perform the retrospective shading estimation and correction is `basic_shading_correction.py`. 
 Here is a description of its arguments. **Note**: You must first activate the `pybasic` environment to run this script.
