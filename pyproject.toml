@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "pybasic-illumination-correction"
+version = "0.1.0"
+description = "Python Implementation of the BaSiC shading correction algorithm"
+authors = ["Joël Lefebvre <lefebvre.joel@uqam.ca>"]
+repository = "https://github.com/linum-uqam/PyBaSiC"
+packages = [{include = "pybasic"}]
+include = ["basic_shading_correction.py"]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.12"
+numpy = "^1.23.2"
+opencv-python = "^4.6.0"
+tqdm = "^4.64.0"
+scipy = "^1.9.0"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
