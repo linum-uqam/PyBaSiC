@@ -25,11 +25,11 @@ This will create a virtual environment and install all the dependencies. To exec
 activate the virtual environment with `poetry shell`, then execute the script with `python <path/to/script.py>`
 
 ## Usage
-The main script to perform the retrospective shading estimation and correction is `basic_shading_correction.py`. 
+The main script to perform the retrospective shading estimation and correction is `basic_shading_correction`. 
 Here is a description of its arguments. **Note**: You must first activate the `pybasic` environment to run this script.
 
 ```bash
->> basic_shading_correction.py --help
+>> basic_shading_correction --help
 usage: Shading correction algorithm based on the BaSiC method
        [-h] [--extension EXTENSION] [--estimate_darkfield]
        [--apply_correction] [--use_flatfield USE_FLATFIELD]
