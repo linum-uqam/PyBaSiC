@@ -1,10 +1,10 @@
 [tool.poetry]
 name = "pybasic-illumination-correction"
-version = "0.1.1"
+version = "0.1.2"
 description = "Python Implementation of the BaSiC shading correction algorithm"
 authors = ["Joël Lefebvre <lefebvre.joel@uqam.ca>"]
 repository = "https://github.com/linum-uqam/PyBaSiC"
-packages = [{include = "pybasic"}]
+packages = [{include = "pybasic"}, {include = "scripts"}]
 
 [tool.poetry.scripts]
 basic_shading_correction = "scripts.basic_shading_correction:main"
