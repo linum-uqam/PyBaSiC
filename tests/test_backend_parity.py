@@ -211,7 +211,11 @@ class TestAlmParity:
         xp_np = get_xp(Backend.NUMPY)
         xp_th = get_xp(Backend.TORCH)
 
-        Ib_np, _, _ = inexact_alm_l1(rand3d, xp=xp_np, l_s=0.3, l_d=0.1, max_iter=5, estimate_darkfield=False)
-        Ib_th, _, _ = inexact_alm_l1(rand3d, xp=xp_th, l_s=0.3, l_d=0.1, max_iter=5, estimate_darkfield=False)
+        Ib_np, _, _ = inexact_alm_l1(
+            rand3d, xp=xp_np, l_s=0.3, l_d=0.1, max_iter=5, estimate_darkfield=False
+        )
+        Ib_th, _, _ = inexact_alm_l1(
+            rand3d, xp=xp_th, l_s=0.3, l_d=0.1, max_iter=5, estimate_darkfield=False
+        )
 
         np.testing.assert_allclose(Ib_np, Ib_th, atol=1e-4)
