@@ -40,7 +40,7 @@ def shrink(xp: ArrayNamespace, theta: object, epsilon: float = 1e-3) -> object:
     .. [1] Candès, E., Li, X., Ma, Y. & Wright, J. "Robust Principal Component
        Analysis?" *J. ACM* 58, 1-37 (2011).
     """
-    return xp.sign(theta) * xp.maximum(xp.abs(theta) - epsilon, 0.0)  # ty: ignore[unsupported-operator]
+    return xp.sign(theta) * xp.maximum(xp.abs(theta) - epsilon, 0.0)
 
 
 def inexact_alm_l1(
@@ -167,11 +167,11 @@ def inexact_alm_l1(
         S_spatial = xp.asarray(
             np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32)
         )
-        Ib = S_spatial * B + D_field  # (N, P*Q)  # ty: ignore[unsupported-operator]
-        Ir = shrink(xp, D - Ib + Y / mu, W / mu)  # type: ignore[operator]  # ty: ignore[unsupported-operator]
+        Ib = S_spatial * B + D_field  # (N, P*Q)
+        Ir = shrink(xp, D - Ib + Y / mu, W / mu)  # type: ignore[operator]
 
         # 2. Update flat-field DCT coefficients Sf
-        R_for_sf = xp.to_numpy(D - Ir + Y / mu)  # type: ignore[operator]  # ty: ignore[unsupported-operator]
+        R_for_sf = xp.to_numpy(D - Ir + Y / mu)  # type: ignore[operator]
         R_for_sf_mean = R_for_sf.reshape(n, p, q).mean(axis=0)
         dSf = xp.asarray(np.asarray(xp.dctn(R_for_sf_mean, norm="ortho")).astype(np.float32))
         Sf = xp.asarray(xp.to_numpy(shrink(xp, dSf, l_s / mu)).astype(np.float32))
@@ -181,10 +181,10 @@ def inexact_alm_l1(
         S_spatial = xp.asarray(
             np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32)
         )
-        Ib = S_spatial * B + D_field  # ty: ignore[unsupported-operator]
+        Ib = S_spatial * B + D_field
 
         # 5. Update baseline B
-        R = D - Ir  # type: ignore[operator]  # ty: ignore[unsupported-operator]
+        R = D - Ir  # type: ignore[operator]
         R_np = xp.to_numpy(R)
         R_mean_row = R_np.mean(axis=1, keepdims=True)
         R_mean_all = R_np.mean()

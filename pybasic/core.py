@@ -14,7 +14,7 @@ References
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import cv2
 import numpy as np
@@ -106,7 +106,7 @@ class BaSiC:
             self.img_stack: NDArray = input
             self.input_type = "images_stack"
         elif isinstance(input, list) and len(input) > 0 and isinstance(input[0], (str, Path)):
-            self.files: list[Path] = [Path(f) for f in input]  # ty: ignore[invalid-argument-type]
+            self.files: list[Path] = [Path(f) for f in cast("list[str | Path]", input)]
             self.input_type = "files_list"
         elif isinstance(input, list) and len(input) > 0 and isinstance(input[0], np.ndarray):
             self.img_stack = np.array(input)
@@ -278,10 +278,13 @@ class BaSiC:
         last_flatfield = self.flatfield.copy()
         last_darkfield = self.darkfield.copy()
 
+        if self.l_s is None or self.l_d is None:
+            msg = "l_s and l_d must be set before calling update(); call prepare() first."
+            raise RuntimeError(msg)
         Ib, Ir, D = inexact_alm_l1(
             self.img_sort,
-            self.l_s,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
-            self.l_d,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+            self.l_s,
+            self.l_d,
             weight=self._W,
             estimate_darkfield=self.estimate_darkfield,
             verbose=self.verbose,

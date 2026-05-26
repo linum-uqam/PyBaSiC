@@ -77,7 +77,7 @@ class ArrayNamespace:
     # Array creation
     # ------------------------------------------------------------------
 
-    def asarray(self, x: np.ndarray, dtype: type | None = None) -> object:
+    def asarray(self, x: np.ndarray, dtype: type | None = None) -> Any:
         """Convert a NumPy array to the backend's native type.
 
         Parameters
@@ -98,7 +98,7 @@ class ArrayNamespace:
         torch_dtype = self._numpy_dtype_to_torch(x.dtype if dtype is None else np.dtype(dtype))
         return self._torch.as_tensor(np.asarray(x), dtype=torch_dtype, device=self._device)
 
-    def to_numpy(self, x: object) -> np.ndarray:
+    def to_numpy(self, x: Any) -> np.ndarray:
         """Convert a backend array back to a NumPy array.
 
         Parameters
@@ -113,9 +113,9 @@ class ArrayNamespace:
         """
         if self._backend is Backend.NUMPY:
             return np.asarray(x)
-        return x.detach().cpu().numpy()  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
+        return x.detach().cpu().numpy()
 
-    def zeros(self, shape: tuple[int, ...], dtype: type | None = None) -> object:
+    def zeros(self, shape: tuple[int, ...], dtype: type | None = None) -> Any:
         """Return a zero-filled array of the given shape.
 
         Parameters
@@ -135,7 +135,7 @@ class ArrayNamespace:
         torch_dtype = self._numpy_dtype_to_torch(np.dtype(dtype or np.float32))
         return self._torch.zeros(shape, dtype=torch_dtype, device=self._device)
 
-    def ones(self, shape: tuple[int, ...], dtype: type | None = None) -> object:
+    def ones(self, shape: tuple[int, ...], dtype: type | None = None) -> Any:
         """Return a ones-filled array of the given shape.
 
         Parameters
@@ -155,130 +155,130 @@ class ArrayNamespace:
         torch_dtype = self._numpy_dtype_to_torch(np.dtype(dtype or np.float32))
         return self._torch.ones(shape, dtype=torch_dtype, device=self._device)
 
-    def zeros_like(self, x: object) -> object:
+    def zeros_like(self, x: Any) -> Any:
         """Return a zero array matching the shape and dtype of *x*.
 
         Parameters
         ----------
-        x : object
+        x : Any
             Reference array.
 
         Returns
         -------
-        object
+        Any
             Zero array matching *x*.
         """
         if self._backend is Backend.NUMPY:
-            return np.zeros_like(x)  # type: ignore[arg-type]
+            return np.zeros_like(x)
         return self._torch.zeros_like(x)
 
-    def ones_like(self, x: object) -> object:
+    def ones_like(self, x: Any) -> Any:
         """Return a ones array matching the shape and dtype of *x*.
 
         Parameters
         ----------
-        x : object
+        x : Any
             Reference array.
 
         Returns
         -------
-        object
+        Any
             Ones array matching *x*.
         """
         if self._backend is Backend.NUMPY:
-            return np.ones_like(x)  # type: ignore[arg-type]
+            return np.ones_like(x)
         return self._torch.ones_like(x)
 
     # ------------------------------------------------------------------
     # Element-wise math
     # ------------------------------------------------------------------
 
-    def abs(self, x: object) -> object:
+    def abs(self, x: Any) -> Any:
         """Element-wise absolute value.
 
         Parameters
         ----------
-        x : object
+        x : Any
             Input array.
 
         Returns
         -------
-        object
+        Any
             ``|x|``.
         """
         if self._backend is Backend.NUMPY:
-            return np.abs(x)  # type: ignore[arg-type]  # ty: ignore[no-matching-overload]
+            return np.abs(x)
         return self._torch.abs(x)
 
-    def sign(self, x: object) -> object:
+    def sign(self, x: Any) -> Any:
         """Element-wise sign (-1, 0, or 1).
 
         Parameters
         ----------
-        x : object
+        x : Any
             Input array.
 
         Returns
         -------
-        object
+        Any
             Sign of *x*.
         """
         if self._backend is Backend.NUMPY:
-            return np.sign(x)  # type: ignore[arg-type]  # ty: ignore[no-matching-overload]
+            return np.sign(x)
         return self._torch.sign(x)
 
-    def maximum(self, x: object, y: object) -> object:
+    def maximum(self, x: Any, y: Any) -> Any:
         """Element-wise maximum of *x* and *y*.
 
         Parameters
         ----------
-        x : object
+        x : Any
             First operand.
-        y : object
+        y : Any
             Second operand (may be a scalar).
 
         Returns
         -------
-        object
+        Any
             ``max(x, y)`` element-wise.
         """
         if self._backend is Backend.NUMPY:
-            return np.maximum(x, y)  # type: ignore[arg-type]  # ty: ignore[no-matching-overload]
+            return np.maximum(x, y)
         if isinstance(y, (int, float)):
-            return self._torch.clamp_min(x, y)  # type: ignore[union-attr]
-        return self._torch.maximum(x, y)  # type: ignore[union-attr]
+            return self._torch.clamp_min(x, y)
+        return self._torch.maximum(x, y)
 
-    def minimum(self, x: object, y: object) -> object:
+    def minimum(self, x: Any, y: Any) -> Any:
         """Element-wise minimum of *x* and *y*.
 
         Parameters
         ----------
-        x : object
+        x : Any
             First operand.
-        y : object
+        y : Any
             Second operand (may be a scalar).
 
         Returns
         -------
-        object
+        Any
             ``min(x, y)`` element-wise.
         """
         if self._backend is Backend.NUMPY:
-            return np.minimum(x, y)  # type: ignore[arg-type]  # ty: ignore[no-matching-overload]
+            return np.minimum(x, y)
         if isinstance(y, (int, float)):
-            return self._torch.clamp_max(x, y)  # type: ignore[union-attr]
-        return self._torch.minimum(x, y)  # type: ignore[union-attr]
+            return self._torch.clamp_max(x, y)
+        return self._torch.minimum(x, y)
 
     # ------------------------------------------------------------------
     # Linear algebra
     # ------------------------------------------------------------------
 
-    def norm_fro(self, x: object) -> float:
+    def norm_fro(self, x: Any) -> float:
         """Compute the Frobenius norm of *x*.
 
         Parameters
         ----------
-        x : object
+        x : Any
             2-D (or flat) array.
 
         Returns
@@ -287,10 +287,10 @@ class ArrayNamespace:
             Frobenius norm ``‖x‖_F``.
         """
         if self._backend is Backend.NUMPY:
-            return float(np.linalg.norm(x, "fro"))  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+            return float(np.linalg.norm(x, "fro"))
         return float(self._torch.linalg.norm(x, ord="fro"))
 
-    def svd_leading_singular(self, x: object) -> float:
+    def svd_leading_singular(self, x: Any) -> float:
         """Return the largest singular value of *x*.
 
         Only the leading singular value is computed to avoid the cost of a
@@ -307,14 +307,14 @@ class ArrayNamespace:
             Largest singular value σ₁.
         """
         if self._backend is Backend.NUMPY:
-            return float(np.linalg.svd(x, compute_uv=False)[0])  # type: ignore[arg-type]  # ty: ignore[no-matching-overload]
+            return float(np.linalg.svd(x, compute_uv=False)[0])
         return float(self._torch.linalg.svdvals(x)[0])
 
     # ------------------------------------------------------------------
     # DCT
     # ------------------------------------------------------------------
 
-    def dctn(self, x: object, norm: str = "ortho") -> object:
+    def dctn(self, x: Any, norm: str = "ortho") -> Any:
         """N-dimensional orthonormal DCT-II.
 
         Parameters
@@ -335,10 +335,10 @@ class ArrayNamespace:
         SciPy's ``scipy.fft.dctn`` output to within floating-point precision.
         """
         if self._backend is Backend.NUMPY or isinstance(x, np.ndarray):
-            return scipy_dctn(x, norm=norm)  # type: ignore[arg-type]
+            return scipy_dctn(x, norm=norm)
         return _torch_dctn(x, norm=norm)
 
-    def idctn(self, x: object, norm: str = "ortho") -> object:
+    def idctn(self, x: Any, norm: str = "ortho") -> Any:
         """N-dimensional orthonormal inverse DCT-II (DCT-III).
 
         Parameters
@@ -354,7 +354,7 @@ class ArrayNamespace:
             Reconstructed array with the same shape as *x*.
         """
         if self._backend is Backend.NUMPY or isinstance(x, np.ndarray):
-            return scipy_idctn(x, norm=norm)  # type: ignore[arg-type]
+            return scipy_idctn(x, norm=norm)
         return _torch_idctn(x, norm=norm)
 
     # ------------------------------------------------------------------
