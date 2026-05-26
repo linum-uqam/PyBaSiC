@@ -1,23 +1,126 @@
-[tool.poetry]
+[project]
 name = "pybasic-illumination-correction"
-version = "0.1.2"
-description = "Python Implementation of the BaSiC shading correction algorithm"
-authors = ["Joël Lefebvre <lefebvre.joel@uqam.ca>"]
-repository = "https://github.com/linum-uqam/PyBaSiC"
-packages = [{include = "pybasic"}, {include = "scripts"}]
+version = "0.2.0"
+description = "Python implementation of the BaSiC shading correction algorithm"
+authors = [{ name = "Joël Lefebvre", email = "lefebvre.joel@uqam.ca" }]
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+keywords = ["shading correction", "illumination", "microscopy", "BaSiC"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy>=2.2",
+    "scipy>=1.15",
+    "opencv-python>=4.11",
+    "tqdm>=4.67",
+]
 
-[tool.poetry.scripts]
-basic_shading_correction = "scripts.basic_shading_correction:main"
+[project.optional-dependencies]
+gpu = ["torch>=2.7"]
+dev = [
+    "pytest>=8.4",
+    "pytest-cov>=6.1",
+    "ruff>=0.11",
+    "ty>=0.0.1a14",
+    "numpydoc>=1.9",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.12"
-numpy = "^1.23.2"
-opencv-python = "^4.6.0"
-tqdm = "^4.64.0"
-scipy = "^1.9.0"
+[project.scripts]
+basic_shading_correction = "pybasic.cli:main"
 
-[tool.poetry.dev-dependencies]
+[project.urls]
+Repository = "https://github.com/linum-uqam/PyBaSiC"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pybasic"]
+
+# ---------------------------------------------------------------------------
+# Ruff — linter + formatter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["pybasic", "tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # docstring style conflicts (use D213 = multi-line summary second line)
+    "D203",   # one-blank-line-before-class  (conflicts with D211)
+    # formatter compatibility
+    "COM812", # missing-trailing-comma (conflicts with ruff format)
+    "ISC001", # implicit-str-concat (conflicts with ruff format)
+    # noise / project-specific suppressions
+    "CPY",    # copyright notices not required
+    "TD",     # TODO comment enforcement
+    "FIX",    # FIXME comment enforcement
+    "ANN401", # allow typing.Any where necessary
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101",     # assert statements are fine in tests
+    "D",        # docstrings optional in tests
+    "PLR2004",  # magic numbers in test assertions are fine
+    "ANN",      # type annotations optional in tests
+    "SLF001",   # private member access is fine in tests
+    "N806",     # math variable names mirror the library under test
+    "S603",     # subprocess calls with literal args are safe in tests
+    "PLW1510",  # explicit check= arg not required (we assert returncode)
+    "TC003",    # stdlib imports outside TYPE_CHECKING are fine in tests
+    "RUF002",   # unicode chars in test docstrings are fine
+    "RUF001",   # unicode chars in test strings are fine
+    "RUF059",   # unused unpacked vars acceptable in test setup
+    "E501",     # long lines acceptable in tests
+    "C901",     # complex helpers acceptable in tests
+    "PT006",    # parametrize first-arg style is flexible
+]
+"pybasic/cli.py" = ["T201"]
+"pybasic/_alm.py" = [
+    "N806",     # algorithm uses conventional uppercase math variable names
+    "C901",     # ALM solver inherently complex
+    "PLR0913",  # solver requires many parameters
+    "PLR0915",  # solver has many statements by nature
+]
+"pybasic/core.py" = [
+    "N806",     # math variable names (Ib, Ir, D) mirror _alm.py convention
+    "PLR0913",  # BaSiC estimator has many configuration parameters
+    "PLR2004",  # tolerance constants in scientific code
+]
+"pybasic/backend.py" = [
+    "N806",     # V is a conventional math variable in DCT algorithms
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.format]
+# Use ruff's formatter (replaces black)
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# ty — static type checker
+# ---------------------------------------------------------------------------
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.rules]
+# Strict mode for the library; relaxed for tests
+unknown-argument = "error"
+unresolved-import = "ignore"  # torch is an optional dependency
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=pybasic --cov-report=term-missing"

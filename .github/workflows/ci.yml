@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "modernisation"]
+  pull_request:
+
+jobs:
+  lint:
+    name: "Lint & format (ruff)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.14"
+
+      - name: Install dev extras
+        run: uv sync --extra dev
+
+      - name: ruff lint
+        run: uv run ruff check pybasic/ tests/
+
+      - name: ruff format check
+        run: uv run ruff format --check pybasic/ tests/
+
+  typecheck:
+    name: "Type-check (ty)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.14"
+
+      - name: Install dev extras
+        run: uv sync --extra dev
+
+      - name: ty check
+        run: uv run ty check pybasic/
+
+  test-cpu:
+    name: "Tests — CPU (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.14"
+
+      - name: Install dev extras
+        run: uv sync --extra dev
+
+      - name: Run tests
+        run: uv run pytest tests/ -v --tb=short --cov=pybasic --cov-report=term-missing
+
+  test-gpu-cpu-wheel:
+    name: "Tests — Torch CPU wheel (ubuntu)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.14"
+
+      - name: Install dev + gpu extras (CPU-only torch)
+        run: uv sync --extra dev --extra gpu
+
+      - name: Run tests (including backend parity)
+        run: uv run pytest tests/ -v --tb=short -k "not cli"
