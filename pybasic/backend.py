@@ -334,7 +334,7 @@ class ArrayNamespace:
         The Torch backend uses an FFT-based implementation that matches
         SciPy's ``scipy.fft.dctn`` output to within floating-point precision.
         """
-        if self._backend is Backend.NUMPY:
+        if self._backend is Backend.NUMPY or isinstance(x, np.ndarray):
             return scipy_dctn(x, norm=norm)  # type: ignore[arg-type]
         return _torch_dctn(x, norm=norm)
 
@@ -353,7 +353,7 @@ class ArrayNamespace:
         object
             Reconstructed array with the same shape as *x*.
         """
-        if self._backend is Backend.NUMPY:
+        if self._backend is Backend.NUMPY or isinstance(x, np.ndarray):
             return scipy_idctn(x, norm=norm)  # type: ignore[arg-type]
         return _torch_idctn(x, norm=norm)
 
@@ -414,14 +414,19 @@ def _torch_dct1d(x: Any, norm: str = "ortho") -> Any:
 
     n = x.shape[-1]  # type: ignore[union-attr]
     v = torch.cat([x[..., ::2], x[..., 1::2].flip(-1)], dim=-1)  # type: ignore[index]
-    V = torch.fft.rfft(v, n=n, dim=-1)
-    k = torch.arange(n // 2 + 1, dtype=torch.float64, device=x.device)  # type: ignore[union-attr]
-    phase = torch.exp(-1j * math.pi * k / (2.0 * n)).to(V.dtype)
-    y = (V * phase).real
+    Vc = torch.fft.fft(v, n=n, dim=-1)
+    k = torch.arange(n, dtype=torch.float64, device=x.device)  # type: ignore[union-attr]
+    theta = math.pi * k / (2.0 * n)
+    cos_k = torch.cos(theta).to(Vc.real.dtype)
+    sin_k = torch.sin(theta).to(Vc.real.dtype)
+    # Re(Vc * exp(-i*theta)) = Vc.real*cos + Vc.imag*sin
+    y = Vc.real * cos_k + Vc.imag * sin_k
     if norm == "ortho":
         y = y.clone()
-        y[..., 0] = y[..., 0] / math.sqrt(4 * n)
-        y[..., 1:] = y[..., 1:] / math.sqrt(2 * n)
+        y[..., 0] = y[..., 0] / math.sqrt(n)
+        y[..., 1:] = y[..., 1:] / math.sqrt(n / 2)
+    else:
+        y = 2.0 * y
     return y
 
 
@@ -445,14 +450,20 @@ def _torch_idct1d(x: Any, norm: str = "ortho") -> Any:
     n = x.shape[-1]  # type: ignore[union-attr]
     xn = x.clone()  # type: ignore[union-attr]
     if norm == "ortho":
-        xn[..., 0] = xn[..., 0] * math.sqrt(4 * n)
-        xn[..., 1:] = xn[..., 1:] * math.sqrt(2 * n)
+        xn[..., 0] = xn[..., 0] * math.sqrt(n)
+        xn[..., 1:] = xn[..., 1:] * math.sqrt(n / 2)
+    else:
+        xn = xn / 2
 
-    k = torch.arange(n // 2 + 1, dtype=torch.float64, device=x.device)  # type: ignore[union-attr]
-    phase = torch.exp(1j * math.pi * k / (2.0 * n))
-    xc = torch.complex(xn, torch.zeros_like(xn))
-    V = xc * phase.to(xc.dtype)
-    v = torch.fft.irfft(V, n=n, dim=-1)
+    k = torch.arange(n, dtype=torch.float64, device=x.device)  # type: ignore[union-attr]
+    cos_k = torch.cos(math.pi * k / (2.0 * n)).to(xn.dtype)
+    sin_k = torch.sin(math.pi * k / (2.0 * n)).to(xn.dtype)
+    # Anti-Hermitian imaginary part (exploits real-signal symmetry of forward FFT)
+    Vt_i = torch.cat([xn[..., :1] * 0, -xn[..., 1:].flip(-1)], dim=-1)
+    V_r = xn * cos_k - Vt_i * sin_k
+    V_i = xn * sin_k + Vt_i * cos_k
+    V = torch.complex(V_r, V_i)
+    v = torch.fft.ifft(V, n=n, dim=-1).real
     y = torch.zeros_like(v)
     y[..., ::2] = v[..., : math.ceil(n / 2)]
     y[..., 1::2] = v[..., math.ceil(n / 2) :].flip(-1)
