@@ -91,15 +91,11 @@ class TestAlmNumpy:
         assert Ir.shape == stack.shape
         assert D.shape == (1, h * w)
 
-    def test_flatfield_recovery_correlation(
-        self, synthetic_stack: tuple[np.ndarray, np.ndarray]
-    ) -> None:
+    def test_flatfield_recovery_correlation(self, synthetic_stack: tuple[np.ndarray, np.ndarray]) -> None:
         """The estimated flat-field correlates > 0.9 with the ground truth."""
         stack, flatfield = synthetic_stack
         xp = get_xp(Backend.NUMPY)
-        Ib, _, _ = inexact_alm_l1(
-            stack, l_s=0.5, l_d=0.2, max_iter=200, estimate_darkfield=False, xp=xp
-        )
+        Ib, _, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=200, estimate_darkfield=False, xp=xp)
         estimated_ff = Ib.mean(axis=0).ravel()
         gt = flatfield.ravel()
         correlation = float(np.corrcoef(estimated_ff, gt)[0, 1])
@@ -113,15 +109,11 @@ class TestAlmNumpy:
         for name, arr in [("Ib", Ib), ("Ir", Ir), ("D", D)]:
             assert np.isfinite(arr).all(), f"Non-finite values in {name}"
 
-    def test_darkfield_disabled_is_zero(
-        self, synthetic_stack: tuple[np.ndarray, np.ndarray]
-    ) -> None:
+    def test_darkfield_disabled_is_zero(self, synthetic_stack: tuple[np.ndarray, np.ndarray]) -> None:
         """Dark-field output should be near-zero when estimation is disabled."""
         stack, _ = synthetic_stack
         xp = get_xp(Backend.NUMPY)
-        _, _, D = inexact_alm_l1(
-            stack, l_s=0.5, l_d=0.2, max_iter=5, estimate_darkfield=False, xp=xp
-        )
+        _, _, D = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=5, estimate_darkfield=False, xp=xp)
         np.testing.assert_allclose(D, 0.0, atol=1e-6)
 
     def test_residual_magnitude(self, synthetic_stack: tuple[np.ndarray, np.ndarray]) -> None:

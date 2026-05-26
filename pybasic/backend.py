@@ -60,10 +60,7 @@ class ArrayNamespace:
             try:
                 import torch
             except ImportError as exc:
-                msg = (
-                    "PyTorch is required for the 'torch' backend. "
-                    "Install it with: uv sync --extra gpu"
-                )
+                msg = "PyTorch is required for the 'torch' backend. Install it with: uv sync --extra gpu"
                 raise ImportError(msg) from exc
             self._torch = torch
             self._device = torch.device(device or "cpu")

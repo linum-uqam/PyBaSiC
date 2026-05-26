@@ -80,18 +80,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=["numpy", "torch", "auto"],
         default="numpy",
-        help=(
-            "Array backend for the ALM optimisation loop.  "
-            "'auto' selects Torch with CUDA/MPS when available."
-        ),
+        help=("Array backend for the ALM optimisation loop.  'auto' selects Torch with CUDA/MPS when available."),
     )
     compute_group.add_argument(
         "--device",
         metavar="DEVICE",
         default=None,
-        help=(
-            "PyTorch device string (e.g. 'cuda:0', 'mps', 'cpu').  Ignored when --backend=numpy."
-        ),
+        help=("PyTorch device string (e.g. 'cuda:0', 'mps', 'cpu').  Ignored when --backend=numpy."),
     )
 
     # --- Misc ---

@@ -165,9 +165,7 @@ def inexact_alm_l1(
     while not converged and iteration < max_iter:
         # 1. Update sparse residual Ir
         Sf_np = xp.to_numpy(Sf).reshape(p, q)
-        S_spatial = xp.asarray(
-            np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32)
-        )
+        S_spatial = xp.asarray(np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32))
         Ib = S_spatial * B + D_field  # (N, P*Q)
         Ir = shrink(xp, D - Ib + Y / mu, W / mu)  # type: ignore[operator]
 
@@ -179,9 +177,7 @@ def inexact_alm_l1(
 
         # 3. Reconstruct Ib from updated Sf
         Sf_np = xp.to_numpy(Sf).reshape(p, q)
-        S_spatial = xp.asarray(
-            np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32)
-        )
+        S_spatial = xp.asarray(np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32))
         Ib = S_spatial * B + D_field
 
         # 5. Update baseline B
@@ -199,9 +195,7 @@ def inexact_alm_l1(
             mask_high_s = S_np[0] > (S_np[0].mean() - 1e-6)
             mask_low_s = S_np[0] < (S_np[0].mean() + 1e-6)
 
-            R_high = (
-                float(np.mean(R_np[mask_valid_b][:, mask_high_s])) if mask_valid_b.any() else 0.0
-            )
+            R_high = float(np.mean(R_np[mask_valid_b][:, mask_high_s])) if mask_valid_b.any() else 0.0
             R_low = float(np.mean(R_np[mask_valid_b][:, mask_low_s])) if mask_valid_b.any() else 0.0
             b1_cand = (R_high - R_low) / (R_mean_all + 1e-9)
 
@@ -221,18 +215,14 @@ def inexact_alm_l1(
 
             Z = B1 * (S_np[0].mean() - S_np[0])
             if mask_valid_b.any():
-                A1_offset = (
-                    R_np[mask_valid_b].mean(axis=0, keepdims=True) - float(b_valid.mean()) * S_np
-                )
+                A1_offset = R_np[mask_valid_b].mean(axis=0, keepdims=True) - float(b_valid.mean()) * S_np
             else:
                 A1_offset = np.zeros_like(S_np)
             A1_offset = A1_offset - A1_offset.mean()
             A_offset = A1_offset - Z
 
             Dr_f = np.asarray(xp.dctn(A_offset.reshape(p, q), norm="ortho"))
-            Dr_f_shrunk = xp.to_numpy(
-                shrink(xp, xp.asarray(Dr_f.astype(np.float32)), l_d / (ent2 * mu))
-            )
+            Dr_f_shrunk = xp.to_numpy(shrink(xp, xp.asarray(Dr_f.astype(np.float32)), l_d / (ent2 * mu)))
             Dr = np.asarray(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho")).reshape(1, p * q)
             Dr = xp.to_numpy(shrink(xp, xp.asarray(Dr.astype(np.float32)), l_d / (mu * ent2)))
             D_field = xp.asarray((Dr + Z).astype(np.float32))

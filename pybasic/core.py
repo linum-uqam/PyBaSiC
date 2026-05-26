@@ -112,10 +112,7 @@ class BaSiC:
             self.img_stack = np.array(input)
             self.input_type = "images_list"
         else:
-            msg = (
-                "input must be a directory path, a list of file paths, "
-                "a list of ndarrays, or a 3-D ndarray stack."
-            )
+            msg = "input must be a directory path, a list of file paths, a list of ndarrays, or a 3-D ndarray stack."
             raise TypeError(msg)
 
         # Optimiser hyper-parameters
@@ -155,8 +152,7 @@ class BaSiC:
         directory = Path(self.directory).resolve()
         file_list = sorted(directory.glob(f"*{self.extension}"))
         assert len(file_list) > 0, (
-            f"No files with extension '{self.extension}' found in "
-            f"'{directory}'.  Check the path and --extension flag."
+            f"No files with extension '{self.extension}' found in '{directory}'.  Check the path and --extension flag."
         )
         self.files = file_list
 
@@ -301,15 +297,9 @@ class BaSiC:
         self.flatfield = self.flatfield / (self.flatfield.mean() + 1e-9)
         self.darkfield = D_2d
 
-        mad_flat = float(
-            np.abs(self.flatfield - last_flatfield).sum() / (np.abs(last_flatfield).sum() + 1e-9)
-        )
+        mad_flat = float(np.abs(self.flatfield - last_flatfield).sum() / (np.abs(last_flatfield).sum() + 1e-9))
         mad_dark_abs = float(np.abs(self.darkfield - last_darkfield).sum())
-        mad_dark = (
-            0.0
-            if mad_dark_abs < 1e-7
-            else mad_dark_abs / max(float(np.abs(last_darkfield).sum()), 1e-6)
-        )
+        mad_dark = 0.0 if mad_dark_abs < 1e-7 else mad_dark_abs / max(float(np.abs(last_darkfield).sum()), 1e-6)
 
         if (
             max(mad_flat, mad_dark) <= self.reweighting_tolerance
@@ -342,13 +332,9 @@ class BaSiC:
 
         # Up-sample to the full image resolution
         h, w = self.image_shape
-        self.flatfield_fullsize = cv2.resize(
-            self.flatfield.T, (w, h), interpolation=cv2.INTER_LINEAR
-        ).T
+        self.flatfield_fullsize = cv2.resize(self.flatfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
         self.flatfield_fullsize = self.flatfield_fullsize / (self.flatfield_fullsize.mean() + 1e-9)
-        self.darkfield_fullsize = cv2.resize(
-            self.darkfield.T, (w, h), interpolation=cv2.INTER_LINEAR
-        ).T
+        self.darkfield_fullsize = cv2.resize(self.darkfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
 
     def normalize(self, img: NDArray, *, clip: bool = True, epsilon: float = 1e-6) -> NDArray:
         """Apply the estimated shading correction to a single image.
@@ -373,9 +359,7 @@ class BaSiC:
         numpy.ndarray
             Corrected image with the same shape and dtype as *img*.
         """
-        corrected = (img.astype(np.float32) - self.darkfield_fullsize) / (
-            self.flatfield_fullsize + epsilon
-        )
+        corrected = (img.astype(np.float32) - self.darkfield_fullsize) / (self.flatfield_fullsize + epsilon)
         if clip and img.dtype not in (np.float32, np.float64):
             info = np.iinfo(img.dtype)
             corrected = np.clip(corrected, info.min, info.max)
