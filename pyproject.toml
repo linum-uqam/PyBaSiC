@@ -27,6 +27,7 @@ dev = [
     "ruff>=0.11",
     "ty>=0.0.1a14",
     "numpydoc>=1.9",
+    "pre-commit>=4.2",
 ]
 
 [project.scripts]
