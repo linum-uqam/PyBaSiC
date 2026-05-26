@@ -3,13 +3,53 @@
 *Python implementation of the BaSiC shading correction method — Python 3.14+, GPU-ready via PyTorch.*
 
 [![DOI](https://zenodo.org/badge/219489337.svg)](https://zenodo.org/badge/latestdoi/219489337)
-[![CI](https://github.com/YOUR_ORG/PyBaSiC/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_ORG/PyBaSiC/actions/workflows/ci.yml)
+[![CI](https://github.com/linum-uqam/PyBaSiC/actions/workflows/ci.yml/badge.svg)](https://github.com/linum-uqam/PyBaSiC/actions/workflows/ci.yml)
 
 * **Original paper**: T. Peng *et al.*, "A BaSiC tool for background and shading correction of optical microscopy images," *Nat. Commun.*, vol. 8, p. 14836, Jun. 2017. [DOI:10.1038/ncomms14836](https://doi.org/10.1038/ncomms14836)
 * **Nature Supplementary Materials**: [PDF](https://static-content.springer.com/esm/art%3A10.1038%2Fncomms14836/MediaObjects/41467_2017_BFncomms14836_MOESM560_ESM.pdf)
 * **MATLAB implementation**: https://github.com/QSCD/BaSiC
 * **Fiji plugin**: [URL](https://www.helmholtz-muenchen.de/icb/research/groups/quantitative-single-cell-dynamics/software/basic/index.html)
 * **Demo data**: [Dropbox](https://www.dropbox.com/s/plznvzdjglrse3h/Demoexamples.zip?dl=0)
+
+---
+
+## Getting Started
+
+### 1. Install uv
+
+PyBaSiC uses [uv](https://docs.astral.sh/uv/) for environment and dependency management.
+Install it with:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### 2. Clone and install
+
+```bash
+git clone https://github.com/linum-uqam/PyBaSiC.git
+cd PyBaSiC
+uv sync
+```
+
+This creates an isolated virtual environment and installs all required dependencies.
+
+### 3. Run on your data
+
+```bash
+basic_shading_correction --input /path/to/tiles --output /path/to/corrected
+```
+
+Or from Python:
+
+```python
+from pybasic import BaSiC
+
+model = BaSiC("/path/to/tiles")
+model.prepare()
+model.run()
+corrected_img = model.normalize(my_image)
+```
 
 ---
 
@@ -24,12 +64,10 @@
 
 ## Installation
 
-PyBaSiC uses [uv](https://docs.astral.sh/uv/) for environment and dependency management.
-
 ### CPU-only (default)
 
 ```bash
-git clone https://github.com/YOUR_ORG/PyBaSiC.git
+git clone https://github.com/linum-uqam/PyBaSiC.git
 cd PyBaSiC
 uv sync
 ```
@@ -47,8 +85,9 @@ select the accelerator.
 ### Development environment
 
 ```bash
-uv sync --extra dev               # linting, type-checking, testing
+uv sync --extra dev               # linting, type-checking, testing, pre-commit
 uv sync --extra dev --extra gpu   # all extras
+uv run pre-commit install         # install git hooks
 ```
 
 ---
@@ -99,13 +138,13 @@ model = BaSiC("/path/to/tiles", estimate_darkfield=True, backend="auto")
 model.prepare()
 model.run()
 
-flatfield = model.get_flatfield()   # numpy array (H, W)
-darkfield  = model.get_darkfield()  # numpy array (H, W)
+flatfield = model.flatfield_fullsize   # numpy array (H, W)
+darkfield  = model.darkfield_fullsize  # numpy array (H, W)
 
-# Apply to a new image
+# Apply correction to a single image
 corrected = model.normalize(my_image)
 
-# Save corrected stack
+# Save the corrected stack to disk
 model.write_images("/path/to/corrected")
 ```
 
@@ -123,11 +162,11 @@ model.run()
 
 ```bash
 make install       # uv sync --extra dev
-make lint          # ruff check + format check
+make lint          # ruff check
 make format        # auto-format with ruff
 make typecheck     # ty check
-make test          # pytest with coverage
-make all           # lint + typecheck + test
+make test          # pytest
+make all           # lint + format check + typecheck + test
 ```
 
 ---
