@@ -55,7 +55,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _generate_vignette(kind: str, tmp_path: Path, *, order: int = 3) -> np.ndarray:
+def _generate_vignette(kind: str, tmp_path: Path, *, order: int = 4) -> np.ndarray:
     """Run ``sbh-vignette`` once and return a float32 (_TILE, _TILE) array."""
     assert _SBH_VIGNETTE is not None
     cmd = [
@@ -105,11 +105,16 @@ def _save_figure(kind: str, vignette, stack, model, corr: float, out_dir: Path) 
     import matplotlib.pyplot as plt
 
     flatfield = model.flatfield_fullsize
+    # Normalize GT to mean=1 so it is on the same scale as flatfield_fullsize.
+    vignette_norm = vignette / (vignette.mean() + 1e-9)
     corrected = np.stack([model.normalize(stack[i]) for i in range(len(stack))])
-    err = np.abs(flatfield - vignette)
+    err = np.abs(flatfield - vignette_norm)
     # Pick the most content-rich tile so the sample panels actually show
     # recognisable image structure (tile 0 of the Landsat source is dark water).
     best = int(np.argmax(stack.std(axis=(1, 2))))
+    # Shared color range for GT and estimated flat-field so they are directly comparable.
+    ff_vmin = min(float(vignette_norm.min()), float(flatfield.min()))
+    ff_vmax = max(float(vignette_norm.max()), float(flatfield.max()))
 
     fig, axes = plt.subplots(2, 3, figsize=(12, 7))
     fig.suptitle(
@@ -118,15 +123,16 @@ def _save_figure(kind: str, vignette, stack, model, corr: float, out_dir: Path) 
         fontweight="bold",
     )
     panels = [
-        (axes[0, 0], vignette, "viridis", True, "Ground-truth vignette"),
-        (axes[0, 1], stack[best], "gray", False, "Sample tile: corrupted"),
-        (axes[0, 2], corrected[best], "gray", False, "Sample tile: BaSiC-corrected"),
-        (axes[1, 0], stack.mean(axis=0), "viridis", True, "Mean of corrupted stack"),
-        (axes[1, 1], flatfield, "viridis", True, "Estimated flat-field"),
-        (axes[1, 2], err, "viridis", True, "Abs error |FF - vignette|"),
+        (axes[0, 0], vignette_norm, "viridis", True, "Ground-truth vignette (mean=1)", ff_vmin, ff_vmax),
+        (axes[0, 1], stack[best], "gray", False, "Sample tile: corrupted", None, None),
+        (axes[0, 2], corrected[best], "gray", False, "Sample tile: BaSiC-corrected", None, None),
+        (axes[1, 0], stack.mean(axis=0), "viridis", True, "Mean of corrupted stack", None, None),
+        (axes[1, 1], flatfield, "viridis", True, "Estimated flat-field", ff_vmin, ff_vmax),
+        (axes[1, 2], err, "viridis", True, "Abs error |FF - GT| (mean-norm)", None, None),
     ]
-    for ax, data, cmap, contours, title in panels:
-        im = ax.imshow(data, cmap=cmap, interpolation="nearest")
+    for ax, data, cmap, contours, title, vmin, vmax in panels:
+        imshow_kw: dict = {"vmin": vmin, "vmax": vmax} if vmin is not None else {}
+        im = ax.imshow(data, cmap=cmap, interpolation="nearest", **imshow_kw)
         if contours:
             ax.contour(data, levels=10, colors="w", linewidths=0.6, alpha=0.7)
         ax.set_title(title, fontsize=10)
@@ -144,7 +150,7 @@ def _save_figure(kind: str, vignette, stack, model, corr: float, out_dir: Path) 
 @pytest.mark.parametrize("kind", ["gaussian", "zernike"])
 def test_vignette_recovery(kind: str, tmp_path: Path) -> None:
     """BaSiC recovers the sbh-generated vignette from the tiled source image."""
-    vignette = _generate_vignette(kind, tmp_path, order=3 if kind == "zernike" else 0)
+    vignette = _generate_vignette(kind, tmp_path)
     stack = _tile_source_image() * vignette[np.newaxis]
 
     model = BaSiC(stack, estimate_darkfield=False)
