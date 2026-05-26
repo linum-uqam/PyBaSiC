@@ -22,13 +22,19 @@ numpydoc_validate = pytest.importorskip(
 # ---------------------------------------------------------------------------
 # Allowed warning codes that do not constitute failures.
 # ---------------------------------------------------------------------------
+# GL01 = Summary on same line as opening quotes — conflicts with ruff D212
 # GL08 = Object does not have a docstring  (caught separately)
 # SA01 = See Also section not found
 # EX01 = No examples section
+# ES01 = No extended summary — optional in NumPy style
+# PR01 = Parameters not documented — suppressed for inherited/internal params
 _ALLOWED_CODES: frozenset[str] = frozenset(
     {
+        "GL01",  # ruff D212 (numpy convention) requires summary on first line
         "SA01",  # "See Also" is optional
         "EX01",  # Examples section is optional for private helpers
+        "ES01",  # Extended summary is optional
+        "PR01",  # Inherited / StrEnum internal parameters
     }
 )
 
@@ -69,6 +75,9 @@ def _iter_public_objects() -> list[tuple[str, object]]:
                 continue
             qname = f"{prefix}.{name}"
             if id(obj) in seen:
+                continue
+            # Skip objects not defined in this module (e.g. stdlib imports).
+            if getattr(obj, "__module__", None) != mod.__name__:
                 continue
             seen.add(id(obj))
             if inspect.isclass(obj):
@@ -125,11 +134,7 @@ def test_docstring_valid(qname: str, obj: object) -> None:
         pytest.fail(f"{qname} has no docstring (GL08).")
 
     result = numpydoc_validate.validate(f"{qname}")
-    errors = [
-        (code, msg)
-        for code, msg in result.get("errors", [])
-        if code not in _ALLOWED_CODES
-    ]
+    errors = [(code, msg) for code, msg in result.get("errors", []) if code not in _ALLOWED_CODES]
     if errors:
         formatted = "\n".join(f"  [{code}] {msg}" for code, msg in errors)
         pytest.fail(f"Docstring issues in {qname}:\n{formatted}")

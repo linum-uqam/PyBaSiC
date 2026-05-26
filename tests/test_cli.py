@@ -104,8 +104,7 @@ class TestCliEndToEnd:
             timeout=120,
         )
         assert result.returncode == 0, (
-            f"CLI exited {result.returncode}\nstdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
+            f"CLI exited {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
         output_files = list(out_dir.glob("*.tif"))
         assert len(output_files) == 8, f"Expected 8 output files, got {len(output_files)}"
@@ -163,8 +162,7 @@ class TestCliEndToEnd:
             timeout=120,
         )
         assert result.returncode == 0, (
-            f"CLI with --estimate-darkfield exited {result.returncode}\n"
-            f"stderr:\n{result.stderr}"
+            f"CLI with --estimate-darkfield exited {result.returncode}\nstderr:\n{result.stderr}"
         )
 
     @pytest.mark.parametrize("backend", ["numpy"])
@@ -192,6 +190,4 @@ class TestCliEndToEnd:
             text=True,
             timeout=120,
         )
-        assert result.returncode == 0, (
-            f"Backend '{backend}' failed.\nstderr:\n{result.stderr}"
-        )
+        assert result.returncode == 0, f"Backend '{backend}' failed.\nstderr:\n{result.stderr}"

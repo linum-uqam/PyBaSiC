@@ -274,7 +274,7 @@ class ArrayNamespace:
     # ------------------------------------------------------------------
 
     def norm_fro(self, x: object) -> float:
-        """Frobenius norm of *x*.
+        """Compute the Frobenius norm of *x*.
 
         Parameters
         ----------

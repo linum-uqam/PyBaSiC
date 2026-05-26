@@ -10,7 +10,9 @@ import numpy as np
 import pytest
 from pybasic.backend import Backend, get_xp
 
-torch = pytest.importorskip("torch", reason="PyTorch not installed — skipping backend parity tests.")
+torch = pytest.importorskip(
+    "torch", reason="PyTorch not installed — skipping backend parity tests."
+)
 
 
 # ---------------------------------------------------------------------------

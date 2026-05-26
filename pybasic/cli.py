@@ -90,8 +90,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="DEVICE",
         default=None,
         help=(
-            "PyTorch device string (e.g. 'cuda:0', 'mps', 'cpu').  "
-            "Ignored when --backend=numpy."
+            "PyTorch device string (e.g. 'cuda:0', 'mps', 'cpu').  Ignored when --backend=numpy."
         ),
     )
 

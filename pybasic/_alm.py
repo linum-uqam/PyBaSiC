@@ -173,9 +173,7 @@ def inexact_alm_l1(
         # 2. Update flat-field DCT coefficients Sf
         R_for_sf = xp.to_numpy(D - Ir + Y / mu)  # type: ignore[operator]  # ty: ignore[unsupported-operator]
         R_for_sf_mean = R_for_sf.reshape(n, p, q).mean(axis=0)
-        dSf = xp.asarray(
-            np.asarray(xp.dctn(R_for_sf_mean, norm="ortho")).astype(np.float32)
-        )
+        dSf = xp.asarray(np.asarray(xp.dctn(R_for_sf_mean, norm="ortho")).astype(np.float32))
         Sf = xp.asarray(xp.to_numpy(shrink(xp, dSf, l_s / mu)).astype(np.float32))
 
         # 3. Reconstruct Ib from updated Sf
@@ -201,15 +199,9 @@ def inexact_alm_l1(
             mask_low_s = S_np[0] < (S_np[0].mean() + 1e-6)
 
             R_high = (
-                float(np.mean(R_np[mask_valid_b][:, mask_high_s]))
-                if mask_valid_b.any()
-                else 0.0
+                float(np.mean(R_np[mask_valid_b][:, mask_high_s])) if mask_valid_b.any() else 0.0
             )
-            R_low = (
-                float(np.mean(R_np[mask_valid_b][:, mask_low_s]))
-                if mask_valid_b.any()
-                else 0.0
-            )
+            R_low = float(np.mean(R_np[mask_valid_b][:, mask_low_s])) if mask_valid_b.any() else 0.0
             b1_cand = (R_high - R_low) / (R_mean_all + 1e-9)
 
             k_cnt = int(mask_valid_b.sum())
@@ -229,8 +221,7 @@ def inexact_alm_l1(
             Z = B1 * (S_np[0].mean() - S_np[0])
             if mask_valid_b.any():
                 A1_offset = (
-                    R_np[mask_valid_b].mean(axis=0, keepdims=True)
-                    - float(b_valid.mean()) * S_np
+                    R_np[mask_valid_b].mean(axis=0, keepdims=True) - float(b_valid.mean()) * S_np
                 )
             else:
                 A1_offset = np.zeros_like(S_np)

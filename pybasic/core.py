@@ -180,9 +180,7 @@ class BaSiC:
             self.img_stack = img_stack
         elif self.input_type in {"directory", "files_list"}:
             raw: list[NDArray] = []
-            gen = (
-                tqdm.tqdm(self.files, desc="Loading images") if self.verbose else self.files
-            )
+            gen = tqdm.tqdm(self.files, desc="Loading images") if self.verbose else self.files
             for path in gen:
                 img = cv2.imread(str(path), cv2.IMREAD_ANYDEPTH)
                 if img is not None:
@@ -301,8 +299,7 @@ class BaSiC:
         self.darkfield = D_2d
 
         mad_flat = float(
-            np.abs(self.flatfield - last_flatfield).sum()
-            / (np.abs(last_flatfield).sum() + 1e-9)
+            np.abs(self.flatfield - last_flatfield).sum() / (np.abs(last_flatfield).sum() + 1e-9)
         )
         mad_dark_abs = float(np.abs(self.darkfield - last_darkfield).sum())
         mad_dark = (
@@ -330,9 +327,7 @@ class BaSiC:
         :meth:`prepare` must be called before this method.
         """
         if self.verbose:
-            pbar = tqdm.tqdm(
-                desc="Reweighting", total=self.max_reweighting_iterations
-            )
+            pbar = tqdm.tqdm(desc="Reweighting", total=self.max_reweighting_iterations)
         while self._flag_reweighting:
             self.update()
             if self.verbose:
@@ -350,9 +345,7 @@ class BaSiC:
             self.darkfield.T, (w, h), interpolation=cv2.INTER_LINEAR
         ).T
 
-    def normalize(
-        self, img: NDArray, *, clip: bool = True, epsilon: float = 1e-6
-    ) -> NDArray:
+    def normalize(self, img: NDArray, *, clip: bool = True, epsilon: float = 1e-6) -> NDArray:
         """Apply the estimated shading correction to a single image.
 
         Computes ``(img - darkfield) / (flatfield + ε)`` and optionally
@@ -421,9 +414,7 @@ class BaSiC:
             2-D flat-field image.
         """
         h, w = self.image_shape
-        self.flatfield_fullsize = cv2.resize(
-            flatfield.T, (w, h), interpolation=cv2.INTER_LINEAR
-        ).T
+        self.flatfield_fullsize = cv2.resize(flatfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
 
     def set_darkfield(self, darkfield: NDArray) -> None:
         """Override the estimated dark-field with a pre-computed one.
@@ -436,9 +427,7 @@ class BaSiC:
             2-D dark-field image.
         """
         h, w = self.image_shape
-        self.darkfield_fullsize = cv2.resize(
-            darkfield.T, (w, h), interpolation=cv2.INTER_LINEAR
-        ).T
+        self.darkfield_fullsize = cv2.resize(darkfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
 
     def get_flatfield(self) -> NDArray:
         """Return a copy of the full-resolution estimated flat-field.

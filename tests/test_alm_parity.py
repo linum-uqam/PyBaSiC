@@ -33,9 +33,7 @@ def synthetic_stack() -> tuple[np.ndarray, np.ndarray]:
     n, h, w = 8, 32, 32
 
     # Smooth flat-field: bilinear ramp, mean-normalised to 1.0
-    xs, ys = np.meshgrid(
-        np.linspace(0.8, 1.2, w), np.linspace(0.9, 1.1, h), indexing="xy"
-    )
+    xs, ys = np.meshgrid(np.linspace(0.8, 1.2, w), np.linspace(0.9, 1.1, h), indexing="xy")
     flatfield = (xs * ys).astype(np.float32)
     flatfield = flatfield / flatfield.mean()
 
@@ -80,9 +78,7 @@ class TestShrink:
 class TestAlmNumpy:
     """Functional tests for :func:`inexact_alm_l1` using the NumPy backend."""
 
-    def test_returns_expected_shapes(
-        self, synthetic_stack: tuple[np.ndarray, np.ndarray]
-    ) -> None:
+    def test_returns_expected_shapes(self, synthetic_stack: tuple[np.ndarray, np.ndarray]) -> None:
         """Output arrays have the same shape as the input stack."""
         stack, _ = synthetic_stack
         n, h, w = stack.shape
@@ -108,9 +104,7 @@ class TestAlmNumpy:
         correlation = float(np.corrcoef(estimated_ff, gt)[0, 1])
         assert correlation > 0.9, f"Flat-field correlation too low: {correlation:.3f}"
 
-    def test_no_nan_in_output(
-        self, synthetic_stack: tuple[np.ndarray, np.ndarray]
-    ) -> None:
+    def test_no_nan_in_output(self, synthetic_stack: tuple[np.ndarray, np.ndarray]) -> None:
         """No NaN or Inf values in any output array."""
         stack, _ = synthetic_stack
         xp = get_xp(Backend.NUMPY)
@@ -129,9 +123,7 @@ class TestAlmNumpy:
         )
         np.testing.assert_allclose(D, 0.0, atol=1e-6)
 
-    def test_residual_magnitude(
-        self, synthetic_stack: tuple[np.ndarray, np.ndarray]
-    ) -> None:
+    def test_residual_magnitude(self, synthetic_stack: tuple[np.ndarray, np.ndarray]) -> None:
         """The sparse residual should be smaller than the flat-field mean."""
         stack, _ = synthetic_stack
         xp = get_xp(Backend.NUMPY)
