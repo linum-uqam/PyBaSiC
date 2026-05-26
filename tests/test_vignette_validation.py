@@ -55,7 +55,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _generate_vignette(kind: str, tmp_path: Path, *, order: int = 2) -> np.ndarray:
+def _generate_vignette(kind: str, tmp_path: Path, *, order: int = 3) -> np.ndarray:
     """Run ``sbh-vignette`` once and return a float32 (_TILE, _TILE) array."""
     assert _SBH_VIGNETTE is not None
     cmd = [
@@ -144,7 +144,7 @@ def _save_figure(kind: str, vignette, stack, model, corr: float, out_dir: Path) 
 @pytest.mark.parametrize("kind", ["gaussian", "zernike"])
 def test_vignette_recovery(kind: str, tmp_path: Path) -> None:
     """BaSiC recovers the sbh-generated vignette from the tiled source image."""
-    vignette = _generate_vignette(kind, tmp_path, order=2 if kind == "zernike" else 0)
+    vignette = _generate_vignette(kind, tmp_path, order=3 if kind == "zernike" else 0)
     stack = _tile_source_image() * vignette[np.newaxis]
 
     model = BaSiC(stack, estimate_darkfield=False)
