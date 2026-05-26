@@ -134,21 +134,29 @@ jobs:
       - name: Push images to ci-artifacts branch
         if: always()
         run: |
-          cd vignette-results
-          git init
+          # Clone the existing ci-artifacts branch (or start fresh) and add
+          # images under a per-run subdirectory so old PR comments stay valid.
+          DEST="runs/${{ github.run_id }}"
+          git clone --depth 1 --branch ci-artifacts \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            ci-artifacts-repo 2>/dev/null || \
+          ( git clone --depth 1 \
+              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+              ci-artifacts-repo && \
+            cd ci-artifacts-repo && git checkout --orphan ci-artifacts && git rm -rf . )
+          cd ci-artifacts-repo
+          mkdir -p "$DEST"
+          cp ../vignette-results/*.png "$DEST/"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          git checkout -b ci-artifacts
-          git add *.png
-          git commit -m "ci: vignette results from run ${{ github.run_id }}"
-          git push --force \
-            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
-            ci-artifacts
+          git add "$DEST"
+          git commit -m "ci: vignette results from run ${{ github.run_id }} (commit ${{ github.sha }})"
+          git push origin ci-artifacts
 
       - name: Write step summary
         if: always()
         run: |
-          BASE="https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts"
+          BASE="https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts/runs/${{ github.run_id }}"
           echo '## PyBaSiC — Vignette Correction Visualisation' >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
           echo "### Gaussian" >> "$GITHUB_STEP_SUMMARY"
@@ -162,7 +170,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const base = `https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts`;
+            const base = `https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts/runs/${{ github.run_id }}`;
             const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
             const body = [
               '## PyBaSiC — Vignette Correction Visualisation',
