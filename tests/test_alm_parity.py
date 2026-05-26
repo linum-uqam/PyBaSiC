@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+
 from pybasic._alm import inexact_alm_l1, shrink
 from pybasic.backend import Backend, get_xp
 
@@ -19,7 +20,7 @@ from pybasic.backend import Backend, get_xp
 
 @pytest.fixture
 def synthetic_stack() -> tuple[np.ndarray, np.ndarray]:
-    """Return an 8×32×32 synthetic image stack and its ground-truth flat-field.
+    """Return an 8x32x32 synthetic image stack and its ground-truth flat-field.
 
     The flat-field is a smooth bilinear ramp (mean 1.0).  Random sparse noise
     is added on top so that the solver has something to separate out.
@@ -81,7 +82,7 @@ class TestAlmNumpy:
     def test_returns_expected_shapes(self, synthetic_stack: tuple[np.ndarray, np.ndarray]) -> None:
         """Output arrays have the same shape as the input stack."""
         stack, _ = synthetic_stack
-        n, h, w = stack.shape
+        _n, h, w = stack.shape
         xp = get_xp(Backend.NUMPY)
         l_s = 0.5
         l_d = 0.2

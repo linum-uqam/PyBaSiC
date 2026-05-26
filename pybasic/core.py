@@ -84,7 +84,7 @@ class BaSiC:
 
     def __init__(
         self,
-        input: str | Path | list[str | Path] | list[NDArray] | NDArray,  # noqa: A002
+        input: str | Path | list[str | Path] | list[NDArray] | NDArray,
         *,
         estimate_darkfield: bool = False,
         extension: str = ".tif",
@@ -154,7 +154,7 @@ class BaSiC:
         """
         directory = Path(self.directory).resolve()
         file_list = sorted(directory.glob(f"*{self.extension}"))
-        assert len(file_list) > 0, (  # noqa: S101
+        assert len(file_list) > 0, (
             f"No files with extension '{self.extension}' found in "
             f"'{directory}'.  Check the path and --extension flag."
         )
@@ -226,7 +226,7 @@ class BaSiC:
         # Auto-tune regularisation from the DCT of the mean image
         mean_val = self.img_stack_resized.mean(axis=0)
         mean_val = mean_val / (mean_val.mean() + 1e-9)
-        from scipy.fft import dctn  # noqa: PLC0415
+        from scipy.fft import dctn
 
         mean_val_dct = dctn(mean_val, norm="ortho")
         dct_sum = float(np.abs(mean_val_dct).sum())
@@ -330,12 +330,14 @@ class BaSiC:
         :meth:`prepare` must be called before this method.
         """
         if self.verbose:
-            pbar = tqdm.tqdm(desc="Reweighting", total=self.max_reweighting_iterations)
+            pbar: tqdm.tqdm | None = tqdm.tqdm(desc="Reweighting", total=self.max_reweighting_iterations)
+        else:
+            pbar = None
         while self._flag_reweighting:
             self.update()
-            if self.verbose:
+            if pbar is not None:
                 pbar.update()
-        if self.verbose:
+        if pbar is not None:
             pbar.close()
 
         # Up-sample to the full image resolution

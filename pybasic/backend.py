@@ -58,7 +58,7 @@ class ArrayNamespace:
         self._device: Any = None
         if backend is Backend.TORCH:
             try:
-                import torch  # noqa: PLC0415
+                import torch
             except ImportError as exc:
                 msg = (
                     "PyTorch is required for the 'torch' backend. "
@@ -410,7 +410,7 @@ def _torch_dct1d(x: Any, norm: str = "ortho") -> Any:
     Algorithm reorders the input (even/odd interleaving), applies a real
     FFT, then multiplies by twiddle factors to obtain the DCT-II spectrum.
     """
-    import torch  # noqa: PLC0415
+    import torch
 
     n = x.shape[-1]  # type: ignore[union-attr]
     v = torch.cat([x[..., ::2], x[..., 1::2].flip(-1)], dim=-1)  # type: ignore[index]
@@ -445,7 +445,7 @@ def _torch_idct1d(x: Any, norm: str = "ortho") -> Any:
     torch.Tensor
         Reconstructed values along the last axis.
     """
-    import torch  # noqa: PLC0415
+    import torch
 
     n = x.shape[-1]  # type: ignore[union-attr]
     xn = x.clone()  # type: ignore[union-attr]
@@ -538,7 +538,7 @@ def get_xp(backend: str | Backend, device: str | None = None) -> ArrayNamespace:
     """
     if isinstance(backend, str) and backend == "auto":
         try:
-            import torch  # noqa: PLC0415
+            import torch
 
             if torch.cuda.is_available():
                 return ArrayNamespace(Backend.TORCH, device or "cuda")

@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     if not input_dir.is_dir():
         parser.error(f"--input '{input_dir}' is not an existing directory.")
 
-    from pybasic.core import BaSiC  # noqa: PLC0415
+    from pybasic.core import BaSiC
 
     model = BaSiC(
         input_dir,

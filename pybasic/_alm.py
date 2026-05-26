@@ -155,8 +155,9 @@ def inexact_alm_l1(
     converged = False
     iteration = 0
 
-    if verbose:
-        pbar = tqdm.tqdm(desc="ALM Iteration", total=max_iter)
+    pbar: tqdm.tqdm | None = tqdm.tqdm(desc="ALM Iteration", total=max_iter) if verbose else None
+    S_spatial = xp.zeros((1, p * q), dtype=np.float32)
+    Ib = xp.zeros_like(D)
 
     # ------------------------------------------------------------------
     # Main loop
@@ -243,14 +244,14 @@ def inexact_alm_l1(
         iteration += 1
 
         stop_crit = xp.norm_fro(dY) / (d_norm + 1e-9)
-        if verbose:
+        if pbar is not None:
             pbar.update()
         if stop_crit < tol:
             converged = True
 
     if iteration == max_iter:
-        print("Maximum ALM iterations reached without full convergence.")  # noqa: T201
-    if verbose:
+        print("Maximum ALM iterations reached without full convergence.")
+    if pbar is not None:
         pbar.close()
 
     # Fold B1 into D_field

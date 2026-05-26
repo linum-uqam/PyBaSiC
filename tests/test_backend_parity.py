@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+
 from pybasic.backend import ArrayNamespace, Backend, get_xp
 
 torch = pytest.importorskip(
@@ -28,13 +29,13 @@ def rng() -> np.random.Generator:
 
 @pytest.fixture
 def rand2d(rng: np.random.Generator) -> np.ndarray:
-    """Return a random 16×16 float32 matrix."""
+    """Return a random 16x16 float32 matrix."""
     return rng.random((16, 16)).astype(np.float32)
 
 
 @pytest.fixture
 def rand3d(rng: np.random.Generator) -> np.ndarray:
-    """Return a random 4×16×16 float32 array (small image stack)."""
+    """Return a random 4x16x16 float32 array (small image stack)."""
     return rng.random((4, 16, 16)).astype(np.float32)
 
 
@@ -206,7 +207,7 @@ class TestAlmParity:
 
     def test_alm_ib_agrees(self, rand3d: np.ndarray) -> None:
         """Flat-field estimate from NumPy and Torch agree to atol=1e-4."""
-        from pybasic._alm import inexact_alm_l1  # noqa: PLC0415
+        from pybasic._alm import inexact_alm_l1
 
         xp_np = get_xp(Backend.NUMPY)
         xp_th = get_xp(Backend.TORCH)

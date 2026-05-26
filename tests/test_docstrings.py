@@ -64,7 +64,7 @@ def _iter_public_objects() -> list[tuple[str, object]]:
     list of tuple
         Each item is ``(qualified_name, callable_or_class)``.
     """
-    import pybasic  # noqa: PLC0415
+    import pybasic
 
     result: list[tuple[str, object]] = []
     seen: set[int] = set()
