@@ -28,6 +28,7 @@ dev = [
     "ty>=0.0.1a14",
     "numpydoc>=1.9",
     "pre-commit>=4.2",
+    "matplotlib>=3.10",
 ]
 
 [project.scripts]
@@ -51,6 +52,7 @@ target-version = "py314"
 line-length = 127
 fix = true
 include = ["pybasic*", "tests*", "scripts*"]
+exclude = ["tests/data"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "RUF", "SIM", "C4", "PIE", "PTH",

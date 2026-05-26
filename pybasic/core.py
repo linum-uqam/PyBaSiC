@@ -332,9 +332,9 @@ class BaSiC:
 
         # Up-sample to the full image resolution
         h, w = self.image_shape
-        self.flatfield_fullsize = cv2.resize(self.flatfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
+        self.flatfield_fullsize = cv2.resize(self.flatfield, (w, h), interpolation=cv2.INTER_LINEAR)
         self.flatfield_fullsize = self.flatfield_fullsize / (self.flatfield_fullsize.mean() + 1e-9)
-        self.darkfield_fullsize = cv2.resize(self.darkfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
+        self.darkfield_fullsize = cv2.resize(self.darkfield, (w, h), interpolation=cv2.INTER_LINEAR)
 
     def normalize(self, img: NDArray, *, clip: bool = True, epsilon: float = 1e-6) -> NDArray:
         """Apply the estimated shading correction to a single image.

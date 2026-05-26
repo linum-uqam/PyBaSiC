@@ -84,3 +84,119 @@ jobs:
 
       - name: Run tests (including backend parity)
         run: uv run pytest tests/ -v --tb=short -k "not cli"
+
+  test-vignette-validation:
+    name: "Tests — vignette validation (sbh-simulator)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check out sbh_simulator (modernisation)
+        uses: actions/checkout@v6
+        with:
+          repository: linum-uqam/sbh_simulator
+          ref: master
+          token: ${{ secrets.LINUM_ACCESS_TOKEN }}
+          path: sbh_simulator
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install PyBaSiC dev extras
+        run: uv sync --extra dev
+
+      - name: Install sbh-simulator into the venv
+        run: uv pip install ./sbh_simulator
+
+      - name: Run vignette validation tests
+        run: uv run pytest tests/test_vignette_validation.py -v --tb=short
+
+      - name: Generate visual validation images
+        id: visualize
+        if: always()
+        run: |
+          uv run python scripts/visualize_vignette_correction.py \
+            --output vignette-results/
+
+      - name: Upload vignette images (ZIP artifact)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vignette-correction-images
+          path: vignette-results/*.png
+
+      - name: Push images to ci-artifacts branch
+        if: always()
+        run: |
+          cd vignette-results
+          git init
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git checkout -b ci-artifacts
+          git add *.png
+          git commit -m "ci: vignette results from run ${{ github.run_id }}"
+          git push --force \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            ci-artifacts
+
+      - name: Write step summary
+        if: always()
+        run: |
+          BASE="https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts"
+          echo '## PyBaSiC — Vignette Correction Visualisation' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo "### Gaussian" >> "$GITHUB_STEP_SUMMARY"
+          echo "![Gaussian vignette correction]($BASE/vignette_correction_gaussian.png)" >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo "### Zernike" >> "$GITHUB_STEP_SUMMARY"
+          echo "![Zernike vignette correction]($BASE/vignette_correction_zernike.png)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment vignette images on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const base = `https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts`;
+            const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            const body = [
+              '## PyBaSiC — Vignette Correction Visualisation',
+              '',
+              `_Run [#${{ github.run_id }}](${runUrl}) · commit ${{ github.sha }}_`,
+              '',
+              '### Gaussian',
+              `![Gaussian vignette correction](${base}/vignette_correction_gaussian.png)`,
+              '',
+              '### Zernike',
+              `![Zernike vignette correction](${base}/vignette_correction_zernike.png)`,
+            ].join('\n');
+
+            const marker = '<!-- vignette-validation-comment -->';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: marker + '\n' + body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: marker + '\n' + body,
+              });
+            }
