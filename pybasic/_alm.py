@@ -56,7 +56,7 @@ def inexact_alm_l1(
     verbose: bool = False,
     xp: ArrayNamespace | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """L1 minimisation via the inexact augmented Lagrangian method.
+    r"""L1 minimisation via the inexact augmented Lagrangian method.
 
     Decomposes a stack of *N* images into a low-rank flat-field component
     **Ib** and a sparse residual **Ir**, optionally estimating a dark-field
@@ -70,21 +70,38 @@ def inexact_alm_l1(
     imgs : numpy.ndarray, shape (N, P, Q)
         Stack of *N* images each of spatial size *P x Q*.
     l_s : float
-        Flat-field regularisation parameter (controls DCT-domain sparsity).
+        Flat-field regularisation parameter.  Controls DCT-domain sparsity
+        of the flat-field: larger values produce smoother flat-fields.
+        Typically set automatically by
+        :meth:`~pybasic.core.BaSiC.prepare` as ``dct_sum / 800``.
     l_d : float
-        Dark-field regularisation parameter.
+        Dark-field regularisation parameter.  Larger values push the
+        estimated dark-field toward zero.  Typically set as
+        ``dct_sum / 2000``.
     tol : float
-        Convergence tolerance on the relative Frobenius-norm residual.
+        Convergence tolerance.  The loop exits when the relative
+        Frobenius-norm residual
+
+        .. math::
+
+            \\frac{\\|D - \\text{repmat}(S \\odot b) - E\\|_F}{\\|D\\|_F}
+            \\leq \\text{tol}
+
+        Default ``1e-6``; rarely needs adjustment.
     max_iter : int
-        Maximum number of ALM iterations.
+        Maximum number of ALM iterations per call.  Default ``500``.
     weight : numpy.ndarray or float
         Optional weight matrix for the reweighted L1 norm.  Must broadcast
-        to shape *(N, P·Q)* or be a scalar.
+        to shape *(N, P·Q)* or be a scalar.  Updated externally by
+        :meth:`~pybasic.core.BaSiC.update_weights`.
     estimate_darkfield : bool
         When ``True`` the dark-field component is estimated in addition to
         the flat-field.
     rho : float
-        Lagrange-multiplier step-size growth factor.
+        Lagrange-multiplier step-size growth factor.  At each iteration,
+        ``μ ← rho · μ``.  Larger ``rho`` (e.g. ``2.0``) converges faster
+        but may overshoot and oscillate for ill-conditioned stacks; smaller
+        values (e.g. ``1.1``) are more stable but slower.  Default ``1.5``.
     verbose : bool
         Show a ``tqdm`` progress bar.
     xp : ArrayNamespace or None
@@ -102,13 +119,22 @@ def inexact_alm_l1(
 
     Notes
     -----
-    The algorithm solves::
+    Each ALM iteration performs the following closed-form sub-steps:
 
-        min_{S,E}  λ_s ‖S̃‖₁ + ‖W ⊙ E‖₁
-        s.t.       D = repmat(S · B) + E
+    1. **Flat-field update** — soft-threshold the DCT-II coefficients of
+       the current flat-field estimate at threshold ``l_s / μ``.
+    2. **Residual update** — pixel-wise soft-threshold of the weighted
+       residual matrix at threshold ``1 / μ``.
+    3. **Baseline update** — project the current estimate onto the
+       per-image mean.
+    4. **Dark-field update** (if ``estimate_darkfield``) — soft-threshold
+       in pixel space at threshold ``l_d / μ``.
+    5. **Multiplier update** — gradient-ascent step with step size ``1/μ``.
+    6. **μ update** — ``μ ← min(rho · μ, μ_max)`` where ``μ_max`` is a
+       stability ceiling derived from the spectral norm of the data.
 
-    where ``S̃`` are the DCT-II coefficients of the flat-field *S*, **B**
-    is a per-image baseline vector, and **W** is the reweighting matrix.
+    The outer reweighting loop (:meth:`~pybasic.core.BaSiC.update`) calls
+    this function multiple times, updating the weight matrix between calls.
 
     .. rubric:: References
 

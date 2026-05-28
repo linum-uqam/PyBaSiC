@@ -371,6 +371,21 @@ class ArrayNamespace:
         torch.dtype
             Closest PyTorch equivalent.  Defaults to ``float32`` for unknown
             types.
+
+        Notes
+        -----
+        Supported mappings:
+
+        ============== ====================
+        NumPy dtype    PyTorch dtype
+        ============== ====================
+        ``float32``    ``torch.float32``
+        ``float64``    ``torch.float64``
+        ``int32``      ``torch.int32``
+        ``int64``      ``torch.int64``
+        ``bool_``      ``torch.bool``
+        *other*        ``torch.float32``
+        ============== ====================
         """
         _map = {
             np.float32: self._torch.float32,

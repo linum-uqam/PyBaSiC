@@ -5,6 +5,17 @@ Public API
 BaSiC
     Main estimator class.  See :class:`pybasic.core.BaSiC` for full
     documentation.
+algorithms
+    Low-level ALM solver and soft-threshold operator exposed via
+    :mod:`pybasic.algorithms` for users who want direct access to the
+    numerical core (e.g. custom reweighting schemes).
+
+Quick start
+-----------
+See the :ref:`Getting Started <getting_started>` page in the online
+documentation for install instructions, CLI reference, and worked examples.
+See the :ref:`Parameter Tuning <parameters>` page for guidance on every
+tuning knob exposed by :class:`BaSiC`.
 
 Examples
 --------
@@ -17,7 +28,8 @@ Examples
 >>> flatfield = model.get_flatfield()
 """
 
+from pybasic.algorithms import inexact_alm_l1, shrink
 from pybasic.core import BaSiC
 
 __version__ = "0.2.0"
-__all__ = ["BaSiC", "__version__"]
+__all__ = ["BaSiC", "__version__", "inexact_alm_l1", "shrink"]

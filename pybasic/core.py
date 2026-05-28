@@ -30,7 +30,7 @@ __all__ = ["BaSiC"]
 
 
 class BaSiC:
-    """Retrospective shading-correction estimator based on the BaSiC method.
+    r"""Retrospective shading-correction estimator based on the BaSiC method.
 
     Accepts a collection of images in several formats (directory, file list,
     NumPy array stack, or list of arrays), resizes them to a working
@@ -59,10 +59,41 @@ class BaSiC:
     device : str or None
         PyTorch device string (e.g. ``"cuda:0"``).  Ignored for NumPy.
 
+    Attributes
+    ----------
+    working_size : int
+        Side length (pixels) of the square working resolution.  Images are
+        resized to ``working_size x working_size`` before optimisation.
+        Default ``128``.  Increase to ``256`` for finer flat-field detail.
+        Must be set before :meth:`prepare`.
+    epsilon : float
+        Stability constant $\varepsilon$ in the reweighted-L1 weight update.
+        Default ``0.1``.  Smaller values produce sharper weight contrast;
+        larger values approximate plain L1.
+    l_s : float or None
+        Flat-field regularisation weight $\\lambda_s$ (DCT-domain).
+        ``None`` triggers auto-tuning in :meth:`prepare`
+        (``dct_sum / 800``).  Override after calling :meth:`prepare` but
+        before :meth:`run`.
+    l_d : float or None
+        Dark-field regularisation weight $\\lambda_d$.
+        ``None`` triggers auto-tuning in :meth:`prepare`
+        (``dct_sum / 2000``).  Only effective when
+        ``estimate_darkfield=True``.
+    reweighting_tolerance : float
+        Convergence threshold for the outer reweighting loop (relative
+        change in flat-field and dark-field).  Default ``1e-3``.
+    max_reweighting_iterations : int
+        Hard cap on outer reweighting iterations.  Default ``10``.
+
     Raises
     ------
     TypeError
         If *input* is not one of the supported types.
+
+    See Also
+    --------
+    pybasic.algorithms.inexact_alm_l1 : The underlying ALM solver.
 
     Examples
     --------
@@ -211,6 +242,11 @@ class BaSiC:
         img_stack : numpy.ndarray or None
             Optional pre-loaded image stack *(N, H, W)*.  If ``None`` the
             stack is loaded according to ``input_type``.
+
+        See Also
+        --------
+        pybasic.core.BaSiC.l_s : Flat-field regularisation weight.
+        pybasic.core.BaSiC.l_d : Dark-field regularisation weight.
         """
         if img_stack is not None:
             self._load_images(img_stack)
@@ -318,6 +354,12 @@ class BaSiC:
         Notes
         -----
         :meth:`prepare` must be called before this method.
+
+        See Also
+        --------
+        pybasic.algorithms.inexact_alm_l1 : Inner ALM solver.
+        pybasic.core.BaSiC.normalize : Apply the estimated correction.
+        pybasic.core.BaSiC.write_images : Write corrected images to disk.
         """
         if self.verbose:
             pbar: tqdm.tqdm | None = tqdm.tqdm(desc="Reweighting", total=self.max_reweighting_iterations)
@@ -401,6 +443,14 @@ class BaSiC:
         ----------
         flatfield : numpy.ndarray
             2-D flat-field image.
+
+        Notes
+        -----
+        The array is transposed (``flatfield.T``) before resizing to match
+        OpenCV's column-major coordinate convention, then transposed back.
+        The net effect on a symmetric flat-field is invisible; for
+        asymmetric profiles this convention must be kept consistent with
+        :meth:`get_flatfield`.
         """
         h, w = self.image_shape
         self.flatfield_fullsize = cv2.resize(flatfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
@@ -414,6 +464,11 @@ class BaSiC:
         ----------
         darkfield : numpy.ndarray
             2-D dark-field image.
+
+        Notes
+        -----
+        The array is transposed (``darkfield.T``) before resizing, matching
+        the convention of :meth:`set_flatfield`.
         """
         h, w = self.image_shape
         self.darkfield_fullsize = cv2.resize(darkfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
