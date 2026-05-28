@@ -33,9 +33,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from linum_basic.core import BaSiC
+from linum_basic.data import load_sample_image
 
 _REPO_ROOT = Path(__file__).parent.parent
-_SOURCE_IMAGE = _REPO_ROOT / "tests" / "data" / "source_image.jpg"
 _OUTPUT_DIR = _REPO_ROOT / "docs" / "_static" / "demo"
 _TILE = 128
 
@@ -49,16 +49,26 @@ def _make_vignette(size: int, sigma_frac: float = 0.45) -> np.ndarray:
     return (v / v.max()).astype(np.float32)
 
 
-def _tile_image(path: Path, tile: int) -> tuple[np.ndarray, int, int]:
-    """Load *path* as grayscale and return a float32 stack of (N, tile, tile) tiles.
+def _make_darkfield(size: int, sigma_frac: float = 0.35, max_offset: float = 0.05) -> np.ndarray:
+    """Return a smooth Gaussian dark-field offset of shape ``(size, size)``.
+
+    The dark-field peaks at the image centre (simulating auto-fluorescence
+    from the objective lens) and falls off to near-zero at the edges.
+    """
+    y, x = np.mgrid[0:size, 0:size].astype(np.float32)
+    cy, cx = (size - 1) / 2, (size - 1) / 2
+    sigma = size * sigma_frac
+    d = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
+    return (d * max_offset).astype(np.float32)
+
+
+def _tile_image(img: np.ndarray, tile: int) -> tuple[np.ndarray, int, int]:
+    """Tile a 2-D uint8 image into a float32 stack of (N, tile, tile) patches.
 
     Returns
     -------
     tuple of (stack, nh, nw) where stack has shape (nh*nw, tile, tile).
     """
-    img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise FileNotFoundError(f"Cannot read {path}")
     h, w = img.shape
     nh, nw = h // tile, w // tile
     cropped = img[: nh * tile, : nw * tile].astype(np.float32) / 255.0
@@ -86,7 +96,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 1. Build corrupted stack
     # ------------------------------------------------------------------
-    tiles, nh, nw = _tile_image(_SOURCE_IMAGE, _TILE)
+    tiles, nh, nw = _tile_image(load_sample_image(), _TILE)
     vignette = _make_vignette(_TILE)
     corrupted = tiles * vignette[np.newaxis]  # broadcast over stack axis
 
@@ -180,6 +190,96 @@ def main() -> None:
     print(f"Saved: {full_path}")
     print(f"Saved: {out / 'full_corrupted.png'}")
     print(f"Saved: {out / 'full_corrected.png'}")
+
+    # ------------------------------------------------------------------
+    # 6. Dark-field demo — joint flat-field + dark-field estimation
+    # ------------------------------------------------------------------
+    print("\nGenerating darkfield demo images...")
+    rng = np.random.default_rng(42)
+    gt_darkfield = _make_darkfield(_TILE)
+    gt_vignette = _make_vignette(_TILE)
+    gt_vignette /= gt_vignette.mean()  # normalise so mean == 1 (matches BaSiC convention)
+
+    # Apply degradation: corrupted = clean * flatfield + darkfield + small noise
+    noise_std = 0.005
+    corrupted_df = tiles * gt_vignette[np.newaxis] + gt_darkfield[np.newaxis]
+    corrupted_df += rng.normal(0, noise_std, corrupted_df.shape).astype(np.float32)
+    corrupted_df = np.clip(corrupted_df, 0, 1)
+
+    print(f"Running BaSiC (estimate_darkfield=True) on {len(corrupted_df)} tiles...")
+    model_df = BaSiC(corrupted_df, estimate_darkfield=True, verbose=True)
+    model_df.prepare()
+    model_df.run()
+    est_flatfield = model_df.get_flatfield()
+    est_darkfield = model_df.get_darkfield()
+
+    # Pick the most visually rich tile
+    best_df = int(np.argmax(corrupted_df.std(axis=(1, 2))))
+    sample_corrupt_df = corrupted_df[best_df]
+    sample_corrected_df = model_df.normalize(sample_corrupt_df)
+
+    # Save individual PNG assets
+    _save_gray(gt_darkfield, "darkfield_gt.png")
+    _save_gray(est_darkfield, "darkfield_estimated.png")
+
+    # 6-panel comparison: 2 rows x 3 cols
+    # Row 0: corrupted tile | GT flat-field | GT dark-field
+    # Row 1: corrected tile | estimated flat-field | estimated dark-field
+    fig3, axes3 = plt.subplots(2, 3, figsize=(12, 7))
+    fig3.patch.set_facecolor("#0d1117")
+
+    # Shared colour limits for flat-field row and dark-field row
+    ff_vmin = min(gt_vignette.min(), est_flatfield.min())
+    ff_vmax = max(gt_vignette.max(), est_flatfield.max())
+    df_vmax = max(gt_darkfield.max(), est_darkfield.max())
+
+    panels_df = [
+        (axes3[0, 0], sample_corrupt_df, "gray", "Corrupted tile\n(vignette + dark-field)", None, None),
+        (axes3[0, 1], gt_vignette, "viridis", f"GT flat-field\n(mean = {gt_vignette.mean():.2f})", ff_vmin, ff_vmax),
+        (axes3[0, 2], gt_darkfield, "inferno", f"GT dark-field\n(max = {gt_darkfield.max():.3f})", 0, df_vmax),
+        (axes3[1, 0], sample_corrected_df, "gray", "Corrected tile", None, None),
+        (
+            axes3[1, 1],
+            est_flatfield,
+            "viridis",
+            f"Estimated flat-field\n(mean = {est_flatfield.mean():.2f})",
+            ff_vmin,
+            ff_vmax,
+        ),
+        (
+            axes3[1, 2],
+            est_darkfield,
+            "inferno",
+            f"Estimated dark-field\n(max = {est_darkfield.max():.3f})",
+            0,
+            df_vmax,
+        ),
+    ]
+    for ax, data, cmap, title, vmin, vmax in panels_df:
+        kw: dict = {"interpolation": "nearest"}
+        if vmin is not None:
+            kw["vmin"] = vmin
+            kw["vmax"] = vmax
+        im3 = ax.imshow(data, cmap=cmap, **kw)
+        fig3.colorbar(im3, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_title(title, color="white", fontsize=10, pad=6)
+        ax.axis("off")
+
+    fig3.suptitle(
+        "BaSiC dark-field estimation demo — ground truth vs estimate",
+        color="white",
+        fontsize=12,
+        fontweight="bold",
+        y=1.01,
+    )
+    fig3.tight_layout()
+    darkfield_path = out / "darkfield_demo_comparison.png"
+    fig3.savefig(darkfield_path, dpi=150, bbox_inches="tight", facecolor=fig3.get_facecolor())
+    plt.close(fig3)
+
+    print(f"Saved: {darkfield_path}")
+    print(f"Saved: {out / 'darkfield_gt.png'}")
+    print(f"Saved: {out / 'darkfield_estimated.png'}")
     print("Done.")
 
 

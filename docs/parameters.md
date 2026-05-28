@@ -22,6 +22,7 @@ troubleshooting recipes.
 | `l_d` | post-init | `float\|None` | auto | Dark-field regularisation weight ($\lambda_d$) |
 | `reweighting_tolerance` | post-init | `float` | `1e-3` | Outer-loop convergence threshold |
 | `max_reweighting_iterations` | post-init | `int` | `10` | Hard cap on outer iterations |
+| `warm_start_reweighting` | post-init | `bool` | `False` | Warm-start ALM primal variables between outer iterations |
 
 ---
 
@@ -246,6 +247,42 @@ exploratory work.
 Hard cap on the number of outer reweighting iterations regardless of
 convergence.  Increase to `20` if the flat-field is still changing
 noticeably at iteration 10 (check with `verbose=True`).
+
+---
+
+### `warm_start_reweighting`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `False` |
+
+When `True`, the primal variables from the previous inner ALM solve
+($S_f$, $I_r$, $B$, $D$) are passed as a warm start to the next outer
+reweighting iteration instead of re-initialising from zeros.  The
+Lagrange multiplier $Y$ and step size $\mu$ are always reset so that
+the changed weight matrix $\mathbf{W}$ does not cause divergence.
+
+**When to enable:** only when running many reweighting iterations
+(`max_reweighting_iterations` ≥ 5) on large stacks where each inner
+ALM solve is expensive.  The warm start can reduce the total number of
+inner iterations by providing a better initial point.
+
+**When to leave off (default):** for typical usage the default cold
+start gives identical results at negligible extra cost because the
+inner ALM loop converges quickly from zero.  Warm-starting with
+changed weights occasionally affects the dark-field estimation
+sensitivity.
+
+**Usage:**
+
+```python
+model = BaSiC(stack, estimate_darkfield=True)
+model.max_reweighting_iterations = 15
+model.warm_start_reweighting = True   # enable warm start
+model.prepare()
+model.run()
+```
 
 ---
 

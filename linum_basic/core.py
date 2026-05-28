@@ -13,8 +13,9 @@ References
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import cv2
 import numpy as np
@@ -154,6 +155,7 @@ class BaSiC:
         self.reweighting_tolerance: float = 1e-3
         self.max_reweighting_iterations: int = 10
         self.reweighting_iteration: int = 0
+        self.warm_start_reweighting: bool = False
 
         # State (populated by prepare / run)
         self._flag_reweighting: bool = True
@@ -164,6 +166,50 @@ class BaSiC:
         self.darkfield: NDArray = np.zeros((self.working_size, self.working_size), dtype=np.float32)
         self.flatfield_fullsize: NDArray = np.ones((1, 1), dtype=np.float32)
         self.darkfield_fullsize: NDArray = np.zeros((1, 1), dtype=np.float32)
+        self._alm_state: dict | None = None  # warm-start state for outer reweighting
+
+    # ------------------------------------------------------------------
+    # Factory classmethods
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_array(cls, stack: NDArray, **kwargs: Any) -> BaSiC:
+        """Construct a :class:`BaSiC` instance directly from an image array.
+
+        Parameters
+        ----------
+        stack : numpy.ndarray, shape (N, H, W)
+            Pre-loaded image stack.
+        **kwargs
+            Forwarded to :class:`BaSiC.__init__`.
+        """
+        return cls(stack, **kwargs)
+
+    @classmethod
+    def from_directory(cls, path: str | Path, **kwargs: Any) -> BaSiC:
+        """Construct a :class:`BaSiC` instance from a directory of images.
+
+        Parameters
+        ----------
+        path : str or Path
+            Directory containing image files.
+        **kwargs
+            Forwarded to :class:`BaSiC.__init__`.
+        """
+        return cls(path, **kwargs)
+
+    @classmethod
+    def from_files(cls, file_list: list[str | Path], **kwargs: Any) -> BaSiC:
+        """Construct a :class:`BaSiC` instance from an explicit file list.
+
+        Parameters
+        ----------
+        file_list : list of str or Path
+            Ordered list of image file paths.
+        **kwargs
+            Forwarded to :class:`BaSiC.__init__`.
+        """
+        return cls(file_list, **kwargs)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -206,23 +252,36 @@ class BaSiC:
         if img_stack is not None:
             self.img_stack = img_stack
         elif self.input_type in {"directory", "files_list"}:
-            raw: list[NDArray] = []
-            gen = tqdm(self.files, desc="Loading images") if self.verbose else self.files
-            for path in gen:
-                img = cv2.imread(str(path), cv2.IMREAD_ANYDEPTH)
-                if img is not None:
-                    raw.append(img)
+            # Parallel I/O: cv2.imread releases the GIL, so threads overlap
+            # disk reads across multiple files at once.
+            n_workers = min(32, len(self.files))
+
+            def _read_one(path: Path) -> NDArray | None:
+                return cv2.imread(str(path), cv2.IMREAD_ANYDEPTH)
+
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                raw_iter = pool.map(_read_one, self.files)
+            if self.verbose:
+                raw_iter = tqdm(raw_iter, desc="Loading images", total=len(self.files), leave=False)
+            raw: list[NDArray] = [img for img in raw_iter if img is not None]
             self.img_stack = np.array(raw)
 
         self.n_images = self.img_stack.shape[0]
-        self.image_shape = self.img_stack.shape[1:]  # type: ignore[assignment]
+        self.image_shape = self.img_stack.shape[1:]
 
         new_shape = (self.working_size, self.working_size)
         interp = cv2.INTER_LINEAR if self.working_size > self.image_shape[0] else cv2.INTER_AREA
         resized = np.zeros([self.n_images, *new_shape], dtype=np.float32)
-        for i in range(self.n_images):
+
+        # Parallel resizing: cv2.resize releases the GIL; each worker writes
+        # to an independent row of the pre-allocated output array.
+        def _resize_one(i: int) -> None:
             img = self.img_stack[i].squeeze()
             resized[i] = cv2.resize(img.T, new_shape, interpolation=interp).T
+
+        with ThreadPoolExecutor(max_workers=min(32, self.n_images)) as pool:
+            list(pool.map(_resize_one, range(self.n_images)))
+
         self.img_stack_resized = resized
 
     # ------------------------------------------------------------------
@@ -271,7 +330,7 @@ class BaSiC:
 
         ws = self.working_size
         self.flatfield = np.ones((ws, ws), dtype=np.float32)
-        self.darkfield = np.random.default_rng().standard_normal((ws, ws)).astype(np.float32)
+        self.darkfield = np.zeros((ws, ws), dtype=np.float32)
         self.flatfield_fullsize = np.ones(self.image_shape, dtype=np.float32)
         self.darkfield_fullsize = np.zeros(self.image_shape, dtype=np.float32)
         self._W: NDArray = np.ones_like(self.img_sort)
@@ -279,6 +338,7 @@ class BaSiC:
         self._Ib: NDArray = np.zeros_like(self.img_sort)
         self._flag_reweighting = True
         self.reweighting_iteration = 0
+        self._alm_state: dict | None = None  # reset warm-start state
 
     def update_weights(self) -> None:
         """Update the reweighting matrix for the next ALM iteration.
@@ -313,7 +373,7 @@ class BaSiC:
         if self.l_s is None or self.l_d is None:
             msg = "l_s and l_d must be set before calling update(); call prepare() first."
             raise RuntimeError(msg)
-        Ib, Ir, D = inexact_alm_l1(
+        result = inexact_alm_l1(
             self.img_sort,
             self.l_s,
             self.l_d,
@@ -321,7 +381,12 @@ class BaSiC:
             estimate_darkfield=self.estimate_darkfield,
             verbose=self.verbose,
             xp=self._xp,
+            warm_start=self._alm_state if self.warm_start_reweighting else None,
+            return_state=self.warm_start_reweighting,
         )
+        Ib, Ir, D, alm_state = result
+        if self.warm_start_reweighting:
+            self._alm_state = alm_state
 
         self._Ib = Ib
         self._Ir = Ir
@@ -335,7 +400,13 @@ class BaSiC:
 
         mad_flat = float(np.abs(self.flatfield - last_flatfield).sum() / (np.abs(last_flatfield).sum() + 1e-9))
         mad_dark_abs = float(np.abs(self.darkfield - last_darkfield).sum())
-        mad_dark = 0.0 if mad_dark_abs < 1e-7 else mad_dark_abs / max(float(np.abs(last_darkfield).sum()), 1e-6)
+        last_dark_sum = float(np.abs(last_darkfield).sum())
+        if mad_dark_abs < 1e-7:
+            mad_dark = 0.0
+        elif last_dark_sum < 1e-7:
+            mad_dark = 1.0  # previous estimate was zero; relative change is undefined, assume not converged
+        else:
+            mad_dark = mad_dark_abs / last_dark_sum
 
         if (
             max(mad_flat, mad_dark) <= self.reweighting_tolerance
@@ -362,7 +433,7 @@ class BaSiC:
         :meth:`prepare` must be called before this method.
         """
         if self.verbose:
-            pbar: tqdm | None = tqdm(desc="Reweighting", total=self.max_reweighting_iterations)
+            pbar: tqdm | None = tqdm(desc="Reweighting", total=self.max_reweighting_iterations, leave=False)
         else:
             pbar = None
         while self._flag_reweighting:
@@ -429,10 +500,20 @@ class BaSiC:
         out_dir = Path(directory)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        for i in tqdm(range(self.n_images), desc="Shading correction"):
-            corrected = self.normalize(self.img_stack[i], epsilon=epsilon)
-            out_path = out_dir / self.files[i].name
-            cv2.imwrite(str(out_path), corrected)
+        # Vectorised normalisation over the whole stack at once, then
+        # parallel write (cv2.imwrite releases the GIL).
+        stack_f32 = self.img_stack.astype(np.float32)
+        corrected_stack = (stack_f32 - self.darkfield_fullsize) / (self.flatfield_fullsize + epsilon)
+        if self.img_stack.dtype not in (np.float32, np.float64):
+            info = np.iinfo(self.img_stack.dtype)
+            corrected_stack = np.clip(corrected_stack, info.min, info.max)
+        corrected_stack = corrected_stack.astype(self.img_stack.dtype)
+
+        def _write_one(i: int) -> None:
+            cv2.imwrite(str(out_dir / self.files[i].name), corrected_stack[i])
+
+        with ThreadPoolExecutor(max_workers=min(32, self.n_images)) as pool:
+            list(tqdm(pool.map(_write_one, range(self.n_images)), desc="Shading correction", total=self.n_images, leave=False))
 
     def set_flatfield(self, flatfield: NDArray) -> None:
         """Override the estimated flat-field with a pre-computed one.

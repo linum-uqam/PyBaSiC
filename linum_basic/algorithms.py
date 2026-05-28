@@ -20,7 +20,7 @@ Run the ALM solver directly on a pre-loaded image stack:
 >>> rng = np.random.default_rng(0)
 >>> imgs = rng.standard_normal((20, 128, 128)).astype(np.float32)
 >>> imgs_sorted = np.sort(imgs, axis=0)
->>> Ib, Ir, D = inexact_alm_l1(imgs_sorted, l_s=0.5, l_d=0.2)
+>>> Ib, Ir, D, _ = inexact_alm_l1(imgs_sorted, l_s=0.5, l_d=0.2)
 
 See Also
 --------

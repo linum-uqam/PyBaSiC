@@ -93,6 +93,21 @@ $$
      {\|\mathbf{D}\|_F} \leq \text{tol}
 $$
 
+The dark-field $B$ is initialised to **zero** (not random noise) so that
+the very first ALM iterate has a well-defined baseline.  The per-iteration
+convergence check for the dark-field uses a *relative* mean-absolute
+deviation:
+
+$$
+\text{mad\_dark} = \frac{\|B^{(k)} - B^{(k-1)}\|_1}{\|B^{(k-1)}\|_1}
+$$
+
+When $\|B^{(k-1)}\|_1 = 0$ (i.e. the previous iterate was still all-zero),
+the relative change is undefined.  In that case the solver conservatively
+treats the dark-field as *not yet converged* (sets $\text{mad\_dark} = 1$)
+rather than clamping the denominator to a small epsilon, which would
+artificially report convergence and freeze the dark-field at zero.
+
 ---
 
 ## Reweighted L1
