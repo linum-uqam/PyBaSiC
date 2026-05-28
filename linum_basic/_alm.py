@@ -9,7 +9,7 @@ so the same code can run on CPU (NumPy) or GPU (PyTorch).
 from __future__ import annotations
 
 import numpy as np
-import tqdm
+from tqdm.auto import tqdm
 
 from linum_basic.backend import ArrayNamespace, Backend, get_xp
 
@@ -181,7 +181,7 @@ def inexact_alm_l1(
     converged = False
     iteration = 0
 
-    pbar: tqdm.tqdm | None = tqdm.tqdm(desc="ALM Iteration", total=max_iter) if verbose else None
+    pbar: tqdm | None = tqdm(desc="ALM Iteration", total=max_iter) if verbose else None
     S_spatial = xp.zeros((1, p * q), dtype=np.float32)
     Ib = xp.zeros_like(D)
 

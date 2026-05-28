@@ -9,8 +9,14 @@ To run them locally, install the ``notebooks`` extra:
 
 .. code-block:: bash
 
-   pip install linum-basic[notebooks]
-   jupyter notebook docs/notebooks/basic_usage.ipynb
+   uv run --with linum-basic[notebooks] jupyter notebook docs/notebooks/basic_usage.ipynb
+
+Or, if you have the repository checked out:
+
+.. code-block:: bash
+
+   uv sync --extra notebooks
+   uv run jupyter notebook docs/notebooks/basic_usage.ipynb
 
 .. toctree::
    :maxdepth: 1

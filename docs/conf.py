@@ -75,6 +75,9 @@ nbsphinx_kernel_name = "python3"
 nbsphinx_allow_errors = False
 # Increase per-cell timeout for the ALM solver (seconds).
 nbsphinx_timeout = 120
+# Embed ipywidgets widget state so tqdm.auto progress bars render inline
+# as static HTML rather than as raw text streams.
+nbsphinx_widgets_path = ""  # use CDN delivery of the widget JS
 
 # Mermaid: interactive zoom/pan + fullscreen, with readable defaults.
 mermaid_d3_zoom = True
