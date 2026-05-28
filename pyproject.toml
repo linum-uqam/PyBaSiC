@@ -5,12 +5,13 @@ description = "Python implementation of the BaSiC shading correction algorithm"
 authors = [{ name = "Joël Lefebvre", email = "lefebvre.joel@uqam.ca" }]
 readme = "README.md"
 requires-python = ">=3.14"
-license = { text = "MIT" }
+license = "GPL-3.0-or-later"
 keywords = ["shading correction", "illumination", "microscopy", "BaSiC"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Image Processing",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
 ]
 dependencies = [
     "numpy>=2.2",
@@ -22,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 gpu = ["torch>=2.7"]
 docs = [
+    "sbh-simulator",
     "sphinx>=9.1",
     "pydata-sphinx-theme>=0.17",
     "sphinx-autoapi>=3.8",
@@ -49,6 +51,7 @@ dev = [
     "matplotlib>=3.10",
 ]
 notebooks = [
+    "sbh-simulator",
     "matplotlib>=3.10",
     "notebook>=7.3",
     "ipykernel>=6.29",
@@ -60,6 +63,9 @@ basic_shading_correction = "linum_basic.cli:main"
 
 [project.urls]
 Repository = "https://github.com/linum-uqam/Linum-BaSiC"
+
+[tool.uv.sources]
+sbh-simulator = { git = "https://github.com/linum-uqam/sbh_simulator.git", branch = "master" }
 
 [build-system]
 requires = ["hatchling"]

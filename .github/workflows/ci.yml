@@ -118,8 +118,8 @@ jobs:
       - name: Install linum-basic dev extras
         run: uv sync --extra dev
 
-      - name: Install sbh-simulator into the venv
-        run: uv pip install ./sbh_simulator
+      - name: Install sbh-simulator into the venv (core deps only, no training)
+        run: uv pip install "./sbh_simulator"
 
       - name: Run vignette validation tests
         run: uv run pytest tests/test_vignette_validation.py -v --tb=short
