@@ -44,6 +44,11 @@ dev = [
     "pre-commit>=4.2",
     "matplotlib>=3.10",
 ]
+notebooks = [
+    "matplotlib>=3.10",
+    "notebook>=7.3",
+    "ipykernel>=6.29",
+]
 
 [project.scripts]
 basic_shading_correction = "linum_basic.cli:main"
