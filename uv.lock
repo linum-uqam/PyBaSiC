@@ -2089,7 +2089,7 @@ wheels = [
 [[package]]
 name = "sbh-simulator"
 version = "0.1.0"
-source = { git = "https://github.com/linum-uqam/sbh_simulator.git?branch=master#8d29dfeb9c82c41f820f924e6de6fba016d22f63" }
+source = { git = "https://github.com/linum-uqam/sbh_simulator.git?branch=master#0364277ec3cf0e7085e7b0766587db13c2b8dad0" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
