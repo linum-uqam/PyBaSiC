@@ -271,7 +271,7 @@ class BaSiC:
 
         ws = self.working_size
         self.flatfield = np.ones((ws, ws), dtype=np.float32)
-        self.darkfield = np.random.default_rng().standard_normal((ws, ws)).astype(np.float32)
+        self.darkfield = np.zeros((ws, ws), dtype=np.float32)
         self.flatfield_fullsize = np.ones(self.image_shape, dtype=np.float32)
         self.darkfield_fullsize = np.zeros(self.image_shape, dtype=np.float32)
         self._W: NDArray = np.ones_like(self.img_sort)
@@ -335,7 +335,13 @@ class BaSiC:
 
         mad_flat = float(np.abs(self.flatfield - last_flatfield).sum() / (np.abs(last_flatfield).sum() + 1e-9))
         mad_dark_abs = float(np.abs(self.darkfield - last_darkfield).sum())
-        mad_dark = 0.0 if mad_dark_abs < 1e-7 else mad_dark_abs / max(float(np.abs(last_darkfield).sum()), 1e-6)
+        last_dark_sum = float(np.abs(last_darkfield).sum())
+        if mad_dark_abs < 1e-7:
+            mad_dark = 0.0
+        elif last_dark_sum < 1e-7:
+            mad_dark = 1.0  # previous estimate was zero; relative change is undefined, assume not converged
+        else:
+            mad_dark = mad_dark_abs / last_dark_sum
 
         if (
             max(mad_flat, mad_dark) <= self.reweighting_tolerance
