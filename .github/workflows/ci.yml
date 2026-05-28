@@ -122,14 +122,10 @@ jobs:
         run: uv pip install "./sbh_simulator"
 
       - name: Run vignette validation tests
-        run: uv run pytest tests/test_vignette_validation.py -v --tb=short
-
-      - name: Generate visual validation images
-        id: visualize
-        if: always()
         run: |
-          uv run python scripts/visualize_vignette_correction.py \
-            --output vignette-results/
+          mkdir -p vignette-results
+          LINUM_BASIC_VIGNETTE_ARTIFACT_DIR=${{ github.workspace }}/vignette-results \
+          uv run pytest tests/test_vignette_validation.py -v --tb=short -s
 
       - name: Upload vignette images (ZIP artifact)
         if: always()
