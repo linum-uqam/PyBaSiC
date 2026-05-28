@@ -244,7 +244,6 @@ def inexact_alm_l1(
                 A1_offset = R_np[mask_valid_b].mean(axis=0, keepdims=True) - float(b_valid.mean()) * S_np
             else:
                 A1_offset = np.zeros_like(S_np)
-            A1_offset = A1_offset - A1_offset.mean()
             A_offset = A1_offset - Z
 
             Dr_f = np.asarray(xp.dctn(A_offset.reshape(p, q), norm="ortho"))

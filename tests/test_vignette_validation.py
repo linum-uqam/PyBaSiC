@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: MIT
 """Integration test: sbh-simulator vignette -> Linum BaSiC recovery.
 
 Pipeline (single source of truth for both the test suite and the
@@ -45,9 +44,10 @@ except ImportError:
 
 _TILE = 128
 _CORRELATION_THRESHOLD = 0.85
-# Darkfield recovery is a best-effort secondary output of BaSiC (the algorithm
-# is primarily designed for flat-field correction).  We log the correlation for
-# the CI visualisation but do not enforce a minimum threshold.
+# Dark-field recovery uses the same optimisation pass as flat-field recovery.
+# We enforce a lower threshold because the algorithm's primary objective is
+# flat-field correction; dark-field magnitude and shape are secondary.
+_DF_CORRELATION_THRESHOLD = 0.30
 _ARTIFACT_DIR_ENV = "LINUM_BASIC_VIGNETTE_ARTIFACT_DIR"
 
 pytestmark = pytest.mark.skipif(
@@ -183,10 +183,38 @@ def test_vignette_recovery(kind: str) -> None:
     df_corr = _pearson(model.darkfield_fullsize, gt_darkfield)
 
     print(f"[{kind}] flat-field Pearson r = {ff_corr:.3f}")
-    print(f"[{kind}] dark-field Pearson r = {df_corr:.3f}  (informational — no threshold enforced)")
+    print(f"[{kind}] dark-field Pearson r = {df_corr:.3f}")
 
     artifact_dir = os.environ.get(_ARTIFACT_DIR_ENV)
     if artifact_dir:
         _save_figure(kind, gt_flatfield, gt_darkfield, stack, model, ff_corr, df_corr, Path(artifact_dir))
 
     assert ff_corr > _CORRELATION_THRESHOLD, f"[{kind}] flat-field correlation {ff_corr:.3f} <= {_CORRELATION_THRESHOLD}"
+    assert df_corr > _DF_CORRELATION_THRESHOLD, f"[{kind}] dark-field correlation {df_corr:.3f} <= {_DF_CORRELATION_THRESHOLD}"
+
+
+@pytest.mark.parametrize("kind", ["gaussian", "zernike"])
+def test_flatfield_without_darkfield(kind: str) -> None:
+    """Flat-field recovery with dark-field estimation disabled.
+
+    Acts as an independent baseline: confirms flat-field quality is not
+    contingent on dark-field estimation being enabled.
+    """
+    rng = np.random.default_rng(0)
+    gt_flatfield, gt_darkfield = _generate_ground_truth(kind)
+    noise_std = 0.005
+    clean = _tile_source_image()
+    stack = clean * gt_flatfield[np.newaxis] + gt_darkfield[np.newaxis]
+    stack += rng.normal(0, noise_std, stack.shape).astype(np.float32)
+    stack = np.clip(stack, 0, 1)
+
+    model = BaSiC(stack, estimate_darkfield=False)
+    model.prepare()
+    model.run()
+
+    ff_corr = _pearson(model.flatfield_fullsize, gt_flatfield)
+    print(f"[{kind}/no-darkfield] flat-field Pearson r = {ff_corr:.3f}")
+
+    assert ff_corr > _CORRELATION_THRESHOLD, (
+        f"[{kind}/no-darkfield] flat-field correlation {ff_corr:.3f} <= {_CORRELATION_THRESHOLD}"
+    )
