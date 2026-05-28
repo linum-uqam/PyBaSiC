@@ -1,4 +1,4 @@
-# PyBaSiC
+# linum-basic
 
 *Python implementation of the BaSiC shading correction method — Python 3.14+, GPU-ready via PyTorch.*
 
@@ -17,7 +17,7 @@
 
 ### 1. Install uv
 
-PyBaSiC uses [uv](https://docs.astral.sh/uv/) for environment and dependency management.
+linum-basic uses [uv](https://docs.astral.sh/uv/) for environment and dependency management.
 Install it with:
 
 ```bash
@@ -43,7 +43,7 @@ basic_shading_correction --input /path/to/tiles --output /path/to/corrected
 Or from Python:
 
 ```python
-from pybasic import BaSiC
+from linum_basic import BaSiC
 
 model = BaSiC("/path/to/tiles")
 model.prepare()
@@ -131,7 +131,7 @@ options:
 
 ```python
 import numpy as np
-from pybasic import BaSiC
+from linum_basic import BaSiC
 
 # From a directory
 model = BaSiC("/path/to/tiles", estimate_darkfield=True, backend="auto")
@@ -173,7 +173,7 @@ make all           # lint + format check + typecheck + test
 
 ## Citation
 
-If you use PyBaSiC in your work, please cite the original paper:
+If you use linum-basic in your work, please cite the original paper:
 
 ```
 T. Peng, K. Thorn, T. Schroeder, L. Wang, F. J. Theis, C. Marr, N. Navab,

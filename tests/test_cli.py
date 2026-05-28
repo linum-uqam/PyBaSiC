@@ -1,4 +1,4 @@
-"""CLI integration tests for :mod:`pybasic.cli`.
+"""CLI integration tests for :mod:`linum_basic.cli`.
 
 Runs the ``basic_shading_correction`` entry-point as a subprocess against
 a temporary directory of synthetic TIFF images.  Tests are isolated and
@@ -49,7 +49,7 @@ class TestCliHelp:
     def test_help_exits_zero(self) -> None:
         """``--help`` exits with code 0."""
         result = subprocess.run(
-            [sys.executable, "-m", "pybasic.cli", "--help"],
+            [sys.executable, "-m", "linum_basic.cli", "--help"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -63,7 +63,7 @@ class TestCliHelp:
             [
                 sys.executable,
                 "-m",
-                "pybasic.cli",
+                "linum_basic.cli",
                 "--input",
                 str(tmp_path / "does_not_exist"),
                 "--output",
@@ -91,7 +91,7 @@ class TestCliEndToEnd:
             [
                 sys.executable,
                 "-m",
-                "pybasic.cli",
+                "linum_basic.cli",
                 "--input",
                 str(in_dir),
                 "--output",
@@ -119,7 +119,7 @@ class TestCliEndToEnd:
             [
                 sys.executable,
                 "-m",
-                "pybasic.cli",
+                "linum_basic.cli",
                 "--input",
                 str(in_dir),
                 "--output",
@@ -148,7 +148,7 @@ class TestCliEndToEnd:
             [
                 sys.executable,
                 "-m",
-                "pybasic.cli",
+                "linum_basic.cli",
                 "--input",
                 str(in_dir),
                 "--output",
@@ -174,7 +174,7 @@ class TestCliEndToEnd:
             [
                 sys.executable,
                 "-m",
-                "pybasic.cli",
+                "linum_basic.cli",
                 "--input",
                 str(in_dir),
                 "--output",

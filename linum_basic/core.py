@@ -20,8 +20,8 @@ import cv2
 import numpy as np
 import tqdm
 
-from pybasic._alm import inexact_alm_l1
-from pybasic.backend import get_xp
+from linum_basic._alm import inexact_alm_l1
+from linum_basic.backend import get_xp
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -93,7 +93,7 @@ class BaSiC:
 
     See Also
     --------
-    pybasic.algorithms.inexact_alm_l1 : The underlying ALM solver.
+    linum_basic.algorithms.inexact_alm_l1 : The underlying ALM solver.
 
     Examples
     --------
@@ -245,8 +245,8 @@ class BaSiC:
 
         See Also
         --------
-        pybasic.core.BaSiC.l_s : Flat-field regularisation weight.
-        pybasic.core.BaSiC.l_d : Dark-field regularisation weight.
+        linum_basic.core.BaSiC.l_s : Flat-field regularisation weight.
+        linum_basic.core.BaSiC.l_d : Dark-field regularisation weight.
         """
         if img_stack is not None:
             self._load_images(img_stack)
@@ -302,7 +302,7 @@ class BaSiC:
     def update(self) -> None:
         """Run one reweighted ALM pass and update flat/dark fields.
 
-        Calls :func:`~pybasic.algorithms.inexact_alm_l1` on the sorted image
+        Calls :func:`~linum_basic.algorithms.inexact_alm_l1` on the sorted image
         stack, updates the flat-field, dark-field, and reweighting matrix,
         then checks the convergence criterion to decide whether further
         reweighting iterations are needed.
@@ -351,15 +351,15 @@ class BaSiC:
         is reached.  After convergence the flat-field and dark-field are
         up-sampled back to the original image resolution.
 
+        See Also
+        --------
+        linum_basic.algorithms.inexact_alm_l1 : Inner ALM solver.
+        linum_basic.core.BaSiC.normalize : Apply the estimated correction.
+        linum_basic.core.BaSiC.write_images : Write corrected images to disk.
+
         Notes
         -----
         :meth:`prepare` must be called before this method.
-
-        See Also
-        --------
-        pybasic.algorithms.inexact_alm_l1 : Inner ALM solver.
-        pybasic.core.BaSiC.normalize : Apply the estimated correction.
-        pybasic.core.BaSiC.write_images : Write corrected images to disk.
         """
         if self.verbose:
             pbar: tqdm.tqdm | None = tqdm.tqdm(desc="Reweighting", total=self.max_reweighting_iterations)

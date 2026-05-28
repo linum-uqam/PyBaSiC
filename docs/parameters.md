@@ -2,7 +2,7 @@
 # Parameter Tuning
 
 This page describes every tuning knob exposed by
-{class}`~pybasic.core.BaSiC` — what each parameter controls physically,
+{class}`~linum_basic.core.BaSiC` — what each parameter controls physically,
 its default value, the heuristic used to auto-set it, and common
 troubleshooting recipes.
 
@@ -92,7 +92,7 @@ PyTorch device string, e.g. `"cuda:0"` or `"mps"`.  Ignored when
 ## Post-init tuning knobs
 
 These attributes can be set **after** construction and **before** calling
-{meth}`~pybasic.core.BaSiC.prepare`:
+{meth}`~linum_basic.core.BaSiC.prepare`:
 
 ```python
 model = BaSiC(stack)
@@ -160,7 +160,7 @@ under-corrected, try decreasing to `0.01`.
 | **Default** | `None` (auto-tuned) |
 
 Regularisation weight $\lambda_s$ for the DCT-domain sparsity of the
-flat-field.  Auto-tuned by {meth}`~pybasic.core.BaSiC.prepare` as:
+flat-field.  Auto-tuned by {meth}`~linum_basic.core.BaSiC.prepare` as:
 
 $$
 \lambda_s = \frac{\|\tilde{\bar{D}}\|_1}{800}
@@ -251,9 +251,9 @@ noticeably at iteration 10 (check with `verbose=True`).
 
 ## ALM solver parameters
 
-These are passed through to {func}`~pybasic.algorithms.inexact_alm_l1` via
-{meth}`~pybasic.core.BaSiC.update`.  To override them, call `update()`
-directly or subclass {class}`~pybasic.core.BaSiC`.
+These are passed through to {func}`~linum_basic.algorithms.inexact_alm_l1` via
+{meth}`~linum_basic.core.BaSiC.update`.  To override them, call `update()`
+directly or subclass {class}`~linum_basic.core.BaSiC`.
 
 ### `tol` (ALM convergence tolerance)
 
@@ -296,7 +296,7 @@ iterations: $\mu^{(k+1)} = \rho \cdot \mu^{(k)}$.
 
 ```python
 import numpy as np
-from pybasic import BaSiC
+from linum_basic import BaSiC
 
 stack = load_my_stack()          # shape (N, H, W)
 model = BaSiC(stack, estimate_darkfield=True, verbose=True)

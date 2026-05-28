@@ -70,7 +70,7 @@ matrix (updated during reweighting; see below).
 
 The constrained problem is solved via the **Inexact Augmented Lagrangian
 Method (ALM / ADMM)** implemented in
-{func}`~pybasic.algorithms.inexact_alm_l1`.
+{func}`~linum_basic.algorithms.inexact_alm_l1`
 
 At each ALM iteration the following sub-problems are solved in closed form:
 
@@ -108,8 +108,8 @@ $$
 
 The weights are renormalised so that $\text{mean}(\mathbf{W}) = 1$.
 The outer loop continues until the flatfield change is below
-{attr}`~pybasic.core.BaSiC.reweighting_tolerance` or
-{attr}`~pybasic.core.BaSiC.max_reweighting_iterations` is reached.
+{attr}`~linum_basic.core.BaSiC.reweighting_tolerance` or
+{attr}`~linum_basic.core.BaSiC.max_reweighting_iterations` is reached.
 
 ---
 
@@ -136,7 +136,7 @@ flowchart TD
 
 ## Regularisation auto-tuning
 
-{meth}`~pybasic.core.BaSiC.prepare` computes the L1 norm of the DCT
+{meth}`~linum_basic.core.BaSiC.prepare` computes the L1 norm of the DCT
 coefficients of the normalised pixel-mean image and sets:
 
 $$

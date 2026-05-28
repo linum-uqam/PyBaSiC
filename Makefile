@@ -19,7 +19,7 @@ typecheck:
 	uv run ty check
 
 test:
-	uv run pytest -q
+	uv run python -m pytest -q
 
 all: lint format-check typecheck test
 

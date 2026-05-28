@@ -1,8 +1,8 @@
 (gpu)=
 # GPU Acceleration
 
-PyBaSiC ships a backend abstraction layer
-({mod}`pybasic.backend`) that lets the ALM solver run on any device
+linum-basic ships a backend abstraction layer
+({mod}`linum_basic.backend`) that lets the ALM solver run on any device
 supported by PyTorch: NVIDIA CUDA, Apple MPS (Metal), or CPU via the
 Torch compute graph.
 
@@ -13,9 +13,9 @@ Torch compute graph.
 Install the optional `gpu` extra:
 
 ```bash
-pip install "pybasic[gpu]"
+pip install "linum-basic[gpu]"
 # or
-uv add "pybasic[gpu]"
+uv add "linum-basic[gpu]"
 ```
 
 This pulls `torch>=2.7`.  For CUDA support, follow the
@@ -26,10 +26,10 @@ to install the correct CUDA toolkit build for your driver version.
 
 ## Selecting the backend
 
-Pass `backend=` to {class}`~pybasic.core.BaSiC`:
+Pass `backend=` to {class}`~linum_basic.core.BaSiC`:
 
 ```python
-from pybasic import BaSiC
+from linum_basic import BaSiC
 
 # Auto-select: Torch+CUDA if available, otherwise NumPy
 model = BaSiC(stack, backend="auto")
@@ -51,8 +51,8 @@ NumPy.
 
 ## Backend internals
 
-The {class}`~pybasic.backend.ArrayNamespace` wraps NumPy or Torch into a
-uniform interface so the ALM loop in {func}`~pybasic.algorithms.inexact_alm_l1`
+The {class}`~linum_basic.backend.ArrayNamespace` wraps NumPy or Torch into a
+uniform interface so the ALM loop in {func}`~linum_basic.algorithms.inexact_alm_l1`
 can be backend-agnostic:
 
 | Operation | NumPy | Torch |

@@ -1,7 +1,7 @@
-PyBaSiC
-=======
+linum-basic
+===========
 
-**PyBaSiC** is a Python implementation of the BaSiC (Background and
+**linum-basic** is a Python implementation of the BaSiC (Background and
 Shading Correction) algorithm for optical microscopy images.  It
 corrects spatially non-uniform illumination (flatfield) and background
 offsets (darkfield) from fluorescence, bright-field, and other modalities.
@@ -14,7 +14,7 @@ offsets (darkfield) from fluorescence, bright-field, and other modalities.
    :width: 100%
 
    **Left:** a sample tile with a synthetic Gaussian vignette (dark corners, bright
-   centre). **Centre:** the flat-field estimated by PyBaSiC from 176 such tiles — no
+   centre). **Centre:** the flat-field estimated by linum-basic from 176 such tiles — no
    ground truth required. **Right:** the same tile after BaSiC correction.
 
 .. figure:: _static/demo/full_comparison.png
@@ -22,13 +22,13 @@ offsets (darkfield) from fluorescence, bright-field, and other modalities.
    :align: center
    :width: 100%
 
-   Full 1442 x 2048 image before (left) and after (right) PyBaSiC correction.  Each
+   Full 1442 x 2048 image before (left) and after (right) linum-basic correction.  Each
    tile's vignette — dark corners caused by non-uniform illumination — is removed
    uniformly across the entire field of view.
 
 .. code-block:: python
 
-   from pybasic import BaSiC
+   from linum_basic import BaSiC
 
    model = BaSiC(stack, estimate_darkfield=True)
    model.prepare()   # load images and auto-tune regularisation
@@ -64,7 +64,7 @@ offsets (darkfield) from fluorescence, bright-field, and other modalities.
       :link: api/index
       :link-type: doc
 
-      Auto-generated reference for the ``pybasic`` Python package.
+      Auto-generated reference for the ``linum_basic`` Python package.
 
    .. grid-item-card:: GPU Acceleration
       :link: gpu

@@ -2,7 +2,7 @@
 
 This module provides the core L1-minimisation solver used to decompose an
 image stack into a smooth flat-field and a sparse residual.  All heavy
-numerical work is dispatched through an :class:`~pybasic.backend.ArrayNamespace`
+numerical work is dispatched through an :class:`~linum_basic.backend.ArrayNamespace`
 so the same code can run on CPU (NumPy) or GPU (PyTorch).
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import tqdm
 
-from pybasic.backend import ArrayNamespace, Backend, get_xp
+from linum_basic.backend import ArrayNamespace, Backend, get_xp
 
 __all__ = ["inexact_alm_l1", "shrink"]
 
@@ -73,7 +73,7 @@ def inexact_alm_l1(
         Flat-field regularisation parameter.  Controls DCT-domain sparsity
         of the flat-field: larger values produce smoother flat-fields.
         Typically set automatically by
-        :meth:`~pybasic.core.BaSiC.prepare` as ``dct_sum / 800``.
+        :meth:`~linum_basic.core.BaSiC.prepare` as ``dct_sum / 800``.
     l_d : float
         Dark-field regularisation parameter.  Larger values push the
         estimated dark-field toward zero.  Typically set as
@@ -93,7 +93,7 @@ def inexact_alm_l1(
     weight : numpy.ndarray or float
         Optional weight matrix for the reweighted L1 norm.  Must broadcast
         to shape *(N, P·Q)* or be a scalar.  Updated externally by
-        :meth:`~pybasic.core.BaSiC.update_weights`.
+        :meth:`~linum_basic.core.BaSiC.update_weights`.
     estimate_darkfield : bool
         When ``True`` the dark-field component is estimated in addition to
         the flat-field.
@@ -133,7 +133,7 @@ def inexact_alm_l1(
     6. **μ update** — ``μ ← min(rho · μ, μ_max)`` where ``μ_max`` is a
        stability ceiling derived from the spectral norm of the data.
 
-    The outer reweighting loop (:meth:`~pybasic.core.BaSiC.update`) calls
+    The outer reweighting loop (:meth:`~linum_basic.core.BaSiC.update`) calls
     this function multiple times, updating the weight matrix between calls.
 
     .. rubric:: References

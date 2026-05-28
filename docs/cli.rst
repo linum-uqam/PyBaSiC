@@ -4,10 +4,10 @@ CLI Reference
 =============
 
 The ``basic_shading_correction`` command is the primary command-line
-interface for PyBaSiC, registered as a script entry point.
+interface for linum-basic, registered as a script entry point.
 
 .. argparse::
-   :module: pybasic.cli
+   :module: linum_basic.cli
    :func: _build_arg_parser
    :prog: basic_shading_correction
 

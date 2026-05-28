@@ -1,4 +1,4 @@
-"""Array-backend abstraction for PyBaSiC.
+"""Array-backend abstraction for linum-basic.
 
 Provides a unified namespace for NumPy and PyTorch operations, allowing
 the core ALM optimisation loop to run on CPU (NumPy) or GPU (PyTorch)

@@ -10,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pybasic._alm import inexact_alm_l1, shrink
-from pybasic.backend import Backend, get_xp
+from linum_basic._alm import inexact_alm_l1, shrink
+from linum_basic.backend import Backend, get_xp
 
 # ---------------------------------------------------------------------------
 # Fixtures

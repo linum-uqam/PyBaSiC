@@ -39,7 +39,7 @@ make install-gpu
 | `lint` | `ruff check` | Run Ruff linter |
 | `format` | `ruff format` | Format code in-place |
 | `format-check` | `ruff format --check` | Check formatting without writing |
-| `typecheck` | `ty check pybasic` | Run `ty` type checker |
+| `typecheck` | `ty check linum_basic` | Run `ty` type checker |
 | `test` | `pytest -q` | Run test suite |
 | `all` | lint + format-check + typecheck + test | Full CI check locally |
 | `docs` | `sphinx-build -W --keep-going -n -b html docs docs/_build/html` | Build docs |

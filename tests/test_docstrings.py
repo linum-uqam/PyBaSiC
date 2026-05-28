@@ -1,6 +1,6 @@
 """Docstring coverage tests using numpydoc.validate.
 
-Validates that every public object in the ``pybasic`` package has a
+Validates that every public object in the ``linum_basic`` package has a
 well-formed NumPy-style docstring.  A test is generated for each object so
 that failures are reported individually rather than as a single bulk error.
 """
@@ -41,11 +41,11 @@ _ALLOWED_CODES: frozenset[str] = frozenset(
 # Objects whose codes should be entirely ignored (private / test helpers).
 _SKIP_OBJECTS: frozenset[str] = frozenset(
     {
-        "pybasic.backend._torch_dct1d",
-        "pybasic.backend._torch_idct1d",
-        "pybasic.backend._torch_dctn",
-        "pybasic.backend._torch_idctn",
-        "pybasic.backend.ArrayNamespace._numpy_dtype_to_torch",
+        "linum_basic.backend._torch_dct1d",
+        "linum_basic.backend._torch_idct1d",
+        "linum_basic.backend._torch_dctn",
+        "linum_basic.backend._torch_idctn",
+        "linum_basic.backend.ArrayNamespace._numpy_dtype_to_torch",
     }
 )
 
@@ -56,7 +56,7 @@ _SKIP_OBJECTS: frozenset[str] = frozenset(
 
 
 def _iter_public_objects() -> list[tuple[str, object]]:
-    """Walk ``pybasic`` and yield ``(qualified_name, object)`` for every public
+    """Walk ``linum_basic`` and yield ``(qualified_name, object)`` for every public
     function, method, and class.
 
     Returns
@@ -64,7 +64,7 @@ def _iter_public_objects() -> list[tuple[str, object]]:
     list of tuple
         Each item is ``(qualified_name, callable_or_class)``.
     """
-    import pybasic
+    import linum_basic
 
     result: list[tuple[str, object]] = []
     seen: set[int] = set()
@@ -91,8 +91,8 @@ def _iter_public_objects() -> list[tuple[str, object]]:
             elif isinstance(obj, FunctionType):
                 result.append((qname, obj))
 
-    _visit(pybasic, "pybasic")
-    for _info in pkgutil.walk_packages(pybasic.__path__, prefix="pybasic."):
+    _visit(linum_basic, "linum_basic")
+    for _info in pkgutil.walk_packages(linum_basic.__path__, prefix="linum_basic."):
         try:
             mod = importlib.import_module(_info.name)
         except ImportError:

@@ -1,6 +1,6 @@
 # Configuration file for the Sphinx documentation builder.
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
-"""Sphinx configuration for the PyBaSiC documentation."""
+"""Sphinx configuration for the linum-basic documentation."""
 
 import sys
 from datetime import datetime
@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 # -- Project information ----------------------------------------------------
-project = "PyBaSiC"
+project = "linum-basic"
 author = "The LINUM developers"
 copyright = f"{datetime.now().year}, LINUM"
 
@@ -19,7 +19,7 @@ copyright = f"{datetime.now().year}, LINUM"
 try:
     from importlib.metadata import version as _get_version
 
-    release = _get_version("pybasic")
+    release = _get_version("linum-basic")
 except Exception:
     release = "0.2.0"
 version = ".".join(release.split(".")[:2])
@@ -80,9 +80,9 @@ mermaid_init_config = {
 }
 myst_heading_anchors = 4
 
-# Autoapi: generate API reference from the pybasic package.
+# Autoapi: generate API reference from the linum_basic package.
 autoapi_type = "python"
-autoapi_dirs = [str(ROOT / "pybasic")]
+autoapi_dirs = [str(ROOT / "linum_basic")]
 autoapi_root = "api"
 autoapi_options = [
     "members",
@@ -204,7 +204,7 @@ notfound_context = {
 notfound_urls_prefix = "/"
 
 # sphinx-sitemap: emit sitemap.xml at the docs root for SEO.
-html_baseurl = "https://pybasic.readthedocs.io/en/latest/"
+html_baseurl = "https://linum-basic.readthedocs.io/en/latest/"
 sitemap_url_scheme = "{link}"
 
 # sphinxext-opengraph: rich link previews on social platforms.

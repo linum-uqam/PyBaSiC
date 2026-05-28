@@ -1,5 +1,5 @@
 [project]
-name = "pybasic-illumination-correction"
+name = "linum-basic"
 version = "0.2.0"
 description = "Python implementation of the BaSiC shading correction algorithm"
 authors = [{ name = "Joël Lefebvre", email = "lefebvre.joel@uqam.ca" }]
@@ -46,7 +46,7 @@ dev = [
 ]
 
 [project.scripts]
-basic_shading_correction = "pybasic.cli:main"
+basic_shading_correction = "linum_basic.cli:main"
 
 [project.urls]
 Repository = "https://github.com/linum-uqam/PyBaSiC"
@@ -91,16 +91,16 @@ convention = "numpy"
 # Test files: type annotations, docstrings, unused-arg checks, naming conventions
 # and commented-out code are not required in tests.
 "tests/**" = ["ANN", "D", "ARG", "N", "ERA"]
-"pybasic/cli.py" = ["D", "ANN"]  # CLI entry-point; docstrings and annotations optional
-"pybasic/_alm.py" = [
+"linum_basic/cli.py" = ["D", "ANN"]  # CLI entry-point; docstrings and annotations optional
+"linum_basic/_alm.py" = [
     "N806",  # algorithm uses conventional uppercase math variable names
 ]
-"pybasic/core.py" = ["N806"]  # math variable names (Ib, Ir, D) mirror _alm.py convention
-"pybasic/backend.py" = ["N806"]  # V is a conventional math variable in DCT algorithms
+"linum_basic/core.py" = ["N806"]  # math variable names (Ib, Ir, D) mirror _alm.py convention
+"linum_basic/backend.py" = ["N806"]  # V is a conventional math variable in DCT algorithms
 "scripts/**" = ["D", "ANN"]  # CLI scripts; docstrings and annotations optional
 
 [tool.ruff.lint.isort]
-known-first-party = ["pybasic"]
+known-first-party = ["linum_basic"]
 
 [tool.ruff.format]
 # Use default (black-compatible) formatting
@@ -141,4 +141,4 @@ invalid-assignment = "ignore"
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=pybasic --cov-report=term-missing"
+addopts = "--cov=linum_basic --cov-report=term-missing"

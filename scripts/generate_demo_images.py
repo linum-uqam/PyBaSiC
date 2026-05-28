@@ -32,7 +32,7 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from pybasic.core import BaSiC
+from linum_basic.core import BaSiC
 
 _REPO_ROOT = Path(__file__).parent.parent
 _SOURCE_IMAGE = _REPO_ROOT / "tests" / "data" / "source_image.jpg"

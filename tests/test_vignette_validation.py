@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from pybasic.core import BaSiC
+from linum_basic.core import BaSiC
 
 _TILE = 128
 _CORRELATION_THRESHOLD = 0.85

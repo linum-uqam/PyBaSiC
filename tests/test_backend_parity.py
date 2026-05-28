@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pybasic.backend import ArrayNamespace, Backend, get_xp
+from linum_basic.backend import ArrayNamespace, Backend, get_xp
 
 torch = pytest.importorskip("torch", reason="PyTorch not installed — skipping backend parity tests.")
 
@@ -205,7 +205,7 @@ class TestAlmParity:
 
     def test_alm_ib_agrees(self, rand3d: np.ndarray) -> None:
         """Flat-field estimate from NumPy and Torch agree to atol=1e-4."""
-        from pybasic._alm import inexact_alm_l1
+        from linum_basic._alm import inexact_alm_l1
 
         xp_np = get_xp(Backend.NUMPY)
         xp_th = get_xp(Backend.TORCH)
