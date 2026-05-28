@@ -30,6 +30,7 @@ Examples
 
 from linum_basic.algorithms import inexact_alm_l1, shrink
 from linum_basic.core import BaSiC
+from linum_basic.data import load_sample_image
 
 __version__ = "0.2.0"
-__all__ = ["BaSiC", "__version__", "inexact_alm_l1", "shrink"]
+__all__ = ["BaSiC", "__version__", "inexact_alm_l1", "load_sample_image", "shrink"]

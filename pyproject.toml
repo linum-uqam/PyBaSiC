@@ -71,7 +71,7 @@ target-version = "py314"
 line-length = 127
 fix = true
 include = ["linum_basic*", "tests*", "scripts*"]
-exclude = ["tests/data"]
+exclude = ["tests/data", "linum_basic/data"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "RUF", "SIM", "C4", "PIE", "PTH",
