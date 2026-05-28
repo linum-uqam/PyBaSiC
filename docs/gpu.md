@@ -62,6 +62,8 @@ can be backend-agnostic:
 | Absolute value | `numpy.abs` | `torch.abs` |
 | Maximum | `numpy.maximum` | `torch.maximum` |
 | Array move to/from device | no-op | `tensor.to(device)` / `tensor.cpu().numpy()` |
+| Minimum (global) | `numpy.min` | `torch.min` |
+| Pass-through asarray | identity if already ndarray | identity if already correct-device tensor |
 
 ---
 
@@ -97,8 +99,14 @@ print(torch.backends.mps.is_available())  # should be True on M-series Mac
 If `False`, reinstall `torch` with the appropriate CUDA index URL from
 <https://pytorch.org/get-started/locally/>.
 
-### MPS instability (NaN/Inf in flat-field)
+### MPS and float64 twiddle factors
 
-Apple MPS support in PyTorch is still maturing.  If you encounter numerical
-issues, fall back to `device="cpu"` with `backend="torch"`, or use
-`backend="numpy"`.
+The custom DCT kernel used on GPU backends (including Apple MPS) computes
+twiddle factors at the same floating-point precision as the input data
+(float32 by default).  Earlier versions inadvertently requested float64
+twiddle factors, which MPS does not support and which caused a
+`RuntimeError` at runtime.  This is fixed — MPS is fully supported with
+float32 inputs.
+
+If you still see numerical issues on MPS, confirm that your input stack
+has dtype `float32` (not `float64`) before passing it to `BaSiC`.
