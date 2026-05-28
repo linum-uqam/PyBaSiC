@@ -74,7 +74,7 @@ basic_shading_correction --input /path/to/tiles \
                          --estimate-darkfield
 ```
 
-See the {ref}`CLI reference <cli>` for a full list of flags.
+See the [CLI reference](cli.rst) for a full list of flags.
 
 ---
 

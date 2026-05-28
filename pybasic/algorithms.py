@@ -1,6 +1,6 @@
 """Public algorithm interface for PyBaSiC.
 
-Re-exports the core numerical routines from the internal :mod:`pybasic._alm`
+Re-exports the core numerical routines from the internal ``pybasic._alm``
 module under a stable public namespace.  Import from here rather than from
 ``pybasic._alm`` to ensure forwards-compatibility.
 

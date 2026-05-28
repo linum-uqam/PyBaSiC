@@ -87,10 +87,15 @@ make docs-live
 
 ## Pre-commit
 
-We recommend installing [pre-commit](https://pre-commit.com/) to catch
-formatting and lint issues before committing:
+We recommend using [pre-commit](https://pre-commit.com/) to catch
+formatting and lint issues before committing.  It is already included in the
+`dev` extras, so after `make install` you can activate it with:
 
 ```bash
+# If you installed dev dependencies with uv (recommended)
+uv run pre-commit install
+
+# Or with pip
 pip install pre-commit
 pre-commit install
 ```
@@ -149,7 +154,7 @@ Key rules:
 
 ## Code style
 
-- **Python ≥ 3.10**, type annotations required for all public functions.
+- **Python ≥ 3.14**, type annotations required for all public functions.
 - **Ruff** for linting and formatting (configured in `pyproject.toml`).
 - **No new dependencies** without discussion — PyBaSiC has a deliberately
   lean dependency set.
@@ -162,4 +167,4 @@ Key rules:
 1. Fork the repository and create a feature branch.
 2. Write tests for any new behaviour.
 3. Run `make all` locally and ensure it passes.
-4. Open a PR against `main`.  The CI will run linting and tests.
+4. Open a PR against `master`.  The CI will run linting and tests.

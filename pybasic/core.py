@@ -302,7 +302,7 @@ class BaSiC:
     def update(self) -> None:
         """Run one reweighted ALM pass and update flat/dark fields.
 
-        Calls :func:`~pybasic._alm.inexact_alm_l1` on the sorted image
+        Calls :func:`~pybasic.algorithms.inexact_alm_l1` on the sorted image
         stack, updates the flat-field, dark-field, and reweighting matrix,
         then checks the convergence criterion to decide whether further
         reweighting iterations are needed.

@@ -8,7 +8,24 @@ troubleshooting recipes.
 
 ---
 
-## Constructor parameters
+## Quick reference
+
+| Parameter | Where set | Type | Default | One-liner |
+|---|---|---|---|---|
+| `estimate_darkfield` | constructor | `bool` | `False` | Estimate the dark-field $B(p)$ alongside the flat-field |
+| `extension` | constructor | `str` | `".tif"` | File-extension glob when input is a directory |
+| `backend` | constructor | `str` | `"numpy"` | Compute backend (`"numpy"`, `"torch"`, `"auto"`) |
+| `device` | constructor | `str\|None` | `None` | PyTorch device string (e.g. `"cuda:0"`) |
+| `working_size` | post-init | `int` | `128` | Resize resolution; higher = more spatial detail |
+| `epsilon` | post-init | `float` | `0.1` | Reweighting stability constant |
+| `l_s` | post-init | `float\|None` | auto | Flat-field DCT regularisation weight ($\lambda_s$) |
+| `l_d` | post-init | `float\|None` | auto | Dark-field regularisation weight ($\lambda_d$) |
+| `reweighting_tolerance` | post-init | `float` | `1e-3` | Outer-loop convergence threshold |
+| `max_reweighting_iterations` | post-init | `int` | `10` | Hard cap on outer iterations |
+
+---
+
+
 
 These are set at object construction time and control data loading and
 backend selection.

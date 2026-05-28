@@ -21,6 +21,21 @@ where:
 The goal is to estimate $S$ and $B$ from a collection of images **without**
 knowledge of the true intensities $I_i$.
 
+The figure below illustrates the model in practice.  A synthetic Gaussian
+vignette $S(p)$ darkens the image towards the corners.  PyBaSiC recovers
+$S$ by exploiting the fact that the flat-field varies **smoothly** across
+pixels and is therefore **sparse in the DCT domain**.
+
+```{figure} _static/demo/demo_comparison.png
+:alt: Three-panel demo of BaSiC correction
+:align: center
+:width: 100%
+
+**Left:** observed (corrupted) tile.  **Centre:** flat-field $S$ estimated by
+PyBaSiC — a smooth, centralised gain map recovered from a stack of 176 such
+tiles.  **Right:** corrected tile $\hat{I} = (D - B) / S$.
+```
+
 ---
 
 ## Matrix formulation

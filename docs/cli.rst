@@ -1,5 +1,7 @@
-(cli)=
-# CLI Reference
+.. _cli:
+
+CLI Reference
+=============
 
 The ``basic_shading_correction`` command is the primary command-line
 interface for PyBaSiC, registered as a script entry point.
