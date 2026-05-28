@@ -86,7 +86,7 @@ class TestAlmNumpy:
         xp = get_xp(Backend.NUMPY)
         l_s = 0.5
         l_d = 0.2
-        Ib, Ir, D = inexact_alm_l1(stack, l_s, l_d, max_iter=10, xp=xp)
+        Ib, Ir, D, _ = inexact_alm_l1(stack, l_s, l_d, max_iter=10, xp=xp)
         assert Ib.shape == stack.shape
         assert Ir.shape == stack.shape
         assert D.shape == (1, h * w)
@@ -95,7 +95,7 @@ class TestAlmNumpy:
         """The estimated flat-field correlates > 0.9 with the ground truth."""
         stack, flatfield = synthetic_stack
         xp = get_xp(Backend.NUMPY)
-        Ib, _, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=200, estimate_darkfield=False, xp=xp)
+        Ib, _, _, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=200, estimate_darkfield=False, xp=xp)
         estimated_ff = Ib.mean(axis=0).ravel()
         gt = flatfield.ravel()
         correlation = float(np.corrcoef(estimated_ff, gt)[0, 1])
@@ -105,7 +105,7 @@ class TestAlmNumpy:
         """No NaN or Inf values in any output array."""
         stack, _ = synthetic_stack
         xp = get_xp(Backend.NUMPY)
-        Ib, Ir, D = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=5, xp=xp)
+        Ib, Ir, D, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=5, xp=xp)
         for name, arr in [("Ib", Ib), ("Ir", Ir), ("D", D)]:
             assert np.isfinite(arr).all(), f"Non-finite values in {name}"
 
@@ -113,12 +113,12 @@ class TestAlmNumpy:
         """Dark-field output should be near-zero when estimation is disabled."""
         stack, _ = synthetic_stack
         xp = get_xp(Backend.NUMPY)
-        _, _, D = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=5, estimate_darkfield=False, xp=xp)
+        _, _, D, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=5, estimate_darkfield=False, xp=xp)
         np.testing.assert_allclose(D, 0.0, atol=1e-6)
 
     def test_residual_magnitude(self, synthetic_stack: tuple[np.ndarray, np.ndarray]) -> None:
         """The sparse residual should be smaller than the flat-field mean."""
         stack, _ = synthetic_stack
         xp = get_xp(Backend.NUMPY)
-        Ib, Ir, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=200, xp=xp)
+        Ib, Ir, _, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=200, xp=xp)
         assert float(np.abs(Ir).mean()) < float(np.abs(Ib).mean())

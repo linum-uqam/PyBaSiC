@@ -14,7 +14,7 @@ References
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import cv2
 import numpy as np
@@ -154,6 +154,7 @@ class BaSiC:
         self.reweighting_tolerance: float = 1e-3
         self.max_reweighting_iterations: int = 10
         self.reweighting_iteration: int = 0
+        self.warm_start_reweighting: bool = False
 
         # State (populated by prepare / run)
         self._flag_reweighting: bool = True
@@ -164,6 +165,50 @@ class BaSiC:
         self.darkfield: NDArray = np.zeros((self.working_size, self.working_size), dtype=np.float32)
         self.flatfield_fullsize: NDArray = np.ones((1, 1), dtype=np.float32)
         self.darkfield_fullsize: NDArray = np.zeros((1, 1), dtype=np.float32)
+        self._alm_state: dict | None = None  # warm-start state for outer reweighting
+
+    # ------------------------------------------------------------------
+    # Factory classmethods
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_array(cls, stack: NDArray, **kwargs: Any) -> BaSiC:
+        """Construct a :class:`BaSiC` instance directly from an image array.
+
+        Parameters
+        ----------
+        stack : numpy.ndarray, shape (N, H, W)
+            Pre-loaded image stack.
+        **kwargs
+            Forwarded to :class:`BaSiC.__init__`.
+        """
+        return cls(stack, **kwargs)
+
+    @classmethod
+    def from_directory(cls, path: str | Path, **kwargs: Any) -> BaSiC:
+        """Construct a :class:`BaSiC` instance from a directory of images.
+
+        Parameters
+        ----------
+        path : str or Path
+            Directory containing image files.
+        **kwargs
+            Forwarded to :class:`BaSiC.__init__`.
+        """
+        return cls(path, **kwargs)
+
+    @classmethod
+    def from_files(cls, file_list: list[str | Path], **kwargs: Any) -> BaSiC:
+        """Construct a :class:`BaSiC` instance from an explicit file list.
+
+        Parameters
+        ----------
+        file_list : list of str or Path
+            Ordered list of image file paths.
+        **kwargs
+            Forwarded to :class:`BaSiC.__init__`.
+        """
+        return cls(file_list, **kwargs)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -279,6 +324,7 @@ class BaSiC:
         self._Ib: NDArray = np.zeros_like(self.img_sort)
         self._flag_reweighting = True
         self.reweighting_iteration = 0
+        self._alm_state: dict | None = None  # reset warm-start state
 
     def update_weights(self) -> None:
         """Update the reweighting matrix for the next ALM iteration.
@@ -313,7 +359,7 @@ class BaSiC:
         if self.l_s is None or self.l_d is None:
             msg = "l_s and l_d must be set before calling update(); call prepare() first."
             raise RuntimeError(msg)
-        Ib, Ir, D = inexact_alm_l1(
+        result = inexact_alm_l1(
             self.img_sort,
             self.l_s,
             self.l_d,
@@ -321,7 +367,12 @@ class BaSiC:
             estimate_darkfield=self.estimate_darkfield,
             verbose=self.verbose,
             xp=self._xp,
+            warm_start=self._alm_state if self.warm_start_reweighting else None,
+            return_state=self.warm_start_reweighting,
         )
+        Ib, Ir, D, alm_state = result
+        if self.warm_start_reweighting:
+            self._alm_state = alm_state
 
         self._Ib = Ib
         self._Ir = Ir

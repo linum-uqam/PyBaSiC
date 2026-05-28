@@ -55,7 +55,9 @@ def inexact_alm_l1(
     rho: float = 1.5,
     verbose: bool = False,
     xp: ArrayNamespace | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    warm_start: dict | None = None,
+    return_state: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict | None]:
     r"""L1 minimisation via the inexact augmented Lagrangian method.
 
     Decomposes a stack of *N* images into a low-rank flat-field component
@@ -108,6 +110,16 @@ def inexact_alm_l1(
         Array namespace to use.  Defaults to the NumPy backend when
         ``None``.
 
+    warm_start : dict or None
+        Optional warm-start state from a previous call.  When provided the
+        inner ALM variables (``Sf``, ``Ir``, ``B``, ``D_field``, ``Y``,
+        ``mu``, ``sigma1``) are initialised from this dict instead of zeros.
+        Pass the dict returned when ``return_state=True``.
+    return_state : bool
+        When ``True`` a fifth return value is added — a dict containing the
+        final ALM state suitable for passing as ``warm_start`` to the next
+        outer reweighting iteration.  Default ``False``.
+
     Returns
     -------
     Ib : numpy.ndarray, shape (N, P, Q)
@@ -116,6 +128,9 @@ def inexact_alm_l1(
         Sparse residual images.
     D_field : numpy.ndarray, shape (1, P*Q)
         Estimated dark-field (flat, spatial domain).
+    state : dict, optional
+        Only returned when ``return_state=True``.  Contains ``Sf``, ``Ir``,
+        ``B``, ``D_field``, ``Y``, ``mu``, ``sigma1`` for warm-starting.
 
     Notes
     -----
@@ -163,23 +178,30 @@ def inexact_alm_l1(
     d_norm = xp.norm_fro(D)
     B1_uplimit = xp.min(D)
 
-    # Initialise variables
-    S = xp.zeros_like(D)  # flat-field (spatial)
-    Sf = xp.dctn(xp.to_numpy(S).reshape(n, p, q).mean(axis=0), norm="ortho")
-    Sf = xp.asarray(np.asarray(Sf).astype(np.float32))
-    Ir = xp.zeros_like(D)  # sparse residual
-    B = xp.ones((n, 1), dtype=np.float32)  # per-image baseline
-    D_field = xp.zeros((1, p * q), dtype=np.float32)  # dark-field (spatial)
-    B1: float = 0.0
-
-    # Lagrange multiplier and step-size
-    Y = 0.0
+    # Initialise variables — use warm-start values when provided.
     sigma1 = xp.svd_leading_singular(D)
     mu: float = 12.5 / sigma1
+    if warm_start is not None:
+        Sf = xp.asarray(warm_start["Sf"].reshape(p, q).astype(np.float32))
+        Ir = xp.asarray(warm_start["Ir"].reshape(n, p * q).astype(np.float32))
+        B = xp.asarray(warm_start["B"].reshape(n, 1).astype(np.float32))
+        D_field = xp.asarray(warm_start["D_field"].reshape(1, p * q).astype(np.float32))
+        # Reset Y and mu so changed weights don't cause divergence
+        Y = 0.0
+    else:
+        # Initialise variables
+        S = xp.zeros_like(D)  # flat-field (spatial)
+        Sf = xp.dctn(xp.to_numpy(S).reshape(n, p, q).mean(axis=0), norm="ortho")
+        Sf = xp.asarray(np.asarray(Sf).astype(np.float32))
+        Ir = xp.zeros_like(D)  # sparse residual
+        B = xp.ones((n, 1), dtype=np.float32)  # per-image baseline
+        D_field = xp.zeros((1, p * q), dtype=np.float32)  # dark-field (spatial)
+        Y = 0.0
     mu_bar: float = mu * 1e7
     ent2: float = 10.0
     converged = False
     iteration = 0
+    B1: float = 0.0  # ensure B1 is always defined
 
     pbar: tqdm | None = tqdm(desc="ALM Iteration", total=max_iter) if verbose else None
     S_spatial = xp.zeros((1, p * q), dtype=np.float32)
@@ -278,4 +300,14 @@ def inexact_alm_l1(
     Ir_np = xp.to_numpy(Ir).reshape(n, p, q)
     D_field_np = xp.to_numpy(D_field)
 
-    return Ib_np, Ir_np, D_field_np
+    if return_state:
+        state: dict | None = {
+            "Sf": xp.to_numpy(Sf).astype(np.float32),
+            "Ir": Ir_np.copy(),
+            "B": xp.to_numpy(B).astype(np.float32),
+            "D_field": D_field_np.copy(),
+        }
+    else:
+        state = None
+
+    return Ib_np, Ir_np, D_field_np, state
