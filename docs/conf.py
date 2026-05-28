@@ -131,7 +131,7 @@ html_title = "Linum BaSiC"
 html_static_path = ["_static"]
 
 html_theme_options = {
-    "github_url": "https://github.com/linum-uqam/linum-basic",
+    "github_url": "https://github.com/linum-uqam/Linum-BaSiC",
     "use_edit_page_button": True,
     "show_toc_level": 2,
     "navigation_with_keys": True,
@@ -140,7 +140,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/linum-uqam/linum-basic",
+            "url": "https://github.com/linum-uqam/Linum-BaSiC",
             "icon": "fa-brands fa-github",
         },
     ],

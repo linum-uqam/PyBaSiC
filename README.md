@@ -2,8 +2,8 @@
 
 *Python implementation of the BaSiC shading correction method — Python 3.14+, GPU-ready via PyTorch.*
 
-[![CI](https://github.com/linum-uqam/linum-basic/actions/workflows/ci.yml/badge.svg)](https://github.com/linum-uqam/linum-basic/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/linum-uqam/linum-basic/branch/master/graph/badge.svg)](https://codecov.io/gh/linum-uqam/linum-basic)
+[![CI](https://github.com/linum-uqam/Linum-BaSiC/actions/workflows/ci.yml/badge.svg)](https://github.com/linum-uqam/Linum-BaSiC/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/linum-uqam/Linum-BaSiC/branch/master/graph/badge.svg)](https://codecov.io/gh/linum-uqam/Linum-BaSiC)
 [![Documentation](https://readthedocs.org/projects/linum-basic/badge/?version=latest)](https://linum-basic.readthedocs.io/en/latest/)
 [![Python](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -32,8 +32,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 2. Clone and install
 
 ```bash
-git clone https://github.com/linum-uqam/linum-basic.git
-cd linum-basic
+git clone https://github.com/linum-uqam/Linum-BaSiC.git
+cd Linum-BaSiC
 uv sync
 ```
 
@@ -72,8 +72,8 @@ corrected_img = model.normalize(my_image)
 ### CPU-only (default)
 
 ```bash
-git clone https://github.com/linum-uqam/linum-basic.git
-cd linum-basic
+git clone https://github.com/linum-uqam/Linum-BaSiC.git
+cd Linum-BaSiC
 uv sync
 ```
 

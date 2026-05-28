@@ -49,7 +49,7 @@ dev = [
 basic_shading_correction = "linum_basic.cli:main"
 
 [project.urls]
-Repository = "https://github.com/linum-uqam/linum-basic"
+Repository = "https://github.com/linum-uqam/Linum-BaSiC"
 
 [build-system]
 requires = ["hatchling"]

@@ -13,8 +13,8 @@ Linum BaSiC uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
 ```bash
 # Clone the repository
-git clone https://github.com/linum-uqam/linum-basic.git
-cd linum-basic
+git clone https://github.com/linum-uqam/Linum-BaSiC.git
+cd Linum-BaSiC
 
 # Create a virtual environment and install dev dependencies
 make install
