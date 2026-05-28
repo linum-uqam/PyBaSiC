@@ -12,6 +12,6 @@ repos:
         entry: uv run --frozen ty check
         language: system
         types: [python]
-        files: ^pybasic/
+        files: ^linum_basic/
         pass_filenames: false
         verbose: true

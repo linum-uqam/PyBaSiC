@@ -1,4 +1,4 @@
-"""Cross-backend parity tests for :mod:`pybasic.backend`.
+"""Cross-backend parity tests for :mod:`linum_basic.backend`.
 
 Compares NumPy and Torch (CPU) outputs for DCT, norm, SVD, and the full
 ALM loop.  All Torch tests are skipped when PyTorch is not installed.
@@ -55,7 +55,7 @@ def _np(xp: ArrayNamespace, arr: object) -> np.ndarray:
 
 
 class TestGetXp:
-    """Tests for :func:`pybasic.backend.get_xp`."""
+    """Tests for :func:`linum_basic.backend.get_xp`."""
 
     def test_numpy_backend(self) -> None:
         """``get_xp('numpy')`` returns a NumPy namespace."""

@@ -1,7 +1,7 @@
 (contributing)=
 # Contributing
 
-Thank you for contributing to PyBaSiC!  This page covers how to set up a
+Thank you for contributing to Linum BaSiC!  This page covers how to set up a
 development environment, run the tests and linters, and the conventions we
 follow.
 
@@ -9,12 +9,12 @@ follow.
 
 ## Development environment
 
-PyBaSiC uses [uv](https://docs.astral.sh/uv/) for dependency management.
+Linum BaSiC uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
 ```bash
 # Clone the repository
-git clone https://github.com/linum-uqam/PyBaSiC.git
-cd PyBaSiC
+git clone https://github.com/linum-uqam/linum-basic.git
+cd linum-basic
 
 # Create a virtual environment and install dev dependencies
 make install
@@ -156,7 +156,7 @@ Key rules:
 
 - **Python ≥ 3.14**, type annotations required for all public functions.
 - **Ruff** for linting and formatting (configured in `pyproject.toml`).
-- **No new dependencies** without discussion — PyBaSiC has a deliberately
+- **No new dependencies** without discussion — Linum BaSiC has a deliberately
   lean dependency set.
 - **Surgical changes** — PRs should touch only what is needed.
 

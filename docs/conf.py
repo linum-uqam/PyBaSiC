@@ -127,11 +127,11 @@ nitpicky = False
 # -- HTML output ------------------------------------------------------------
 # pydata-sphinx-theme: https://pydata-sphinx-theme.readthedocs.io/
 html_theme = "pydata_sphinx_theme"
-html_title = "PyBaSiC"
+html_title = "Linum BaSiC"
 html_static_path = ["_static"]
 
 html_theme_options = {
-    "github_url": "https://github.com/linum-uqam/PyBaSiC",
+    "github_url": "https://github.com/linum-uqam/linum-basic",
     "use_edit_page_button": True,
     "show_toc_level": 2,
     "navigation_with_keys": True,
@@ -140,7 +140,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/linum-uqam/PyBaSiC",
+            "url": "https://github.com/linum-uqam/linum-basic",
             "icon": "fa-brands fa-github",
         },
     ],
@@ -164,7 +164,7 @@ html_theme_options["secondary_sidebar_items"] = {
 
 html_context = {
     "github_user": "linum-uqam",
-    "github_repo": "PyBaSiC",
+    "github_repo": "linum-basic",
     "github_version": "dev",
     "doc_path": "docs",
 }
@@ -209,6 +209,6 @@ sitemap_url_scheme = "{link}"
 
 # sphinxext-opengraph: rich link previews on social platforms.
 ogp_site_url = html_baseurl
-ogp_site_name = "PyBaSiC documentation"
+ogp_site_name = "Linum BaSiC documentation"
 ogp_use_first_image = True
 ogp_enable_meta_description = True

@@ -1,7 +1,7 @@
 (validation)=
 # Validation
 
-PyBaSiC's test suite is divided into four layers: unit/parity tests for the
+Linum BaSiC's test suite is divided into four layers: unit/parity tests for the
 numerical core, docstring tests, and an integration test against a simulated
 vignette.
 
@@ -58,14 +58,14 @@ uv run pytest tests/test_vignette_validation.py -v
 
 ### Visualisation artefacts
 
-When the environment variable `PYBASIC_VIGNETTE_ARTIFACT_DIR` is set, each
+When the environment variable `LINUM_BASIC_VIGNETTE_ARTIFACT_DIR` is set, each
 test sub-case renders a 6-panel PNG (input tiles, ground-truth vignette,
 recovered flat-field, residual map, correlation scatter, and correction
 result) into that directory:
 
 ```bash
 mkdir -p /tmp/vignette_artefacts
-PYBASIC_VIGNETTE_ARTIFACT_DIR=/tmp/vignette_artefacts \
+LINUM_BASIC_VIGNETTE_ARTIFACT_DIR=/tmp/vignette_artefacts \
     uv run pytest tests/test_vignette_validation.py -v
 open /tmp/vignette_artefacts/*.png
 ```

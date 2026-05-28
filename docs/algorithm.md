@@ -22,7 +22,7 @@ The goal is to estimate $S$ and $B$ from a collection of images **without**
 knowledge of the true intensities $I_i$.
 
 The figure below illustrates the model in practice.  A synthetic Gaussian
-vignette $S(p)$ darkens the image towards the corners.  PyBaSiC recovers
+vignette $S(p)$ darkens the image towards the corners.  Linum BaSiC recovers
 $S$ by exploiting the fact that the flat-field varies **smoothly** across
 pixels and is therefore **sparse in the DCT domain**.
 
@@ -32,7 +32,7 @@ pixels and is therefore **sparse in the DCT domain**.
 :width: 100%
 
 **Left:** observed (corrupted) tile.  **Centre:** flat-field $S$ estimated by
-PyBaSiC — a smooth, centralised gain map recovered from a stack of 176 such
+Linum BaSiC — a smooth, centralised gain map recovered from a stack of 176 such
 tiles.  **Right:** corrected tile $\hat{I} = (D - B) / S$.
 ```
 
@@ -97,7 +97,7 @@ $$
 
 ## Reweighted L1
 
-After the ALM loop converges, PyBaSiC applies **reweighted L1
+After the ALM loop converges, Linum BaSiC applies **reweighted L1
 regularisation** (Candès et al., 2008) to promote sparsity of the
 residual more aggressively than plain L1:
 

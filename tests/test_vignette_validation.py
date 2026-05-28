@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Integration test: sbh-simulator vignette -> PyBaSiC flatfield recovery.
+"""Integration test: sbh-simulator vignette -> Linum BaSiC flatfield recovery.
 
 Pipeline (single source of truth for both the test suite and the
 visualisation script):
@@ -9,7 +9,7 @@ visualisation script):
 3. Multiply each patch by the vignette to build a corrupted stack.
 4. Run BaSiC and compare the recovered flat-field to ground truth.
 
-When the environment variable ``PYBASIC_VIGNETTE_ARTIFACT_DIR`` is set, each
+When the environment variable ``LINUM_BASIC_VIGNETTE_ARTIFACT_DIR`` is set, each
 test also renders a 6-panel PNG into that directory.  That is how the CI
 visualisation step (see ``scripts/visualize_vignette_correction.py``) produces
 its figures -- there is no separate pipeline.
@@ -32,7 +32,7 @@ from linum_basic.core import BaSiC
 _TILE = 128
 _CORRELATION_THRESHOLD = 0.85
 _SOURCE_IMAGE = Path(__file__).parent / "data" / "source_image.jpg"
-_ARTIFACT_DIR_ENV = "PYBASIC_VIGNETTE_ARTIFACT_DIR"
+_ARTIFACT_DIR_ENV = "LINUM_BASIC_VIGNETTE_ARTIFACT_DIR"
 
 
 def _find_sbh_vignette() -> str | None:

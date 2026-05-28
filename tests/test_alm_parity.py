@@ -1,4 +1,4 @@
-"""Functional / parity tests for :func:`pybasic._alm.inexact_alm_l1`.
+"""Functional / parity tests for :func:`linum_basic._alm.inexact_alm_l1`.
 
 Generates a synthetic image stack with a known flat-field and sparse noise,
 then verifies that the ALM solver recovers the flat-field to within an

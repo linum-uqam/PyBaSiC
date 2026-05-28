@@ -3,7 +3,7 @@
 """Run the vignette validation tests and save their diagnostic figures.
 
 This script does not duplicate the test pipeline.  It simply invokes pytest
-on ``tests/test_vignette_validation.py`` with ``PYBASIC_VIGNETTE_ARTIFACT_DIR``
+on ``tests/test_vignette_validation.py`` with ``LINUM_BASIC_VIGNETTE_ARTIFACT_DIR``
 set, which causes each test to write a 6-panel PNG into the output directory.
 
 The exit code matches pytest's: 0 on success, non-zero on test failure (so the
@@ -37,7 +37,7 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env["PYBASIC_VIGNETTE_ARTIFACT_DIR"] = str(args.output.resolve())
+    env["LINUM_BASIC_VIGNETTE_ARTIFACT_DIR"] = str(args.output.resolve())
 
     cmd = [sys.executable, "-m", "pytest", str(_TEST_FILE), "-v", "--tb=short", "-s"]
     print("Running:", " ".join(cmd))

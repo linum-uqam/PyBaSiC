@@ -1,10 +1,15 @@
-# linum-basic
+# Linum BaSiC
 
 *Python implementation of the BaSiC shading correction method — Python 3.14+, GPU-ready via PyTorch.*
 
+[![CI](https://github.com/linum-uqam/linum-basic/actions/workflows/ci.yml/badge.svg)](https://github.com/linum-uqam/linum-basic/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/linum-uqam/linum-basic/branch/master/graph/badge.svg)](https://codecov.io/gh/linum-uqam/linum-basic)
+[![Documentation](https://readthedocs.org/projects/linum-basic/badge/?version=latest)](https://linum-basic.readthedocs.io/en/latest/)
+[![Python](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DOI](https://zenodo.org/badge/219489337.svg)](https://zenodo.org/badge/latestdoi/219489337)
-[![CI](https://github.com/linum-uqam/PyBaSiC/actions/workflows/ci.yml/badge.svg)](https://github.com/linum-uqam/PyBaSiC/actions/workflows/ci.yml)
 
+* **Documentation**: https://linum-basic.readthedocs.io
 * **Original paper**: T. Peng *et al.*, "A BaSiC tool for background and shading correction of optical microscopy images," *Nat. Commun.*, vol. 8, p. 14836, Jun. 2017. [DOI:10.1038/ncomms14836](https://doi.org/10.1038/ncomms14836)
 * **Nature Supplementary Materials**: [PDF](https://static-content.springer.com/esm/art%3A10.1038%2Fncomms14836/MediaObjects/41467_2017_BFncomms14836_MOESM560_ESM.pdf)
 * **MATLAB implementation**: https://github.com/QSCD/BaSiC
@@ -27,8 +32,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 2. Clone and install
 
 ```bash
-git clone https://github.com/linum-uqam/PyBaSiC.git
-cd PyBaSiC
+git clone https://github.com/linum-uqam/linum-basic.git
+cd linum-basic
 uv sync
 ```
 
@@ -67,8 +72,8 @@ corrected_img = model.normalize(my_image)
 ### CPU-only (default)
 
 ```bash
-git clone https://github.com/linum-uqam/PyBaSiC.git
-cd PyBaSiC
+git clone https://github.com/linum-uqam/linum-basic.git
+cd linum-basic
 uv sync
 ```
 

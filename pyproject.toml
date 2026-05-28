@@ -49,14 +49,14 @@ dev = [
 basic_shading_correction = "linum_basic.cli:main"
 
 [project.urls]
-Repository = "https://github.com/linum-uqam/PyBaSiC"
+Repository = "https://github.com/linum-uqam/linum-basic"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["pybasic"]
+packages = ["linum_basic"]
 
 # ---------------------------------------------------------------------------
 # Ruff — linter + formatter
@@ -65,7 +65,7 @@ packages = ["pybasic"]
 target-version = "py314"
 line-length = 127
 fix = true
-include = ["pybasic*", "tests*", "scripts*"]
+include = ["linum_basic*", "tests*", "scripts*"]
 exclude = ["tests/data"]
 
 [tool.ruff.lint]
@@ -109,7 +109,7 @@ known-first-party = ["linum_basic"]
 # ty — static type checker
 # ---------------------------------------------------------------------------
 [tool.ty.src]
-include = ["pybasic", "scripts", "tests"]
+include = ["linum_basic", "scripts", "tests"]
 
 [tool.ty.environment]
 python-version = "3.14"

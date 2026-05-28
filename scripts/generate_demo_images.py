@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate demo figures for the PyBaSiC documentation.
+"""Generate demo figures for the Linum BaSiC documentation.
 
 Produces a 3-panel comparison image at ``docs/_static/demo/demo_comparison.png``
 showing:
@@ -133,7 +133,7 @@ def main() -> None:
     for ax, data, title in zip(
         axes2,
         [full_corrupted, full_corrected],
-        ["Full image — corrupted (synthetic vignette)", "Full image — corrected by PyBaSiC"],
+        ["Full image — corrupted (synthetic vignette)", "Full image — corrected by Linum BaSiC"],
         strict=True,
     ):
         ax.imshow(data, cmap="gray", interpolation="lanczos")
