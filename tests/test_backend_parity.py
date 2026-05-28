@@ -200,6 +200,60 @@ class TestDCTParity:
 # ---------------------------------------------------------------------------
 
 
+class TestMinMethod:
+    """Tests for :meth:`ArrayNamespace.min`."""
+
+    def test_min_numpy(self, rand2d: np.ndarray) -> None:
+        """min() returns the correct global minimum for the NumPy backend."""
+        xp = get_xp(Backend.NUMPY)
+        result = xp.min(xp.asarray(rand2d))
+        assert isinstance(result, float)
+        assert abs(result - float(rand2d.min())) < 1e-6
+
+    def test_min_torch(self, rand2d: np.ndarray) -> None:
+        """min() returns the correct global minimum for the Torch backend."""
+        xp = get_xp(Backend.TORCH)
+        result = xp.min(xp.asarray(rand2d))
+        assert isinstance(result, float)
+        assert abs(result - float(rand2d.min())) < 1e-6
+
+    def test_min_parity(self, rand2d: np.ndarray) -> None:
+        """min() returns the same value across both backends."""
+        xp_np = get_xp(Backend.NUMPY)
+        xp_th = get_xp(Backend.TORCH)
+        assert abs(xp_np.min(xp_np.asarray(rand2d)) - xp_th.min(xp_th.asarray(rand2d))) < 1e-6
+
+
+class TestPassThroughs:
+    """Tests for asarray and to_numpy pass-through optimisations."""
+
+    def test_asarray_torch_passthrough(self, rand2d: np.ndarray) -> None:
+        """asarray() returns the same object when tensor is already on the right device."""
+        xp = get_xp(Backend.TORCH)
+        tensor = xp.asarray(rand2d)
+        tensor2 = xp.asarray(tensor)
+        assert tensor is tensor2, "asarray should return the same tensor object (pass-through)"
+
+    def test_asarray_torch_dtype_coercion(self, rand2d: np.ndarray) -> None:
+        """asarray() with explicit dtype still converts when dtype differs."""
+        xp = get_xp(Backend.TORCH)
+        tensor = xp.asarray(rand2d)  # float32
+        tensor64 = xp.asarray(tensor, dtype=np.float64)
+        assert tensor is not tensor64, "asarray with dtype should not pass through"
+
+    def test_to_numpy_passthrough(self, rand2d: np.ndarray) -> None:
+        """to_numpy() returns the same ndarray object for NumPy backend."""
+        xp = get_xp(Backend.NUMPY)
+        arr = xp.asarray(rand2d)
+        result = xp.to_numpy(arr)
+        assert result is arr, "to_numpy should return the same ndarray (pass-through)"
+
+
+# ---------------------------------------------------------------------------
+# ALM parity (NumPy vs Torch CPU)
+# ---------------------------------------------------------------------------
+
+
 class TestAlmParity:
     """Full ALM loop output agrees between NumPy and Torch backends."""
 
