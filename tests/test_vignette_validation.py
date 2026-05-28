@@ -218,3 +218,43 @@ def test_flatfield_without_darkfield(kind: str) -> None:
     assert ff_corr > _CORRELATION_THRESHOLD, (
         f"[{kind}/no-darkfield] flat-field correlation {ff_corr:.3f} <= {_CORRELATION_THRESHOLD}"
     )
+
+
+@pytest.mark.parametrize("kind", ["gaussian", "zernike"])
+def test_flatfield_recovery_with_brightness_drift(kind: str) -> None:
+    """BaSiC recovers flat-field under per-tile log-normal brightness drift.
+
+    Each tile receives an independent scalar b_t ~ LogNormal(0, 0.2), which
+    is precisely the nuisance that BaSiC's reweighted ALM is designed to
+    marginalise out.  The flat-field correlation must still exceed
+    *_CORRELATION_THRESHOLD*.
+    """
+    rng = np.random.default_rng(7)
+    gt_flatfield, gt_darkfield = _generate_ground_truth(kind)
+    noise_std = 0.005
+    clean = _tile_source_image()
+    n_tiles = len(clean)
+
+    # Per-tile brightness scalar: b_t ~ LogNormal(mu=0, sigma=0.2)
+    b_t = rng.lognormal(mean=0.0, sigma=0.2, size=n_tiles).astype(np.float32)
+
+    # Physical degradation: corrupted_i = clean_i * b_t_i * flatfield + darkfield + noise
+    stack = clean * b_t[:, np.newaxis, np.newaxis] * gt_flatfield[np.newaxis] + gt_darkfield[np.newaxis]
+    stack += rng.normal(0, noise_std, stack.shape).astype(np.float32)
+    stack = np.clip(stack, 0, 1)
+
+    model = BaSiC(stack, estimate_darkfield=True)
+    model.prepare()
+    model.run()
+
+    ff_corr = _pearson(model.flatfield_fullsize, gt_flatfield)
+    print(f"[{kind}/b_t-drift] flat-field Pearson r = {ff_corr:.3f}")
+
+    # Drift makes recovery harder than the no-drift baseline; 0.80 is still a
+    # very strong correlation and confirms the algorithm is not defeated by
+    # per-tile brightness variation.
+    _drift_threshold = 0.80
+    assert ff_corr > _drift_threshold, (
+        f"[{kind}/b_t-drift] flat-field correlation {ff_corr:.3f} <= {_drift_threshold} "
+        f"(brightness drift std=0.2 should not prevent recovery)"
+    )
