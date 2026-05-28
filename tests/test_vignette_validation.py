@@ -28,10 +28,10 @@ import numpy as np
 import pytest
 
 from linum_basic.core import BaSiC
+from linum_basic.data import load_sample_image
 
 _TILE = 128
 _CORRELATION_THRESHOLD = 0.85
-_SOURCE_IMAGE = Path(__file__).parent / "data" / "source_image.jpg"
 _ARTIFACT_DIR_ENV = "LINUM_BASIC_VIGNETTE_ARTIFACT_DIR"
 
 
@@ -81,10 +81,7 @@ def _generate_vignette(kind: str, tmp_path: Path, *, order: int = 4) -> np.ndarr
 
 def _tile_source_image() -> np.ndarray:
     """Tile the bundled image into a stack of (_TILE, _TILE) patches."""
-    import cv2
-
-    img = cv2.imread(str(_SOURCE_IMAGE), cv2.IMREAD_GRAYSCALE)
-    assert img is not None, f"Failed to read {_SOURCE_IMAGE}"
+    img = load_sample_image()
     h, w = img.shape
     nh, nw = h // _TILE, w // _TILE
     cropped = img[: nh * _TILE, : nw * _TILE].astype(np.float32) / 255.0

@@ -41,6 +41,7 @@ extensions = [
     "notfound.extension",
     "sphinx_sitemap",
     "sphinxext.opengraph",
+    "nbsphinx",
 ]
 
 templates_path = ["_templates"]
@@ -62,6 +63,18 @@ myst_enable_extensions = [
     "tasklist",
 ]
 myst_fence_as_directive = ["mermaid"]
+
+# -- nbsphinx (notebook rendering) -----------------------------------------
+# Execute notebooks during the Sphinx build so Read the Docs renders outputs.
+nbsphinx_execute = "always"
+# Kernel used for notebook execution — matches the ipykernel installed via
+# the docs extra.  Override with NBSphinx_KERNEL_NAME env var if needed.
+nbsphinx_kernel_name = "python3"
+# Allow the build to continue even if a notebook raises an exception so the
+# doc build is not blocked by environment-dependent cells.
+nbsphinx_allow_errors = False
+# Increase per-cell timeout for the ALM solver (seconds).
+nbsphinx_timeout = 120
 
 # Mermaid: interactive zoom/pan + fullscreen, with readable defaults.
 mermaid_d3_zoom = True

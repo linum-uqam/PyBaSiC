@@ -78,6 +78,12 @@ offsets (darkfield) from fluorescence, bright-field, and other modalities.
 
       Dev environment, pre-commit, make targets, and docstring conventions.
 
+   .. grid-item-card:: Example Notebooks
+      :link: notebooks/index
+      :link-type: doc
+
+      Worked examples: load data, synthesise shading, run BaSiC, evaluate results.
+
 
 .. toctree::
    :maxdepth: 1
@@ -89,6 +95,7 @@ offsets (darkfield) from fluorescence, bright-field, and other modalities.
    gpu
    validation
    contributing
+   notebooks/index
    reference
    api/index
 

@@ -10,4 +10,5 @@ Reference
    gpu
    validation
    contributing
+   notebooks/index
    cli
