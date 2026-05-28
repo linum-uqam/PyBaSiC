@@ -92,7 +92,12 @@ class ArrayNamespace:
         """
         if self._backend is Backend.NUMPY:
             return np.asarray(x, dtype=dtype)
-        torch_dtype = self._numpy_dtype_to_torch(x.dtype if dtype is None else np.dtype(dtype))
+        # Pass-through: already a tensor on the right device with no dtype coercion needed
+        if isinstance(x, self._torch.Tensor) and x.device == self._device and dtype is None:
+            return x
+        # For dtype resolution, always go through numpy to get a numpy dtype
+        np_dtype = np.dtype(dtype) if dtype is not None else np.asarray(x).dtype
+        torch_dtype = self._numpy_dtype_to_torch(np_dtype)
         return self._torch.as_tensor(np.asarray(x), dtype=torch_dtype, device=self._device)
 
     def to_numpy(self, x: Any) -> np.ndarray:
@@ -109,6 +114,8 @@ class ArrayNamespace:
             CPU NumPy copy.
         """
         if self._backend is Backend.NUMPY:
+            if isinstance(x, np.ndarray):
+                return x
             return np.asarray(x)
         return x.detach().cpu().numpy()
 
@@ -287,6 +294,25 @@ class ArrayNamespace:
             return float(np.linalg.norm(x, "fro"))
         return float(self._torch.linalg.norm(x, ord="fro"))
 
+    def min(self, x: Any) -> float:
+        """Return the global minimum value of *x* as a Python float.
+
+        Avoids materialising the full tensor to CPU when on GPU backends.
+
+        Parameters
+        ----------
+        x : object
+            Backend-native array.
+
+        Returns
+        -------
+        float
+            Minimum element.
+        """
+        if self._backend is Backend.NUMPY:
+            return float(np.min(x))
+        return float(self._torch.min(x))
+
     def svd_leading_singular(self, x: Any) -> float:
         """Return the largest singular value of *x*.
 
@@ -427,10 +453,10 @@ def _torch_dct1d(x: Any, norm: str = "ortho") -> Any:
     n = x.shape[-1]  # type: ignore[union-attr]
     v = torch.cat([x[..., ::2], x[..., 1::2].flip(-1)], dim=-1)  # type: ignore[index]
     Vc = torch.fft.fft(v, n=n, dim=-1)
-    k = torch.arange(n, dtype=torch.float64, device=x.device)  # type: ignore[union-attr]
+    k = torch.arange(n, dtype=x.dtype, device=x.device)  # type: ignore[union-attr]
     theta = math.pi * k / (2.0 * n)
-    cos_k = torch.cos(theta).to(Vc.real.dtype)
-    sin_k = torch.sin(theta).to(Vc.real.dtype)
+    cos_k = torch.cos(theta)
+    sin_k = torch.sin(theta)
     # Re(Vc * exp(-i*theta)) = Vc.real*cos + Vc.imag*sin
     y = Vc.real * cos_k + Vc.imag * sin_k
     if norm == "ortho":
@@ -467,9 +493,9 @@ def _torch_idct1d(x: Any, norm: str = "ortho") -> Any:
     else:
         xn = xn / 2
 
-    k = torch.arange(n, dtype=torch.float64, device=x.device)  # type: ignore[union-attr]
-    cos_k = torch.cos(math.pi * k / (2.0 * n)).to(xn.dtype)
-    sin_k = torch.sin(math.pi * k / (2.0 * n)).to(xn.dtype)
+    k = torch.arange(n, dtype=x.dtype, device=x.device)  # type: ignore[union-attr]
+    cos_k = torch.cos(math.pi * k / (2.0 * n))
+    sin_k = torch.sin(math.pi * k / (2.0 * n))
     # Anti-Hermitian imaginary part (exploits real-signal symmetry of forward FFT)
     Vt_i = torch.cat([xn[..., :1] * 0, -xn[..., 1:].flip(-1)], dim=-1)
     V_r = xn * cos_k - Vt_i * sin_k

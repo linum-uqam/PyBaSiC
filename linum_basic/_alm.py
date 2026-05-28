@@ -161,7 +161,7 @@ def inexact_alm_l1(
     )
 
     d_norm = xp.norm_fro(D)
-    B1_uplimit = float(xp.to_numpy(D).min())
+    B1_uplimit = xp.min(D)
 
     # Initialise variables
     S = xp.zeros_like(D)  # flat-field (spatial)
