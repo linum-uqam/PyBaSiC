@@ -1,7 +1,7 @@
-linum-basic
+Linum BaSiC
 ===========
 
-**linum-basic** is a Python implementation of the BaSiC (Background and
+**Linum BaSiC** is a Python implementation of the BaSiC (Background and
 Shading Correction) algorithm for optical microscopy images.  It
 corrects spatially non-uniform illumination (flatfield) and background
 offsets (darkfield) from fluorescence, bright-field, and other modalities.
