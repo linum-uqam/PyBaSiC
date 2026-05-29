@@ -189,7 +189,7 @@ def inexact_alm_l1(
         B = xp.asarray(warm_start["B"].reshape(n, 1).astype(np.float32))
         D_field = xp.asarray(warm_start["D_field"].reshape(1, p * q).astype(np.float32))
         # Reset Y and mu so changed weights don't cause divergence
-        Y = 0.0
+        Y = np.zeros((n, p * q), dtype=np.float64)
     else:
         # Initialise variables
         S = xp.zeros_like(D)  # flat-field (spatial)
@@ -198,7 +198,7 @@ def inexact_alm_l1(
         Ir = xp.zeros_like(D)  # sparse residual
         B = xp.ones((n, 1), dtype=np.float32)  # per-image baseline
         D_field = xp.zeros((1, p * q), dtype=np.float32)  # dark-field (spatial)
-        Y = 0.0
+        Y = np.zeros((n, p * q), dtype=np.float64)
     mu_bar: float = mu * 1e7
     ent2: float = 10.0
     converged = False
@@ -224,7 +224,10 @@ def inexact_alm_l1(
         # Pre-compute Y / mu once per iteration: the quotient is reused in
         # both the Ir update (step 1) and the Sf mean update (step 2),
         # avoiding a second O(N * P*Q) division.
-        Y_over_mu = Y / mu  # type: ignore[operator]  scalar when Y=0.0 (first iter)
+        # Cast Y (float64 accumulator) to float32 at the use site to avoid
+        # accumulating rounding errors in the Lagrange multiplier over ~500
+        # iterations while keeping all backend tensor ops in float32.
+        Y_over_mu = xp.asarray((Y / mu).astype(np.float32))
 
         # 1. Update sparse residual Ir.
         # S_spatial was computed at the end of the previous iteration (or
@@ -329,7 +332,9 @@ def inexact_alm_l1(
         # Evaluation order matches the original (D - Ib) - Ir, not (D - Ir) - Ib,
         # to preserve float32 accumulation identical to the pre-optimisation code.
         dY = D - Ib - Ir  # type: ignore[operator]
-        Y = Y + mu * dY  # type: ignore[operator]
+        # Accumulate the Lagrange multiplier in float64 on CPU so that
+        # large mu values (mu grows as rho^iter) don't erode precision.
+        Y = Y + mu * xp.to_numpy(dY).astype(np.float64)
         mu = min(mu * rho, mu_bar)
         iteration += 1
 
