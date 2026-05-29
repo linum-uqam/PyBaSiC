@@ -285,6 +285,20 @@ def _build_tune_parser() -> argparse.ArgumentParser:
         "--n-jobs", metavar="N", type=int, default=1, help="Parallel worker threads for z-level evaluation within each trial."
     )
     tuning_group.add_argument(
+        "--max-tiles",
+        metavar="N",
+        type=int,
+        default=64,
+        help="Tiles (evenly spaced) used for the seam metric per trial. Use 0 for all tiles.",
+    )
+    tuning_group.add_argument(
+        "--n-extra-rows",
+        metavar="N",
+        type=int,
+        default=0,
+        help="Leading rows per tile to drop before fitting (galvo fly-back artefact).",
+    )
+    tuning_group.add_argument(
         "--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1)."
     )
 
@@ -320,6 +334,8 @@ def tune_main(argv: list[str] | None = None) -> int:
         z_subsample=args.z_subsample,
         seed=args.seed,
         n_workers=args.n_jobs,
+        max_tiles=args.max_tiles if args.max_tiles > 0 else None,
+        n_extra_rows=args.n_extra_rows,
         storage=args.storage,
         study_name=args.study_name,
         run_full_fit=run_full_fit,
