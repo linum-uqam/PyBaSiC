@@ -52,6 +52,7 @@ dev = [
     "numpydoc>=1.9",
     "pre-commit>=4.2",
     "matplotlib>=3.10",
+    "pandas>=2.2",
 ]
 notebooks = [
     "sbh-simulator",

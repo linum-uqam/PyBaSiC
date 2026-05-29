@@ -34,6 +34,9 @@ import matplotlib.pyplot as plt
 
 from linum_basic.core import BaSiC
 from linum_basic.data import load_sample_image
+from linum_basic.fit import apply_fit
+from linum_basic.metrics import seam_l1
+from linum_basic.mosaic import MosaicGrid
 
 _REPO_ROOT = Path(__file__).parent.parent
 _OUTPUT_DIR = _REPO_ROOT / "docs" / "_static" / "demo"
@@ -78,6 +81,156 @@ def _tile_image(img: np.ndarray, tile: int) -> tuple[np.ndarray, int, int]:
 def _stitch(stack: np.ndarray, nh: int, nw: int, tile: int) -> np.ndarray:
     """Reassemble a (nh*nw, tile, tile) stack back into a (nh*tile, nw*tile) image."""
     return stack.reshape(nh, nw, tile, tile).transpose(0, 2, 1, 3).reshape(nh * tile, nw * tile)
+
+
+def _offcenter_vignette(size: int, sigma_frac: float = 0.55, shift_frac: float = 0.22) -> np.ndarray:
+    """Return a mean-normalised vignette whose peak is shifted off-centre.
+
+    An off-centre peak makes the shading *asymmetric*, so the same tissue seen
+    at the right edge of one tile and the left edge of its neighbour is darkened
+    by different amounts.  This creates a genuine, correctable seam mismatch —
+    exactly what the seam-consistency tuning objective minimises.
+    """
+    y, x = np.mgrid[0:size, 0:size].astype(np.float32)
+    cy = (size - 1) / 2
+    cx = (size - 1) / 2 + shift_frac * size
+    sigma = size * sigma_frac
+    v = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
+    return (v / v.mean()).astype(np.float32)
+
+
+def _build_synthetic_mosaic(tile: int = 96, ncols: int = 12, nrows: int = 8) -> MosaicGrid:
+    """Build a single-z mosaic of genuinely overlapping, vignette-corrupted tiles.
+
+    Tiles are extracted from the bundled source image with a stride of
+    ``tile * (1 - overlap)`` so neighbouring tiles share content in their
+    overlap region, then each is multiplied by an off-centre vignette.
+    """
+    overlap = 0.2
+    ov = round(overlap * tile)
+    stride = tile - ov
+    src = load_sample_image().astype(np.float32) / 255.0
+
+    array = np.empty((nrows * tile, ncols * tile), dtype=np.float32)
+    vignette = _offcenter_vignette(tile)
+    for r in range(nrows):
+        for c in range(ncols):
+            patch = src[r * stride : r * stride + tile, c * stride : c * stride + tile]
+            array[r * tile : (r + 1) * tile, c * tile : (c + 1) * tile] = patch * vignette
+    return MosaicGrid(array[np.newaxis], (tile, tile), overlap_fraction=overlap)
+
+
+def _save_flatfield_3d(flatfield: np.ndarray, out: Path) -> None:
+    """Render the estimated flat-field as a 3-D surface (illumination landscape)."""
+    fig = plt.figure(figsize=(7, 6))
+    fig.patch.set_facecolor("#0d1117")
+    ax = fig.add_subplot(projection="3d")
+    ax.set_facecolor("#0d1117")
+    yy, xx = np.mgrid[0 : flatfield.shape[0], 0 : flatfield.shape[1]]
+    surf = ax.plot_surface(xx, yy, flatfield, cmap="viridis", rcount=80, ccount=80, linewidth=0, antialiased=True)
+    ax.set_title("Estimated flat-field as an illumination surface", color="white", fontsize=12, pad=10)
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.label.set_color("white")
+        axis.set_tick_params(colors="white")
+    ax.set_xlabel("x-pixel", color="white")
+    ax.set_ylabel("y-pixel", color="white")
+    ax.set_zlabel("gain", color="white")
+    ax.view_init(elev=32, azim=-58)
+    cbar = fig.colorbar(surf, ax=ax, fraction=0.03, pad=0.08)
+    cbar.ax.yaxis.set_tick_params(color="white")
+    plt.setp(cbar.ax.get_yticklabels(), color="white")
+    fig.tight_layout()
+    path = out / "flatfield_3d.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"Saved: {path}")
+
+
+def _save_tuning_demo(out: Path) -> None:
+    """Run a short Optuna tune on a synthetic mosaic and plot the training story.
+
+    Produces a 1x3 figure: the optimisation history (best-so-far seam-L1),
+    the tuned flat-field, and a raw-vs-tuned seam-consistency bar chart.
+    """
+    try:
+        import optuna  # noqa: F401
+    except ImportError:
+        print("optuna not installed — skipping tuning demo.")
+        return
+    from linum_basic.tuning import tune
+
+    print("\nGenerating tuning/training demo (synthetic mosaic)...")
+    mosaic = _build_synthetic_mosaic()
+    seam_pairs = mosaic.seam_pairs()
+    raw_tiles = mosaic.iter_tiles(0)
+    seam_raw = seam_l1(raw_tiles, seam_pairs)
+
+    result = tune(
+        mosaic,
+        n_trials=25,
+        z_subsample=1,
+        max_tiles=None,
+        seed=0,
+        run_full_fit=True,
+        verbose=False,
+    )
+    assert result.best_fit is not None
+    corrected = apply_fit(mosaic, result.best_fit)[0]
+    th, tw = mosaic.tile_shape
+    corr_tiles = corrected.reshape(mosaic.n_rows, th, mosaic.n_cols, tw).transpose(0, 2, 1, 3)
+    corr_tiles = corr_tiles.reshape(mosaic.n_rows * mosaic.n_cols, th, tw)
+    seam_tuned = seam_l1(corr_tiles, seam_pairs)
+    improvement = 100.0 * (seam_raw - seam_tuned) / (seam_raw + 1e-12)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
+    fig.patch.set_facecolor("#0d1117")
+
+    # Panel 0: optimisation history.
+    ax = axes[0]
+    df = result.trials_df
+    if df is not None and "value" in df.columns:
+        completed = df[df["state"] == "COMPLETE"].reset_index(drop=True) if "state" in df.columns else df
+        values = completed["value"].to_numpy()
+        idx = np.arange(len(values))
+        ax.scatter(idx, values, c="#58a6ff", s=30, alpha=0.8, label="trial")
+        ax.step(idx, np.minimum.accumulate(values), where="post", color="#f85149", lw=2, label="best so far")
+    ax.set_xlabel("Trial", color="white")
+    ax.set_ylabel("Seam L1 (lower = better)", color="white")
+    ax.set_title("Optuna optimisation history", color="white", fontsize=11)
+    ax.legend(fontsize=9)
+    ax.tick_params(colors="white")
+    ax.set_facecolor("#0d1117")
+
+    # Panel 1: tuned flat-field.
+    ax = axes[1]
+    ff = result.best_fit.flatfields[0]
+    im = ax.imshow(ff, cmap="viridis", interpolation="nearest")
+    ax.contour(ff, levels=10, colors="w", linewidths=0.5, alpha=0.6)
+    ax.set_title("Tuned flat-field", color="white", fontsize=11)
+    ax.axis("off")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    # Panel 2: seam-consistency before/after.
+    ax = axes[2]
+    bars = ax.bar(["raw", "tuned"], [seam_raw, seam_tuned], color=["#8b949e", "#3fb950"], width=0.6)
+    ax.bar_label(bars, fmt="%.3f", color="white", fontsize=10, padding=3)
+    ax.set_ylabel("Seam L1", color="white")
+    ax.set_title(f"Seam consistency ({improvement:+.0f}%)", color="white", fontsize=11)
+    ax.tick_params(colors="white")
+    ax.set_facecolor("#0d1117")
+
+    fig.suptitle(
+        "BaSiC hyperparameter tuning — minimising seam mismatch",
+        color="white",
+        fontsize=13,
+        fontweight="bold",
+        y=1.02,
+    )
+    fig.tight_layout()
+    path = out / "tuning_demo.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"Saved: {path}  (seam L1 {seam_raw:.3f} -> {seam_tuned:.3f}, {improvement:+.0f}%)")
 
 
 def main() -> None:
@@ -280,6 +433,17 @@ def main() -> None:
     print(f"Saved: {darkfield_path}")
     print(f"Saved: {out / 'darkfield_gt.png'}")
     print(f"Saved: {out / 'darkfield_estimated.png'}")
+
+    # ------------------------------------------------------------------
+    # 7. 3-D flat-field surface (illumination landscape)
+    # ------------------------------------------------------------------
+    print("\nGenerating 3-D flat-field surface...")
+    _save_flatfield_3d(flatfield, out)
+
+    # ------------------------------------------------------------------
+    # 8. Tuning / training demo on a synthetic overlapping mosaic
+    # ------------------------------------------------------------------
+    _save_tuning_demo(out)
     print("Done.")
 
 
