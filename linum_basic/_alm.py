@@ -285,10 +285,11 @@ def inexact_alm_l1(
                 temp3 = b1_cand * k_cnt
                 temp4 = float((b_valid * b1_cand).sum())
                 denom = temp2 * temp3 - k_cnt * temp4
-                B1 = (temp1 * temp3 - temp2 * temp4) / denom if denom != 0.0 else B1
-            # else: keep the previous B1 when no valid (B < 1) images remain
-
-            B1 = max(0.0, min(B1, B1_uplimit / (S_mean + 1e-9)))
+                B1_new = (temp1 * temp3 - temp2 * temp4) / denom if denom != 0.0 else B1
+                B1_new = min(B1_new, B1_uplimit / (S_mean + 1e-9))
+                if B1_new > 0.0:
+                    B1 = B1_new
+                # else: keep the previous positive B1 estimate
 
             Z = B1 * (S_mean - S_spatial)  # shape (1, P*Q), float32 on device
 
