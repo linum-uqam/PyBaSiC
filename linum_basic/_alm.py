@@ -291,12 +291,20 @@ def inexact_alm_l1(
 
             B1 = max(0.0, min(B1, B1_uplimit / (S_mean + 1e-9)))
 
-            Z = B1 * (S_mean - S_spatial)  # shape (1, P*Q), on device
+            Z = B1 * (S_mean - S_spatial)  # shape (1, P*Q), float32 on device
+
+            # Compute A1_offset in float64.  Both mean(R_rows) and b_mean*S are
+            # O(1), their difference is O(dark-field) — float32 loses all
+            # significant digits (catastrophic cancellation).  numpy's default
+            # mean upcast (float32→float64) gave this precision for free before;
+            # we replicate it explicitly here.
+            S64 = xp.astype(S_spatial, np.float64)
             if any_valid:
-                A1_offset = xp.mean(DminusIr[mask_valid_b], axis=0, keepdims=True) - float(b_valid.mean()) * S_spatial
+                D_rows_f64 = xp.astype(DminusIr[mask_valid_b], np.float64)
+                A1_offset = xp.mean(D_rows_f64, axis=0, keepdims=True) - float(b_valid.mean()) * S64
             else:
-                A1_offset = xp.zeros_like(S_spatial)
-            A_offset = A1_offset - Z  # shape (1, P*Q), on device
+                A1_offset = xp.zeros((1, p * q), dtype=np.float64)
+            A_offset = A1_offset - xp.astype(Z, np.float64)  # (1, P*Q) float64
 
             # Zero-mean A_offset before the proximal (DCT-shrink) step so that
             # the DC component of the dark-field is not killed by the shrinkage
