@@ -180,7 +180,7 @@ jobs:
               '',
               `_Run [#${{ github.run_id }}](${runUrl}) · commit ${{ github.sha }}_`,
               '',
-              'Each figure shows (top to bottom): flat-field recovery, dark-field recovery, and sample tile correction.',
+              'Each figure shows (top to bottom): flat-field recovery, dark-field recovery, and sample tile (clean → corrupted → BaSiC-corrected).',
               '',
               '### Gaussian',
               `![Gaussian correction](${base}/vignette_correction_gaussian.png)`,

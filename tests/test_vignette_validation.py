@@ -60,7 +60,10 @@ def _generate_ground_truth(kind: str, *, order: int = 4) -> tuple[np.ndarray, np
     """Generate a (flatfield, darkfield) pair for *kind* using the Python API.
 
     Both arrays are float32 of shape (_TILE, _TILE).  The flat-field is
-    normalised to mean == 1.  The dark-field peak is 0.05.
+    normalised to max == 1 (the simulator's native convention): the center of
+    the field has the highest transmittance (1.0) and all other pixels are
+    strictly below 1.0, so the corruption model only ever darkens pixels —
+    never brightens them.  The dark-field peak is 0.05.
     """
     rng = random.Random(42)
     if kind == "gaussian":
@@ -73,7 +76,12 @@ def _generate_ground_truth(kind: str, *, order: int = 4) -> tuple[np.ndarray, np
         darkfield = generate_zernike_darkfield(width=_TILE, height=_TILE, order=order, max_offset=0.05, rng=rng).astype(
             np.float32
         )
-    flatfield /= flatfield.mean() + 1e-9  # normalise so mean == 1
+    # The simulator already normalises to max == 1; no further rescaling is
+    # needed.  Renormalising to mean == 1 (as BaSiC does internally) would push
+    # the centre above 1.0 and artificially brighten those pixels — which is
+    # physically wrong for a vignette.  Pearson correlation (used in the
+    # assertions) is scale-invariant, so BaSiC's mean == 1 estimate and this
+    # max == 1 ground truth are directly comparable.
     return flatfield, darkfield
 
 
@@ -105,7 +113,7 @@ def _save_figure(
     Layout (3 rows x 3 columns):
       Row 0: GT flat-field | Estimated flat-field | FF abs error
       Row 1: GT dark-field | Estimated dark-field | DF abs error
-      Row 2: Sample tile corrupted | Sample tile corrected | Mean of stack
+      Row 2: Sample tile clean (GT) | Sample tile corrupted | Sample tile BaSiC-corrected
     """
     try:
         import matplotlib
@@ -119,16 +127,22 @@ def _save_figure(
     corrected = np.stack([model.normalize(stack[i]) for i in range(len(stack))])
     ff_err = np.abs(ff_est - gt_flatfield)
     df_err = np.abs(df_est - gt_darkfield)
-    # Pick the most content-rich tile for sample panels.
-    best = int(np.argmax(stack.std(axis=(1, 2))))
+    # Recover the clean (pre-corruption) tiles from ground-truth fields so we can
+    # show the full clean → corrupted → corrected story in row 2.
+    clean = np.clip((stack - gt_darkfield[np.newaxis]) / (gt_flatfield[np.newaxis] + 1e-9), 0.0, 1.0)
+    # Pick the tile where the vignette edge-darkening effect is most visible:
+    # the one with the most content in the peripheral region (where F < flat-field mean,
+    # so the vignette multiplier < 1 and the tile is clearly darkened by the corruption).
+    edge_mask = gt_flatfield < gt_flatfield.mean()
+    best = int(np.argmax(stack[:, edge_mask].mean(axis=-1)))
     # Shared colour ranges for GT vs estimated so they are directly comparable.
     ff_vmin = min(float(gt_flatfield.min()), float(ff_est.min()))
     ff_vmax = max(float(gt_flatfield.max()), float(ff_est.max()))
     df_vmin = 0.0
     df_vmax = max(float(gt_darkfield.max()), float(df_est.max()))
-    # Shared intensity range for corrupted vs corrected tile so brightness is directly comparable.
-    tile_vmin = min(float(stack[best].min()), float(corrected[best].min()))
-    tile_vmax = max(float(stack[best].max()), float(corrected[best].max()))
+    # All three tile panels share the clean-tile range so any deviation is clearly visible.
+    tile_vmin = float(clean[best].min())
+    tile_vmax = float(clean[best].max())
 
     fig, axes = plt.subplots(3, 3, figsize=(12, 10))
     fig.suptitle(
@@ -145,10 +159,12 @@ def _save_figure(
         (axes[1, 0], gt_darkfield, "inferno", False, "GT dark-field", df_vmin, df_vmax),
         (axes[1, 1], df_est, "inferno", False, "Estimated dark-field", df_vmin, df_vmax),
         (axes[1, 2], df_err, "inferno", False, "DF abs error", None, None),
-        # Row 2: sample tiles + mean stack (shared vmin/vmax so brightness is comparable)
-        (axes[2, 0], stack[best], "gray", False, "Sample tile: corrupted", tile_vmin, tile_vmax),
-        (axes[2, 1], corrected[best], "gray", False, "Sample tile: BaSiC-corrected", tile_vmin, tile_vmax),
-        (axes[2, 2], stack.mean(axis=0), "viridis", True, "Mean of corrupted stack", None, None),
+        # Row 2: clean → corrupted → corrected, all on the same scale.
+        # The vignette darkens edges (F < 1) so the corrupted tile should appear darker
+        # at the periphery; BaSiC-corrected should match the clean reference.
+        (axes[2, 0], clean[best], "gray", False, "Sample tile: clean (GT)", tile_vmin, tile_vmax),
+        (axes[2, 1], stack[best], "gray", False, "Sample tile: corrupted", tile_vmin, tile_vmax),
+        (axes[2, 2], corrected[best], "gray", False, "Sample tile: BaSiC-corrected", tile_vmin, tile_vmax),
     ]
     for ax, data, cmap, contours, title, vmin, vmax in panels:
         imshow_kw: dict = {"vmin": vmin, "vmax": vmax} if vmin is not None else {}
