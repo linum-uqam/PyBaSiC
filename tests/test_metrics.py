@@ -60,6 +60,25 @@ class TestSeamL1:
         tiles = _make_tiles()
         assert seam_l1(tiles, []) == pytest.approx(0.0)
 
+    def test_not_gameable_by_interior_brightening(self):
+        """Brightening tile interiors (away from seams) must not change seam_l1.
+
+        Regression guard: the old mean-intensity normalisation could be
+        gamed by inflating interior brightness, which lowered the score
+        without improving seam agreement.  The per-seam relative metric
+        is immune because each seam is normalised by its own local mean.
+        """
+        tiles = _make_tiles(n=20, th=12, tw=12)
+        pairs = _make_seam_pairs(n_rows=4, n_cols=5, tile_h=12, tile_w=12)
+        l1_ref = seam_l1(tiles, pairs)
+
+        boosted = tiles.copy()
+        interior = slice(4, 8)  # strictly inside, away from 2-px seams
+        boosted[:, interior, interior] *= 4.0
+        l1_boosted = seam_l1(boosted, pairs)
+
+        assert l1_boosted == pytest.approx(l1_ref, rel=1e-6)
+
 
 class TestSeamPearson:
     def test_perfect_correlation(self):

@@ -9,9 +9,15 @@ self-supervised quality metric that requires **no ground truth**.
 Two metrics are provided:
 
 ``seam_l1``
-    Mean absolute intensity difference across all seams, normalised by
-    the mean tile intensity so the value is scale-invariant.  Lower is
-    better; zero means perfect agreement.
+    Mean *per-seam relative* absolute intensity difference.  For every
+    seam the disagreement ``mean|a - b|`` is divided by the local mean
+    brightness of that seam ``mean((|a| + |b|) / 2)``, then averaged over
+    all seams.  Normalising each seam by its own local intensity makes
+    the metric scale-invariant (a global gain leaves it unchanged) and
+    physical (a 5-count step on a 10-count background scores worse than
+    on a 1000-count background), and it cannot be gamed by brightening
+    tile interiors away from the seams.  Lower is better; 0 = perfect
+    agreement.
 
 ``seam_pearson``
     Mean Pearson correlation between the paired overlap regions.  Returns
@@ -32,7 +38,7 @@ __all__ = ["evaluate_correction", "seam_l1", "seam_pearson"]
 
 
 def seam_l1(tiles: np.ndarray, seam_pairs: list[SeamPair]) -> float:
-    """Mean absolute seam error normalised by mean tile intensity.
+    """Mean per-seam relative absolute error.
 
     Parameters
     ----------
@@ -44,20 +50,20 @@ def seam_l1(tiles: np.ndarray, seam_pairs: list[SeamPair]) -> float:
     Returns
     -------
     float
-        ``mean(|overlap_a - overlap_b|) / (mean(tiles) + epsilon)``.
-        Scale-invariant; 0 = perfect agreement.
+        Mean over seams of ``mean(|a - b|) / (mean((|a| + |b|) / 2) + epsilon)``.
+        Scale-invariant and physical; 0 = perfect agreement.
     """
     if not seam_pairs:
         return 0.0
 
-    diffs: list[float] = []
+    rels: list[float] = []
     for sp in seam_pairs:
         a = tiles[sp.idx_a][sp.slice_a].ravel()
         b = tiles[sp.idx_b][sp.slice_b].ravel()
-        diffs.append(float(np.abs(a - b).mean()))
+        local = float((np.abs(a) + np.abs(b)).mean()) / 2.0
+        rels.append(float(np.abs(a - b).mean()) / (local + 1e-9))
 
-    norm = float(np.mean(np.abs(tiles))) + 1e-9
-    return float(np.mean(diffs)) / norm
+    return float(np.mean(rels))
 
 
 def seam_pearson(tiles: np.ndarray, seam_pairs: list[SeamPair]) -> float:
