@@ -11,16 +11,22 @@ hyperparameter search.
 When a microscopy mosaic is imaged with a spatially non-uniform flat-field
 (vignette), adjacent tiles look different at their shared boundaries even
 though they image the same tissue.  The **seam-consistency L1 metric**
-quantifies this mismatch:
+quantifies this mismatch as a *per-seam relative* error:
 
 $$
 \text{seam\_l1} = \frac{1}{|P|} \sum_{(i,j) \in P}
-    \left| \bar{s}_i - \bar{s}_j \right|
+    \frac{\operatorname{mean}\left| a_{ij} - b_{ij} \right|}
+         {\operatorname{mean}\!\left(\tfrac{|a_{ij}| + |b_{ij}|}{2}\right) + \varepsilon}
 $$
 
-where $P$ is the set of seam pairs and $\bar{s}_i$, $\bar{s}_j$ are the mean
-pixel values in the overlap strip of tiles $i$ and $j$.  Lower is better; a
-value near zero means adjacent tiles are seamless.
+where $P$ is the set of seam pairs and $a_{ij}$, $b_{ij}$ are the pixel
+values in the shared overlap strip of tiles $i$ and $j$.  Dividing each
+seam's absolute mismatch by its own local brightness makes the metric
+**scale-invariant** (a global gain leaves it unchanged), **physical** (a
+5-count step on a 10-count background scores worse than on a 1000-count
+background), and impossible to game by brightening tile interiors away
+from the seams.  Lower is better; a value near zero means adjacent tiles
+are seamless.
 
 A complementary metric is the **seam Pearson correlation** — the average
 Pearson $r$ over all seam pairs.  Higher is better; values close to 1
@@ -152,14 +158,49 @@ result = tune(
     mosaic,
     n_trials=50,         # Optuna trials
     z_subsample=4,       # z-levels evaluated per trial (for speed)
+    max_tiles=64,        # tiles used for the seam metric (subsampled)
     seed=42,
     verbose=True,
 )
 
 print("Best seam L1:", result.best_value)
 print("Best params:", result.best_params)
-# e.g. {'l_s_divisor': 650.3, 'l_d_divisor': 1820.7}
+# e.g. {'working_size': 128, 'l_s': 0.41, 'l_d': 0.16,
+#       'epsilon': 0.1, 'estimate_darkfield': True}
 ```
+
+`best_params` already holds resolved BaSiC hyperparameters (the searched
+`l_s_divisor`/`l_d_divisor` are converted to absolute `l_s`/`l_d`), so the
+dict can be passed directly to `fit_mosaic`:
+
+### Search space
+
+By default `tune` searches five parameters; pass a `search_space` dict to
+override any of them (categorical entries take a list of choices, continuous
+entries take a `(low, high)` tuple sampled log-uniformly):
+
+| Parameter | Default range | Effect |
+|---|---|---|
+| `working_size` | `[64, 96, 128, 160, 192]` | Internal processing resolution |
+| `l_s_divisor` | `(100.0, 5000.0)` | Flat-field smoothness ($l_s = \text{dct\_sum} / \text{divisor}$) |
+| `l_d_divisor` | `(500.0, 10000.0)` | Dark-field smoothness ($l_d = \text{dct\_sum} / \text{divisor}$) |
+| `epsilon` | `(0.01, 1.0)` | Reweighting stability constant |
+| `estimate_darkfield` | `[True, False]` | Whether to estimate a dark-field |
+
+The remaining BaSiC knobs (`reweighting_tolerance`, `max_reweighting_iterations`,
+`warm_start_reweighting`) are convergence/speed controls rather than
+quality-shaping parameters, so they are not part of the search space — set
+them directly on the model when needed (see {doc}`parameters`).
+
+### Speed and accuracy knobs
+
+| Argument | Default | Purpose |
+|---|---|---|
+| `z_subsample` | `4` | Number of z-levels evaluated per trial.  More = more reliable, slower. |
+| `max_tiles` | `64` | Tiles (evenly spaced) used for the seam metric per trial.  `None` uses all tiles. |
+| `n_workers` | `1` | Threads used to evaluate z-levels in parallel within each trial. |
+| `n_extra_rows` | `0` | Leading rows per tile to drop before fitting (galvo fly-back artefact). |
+| `run_full_fit` | `False` | After tuning, run a full-z fit with the best params into `result.best_fit`. |
 
 The `best_params` dict can be passed directly to `fit_mosaic`:
 
@@ -180,7 +221,7 @@ result = tune(
     n_trials=100,
     storage="sqlite:///my_study.db",
     study_name="my-mosaic-tuning",
-    n_jobs=4,
+    n_workers=4,
 )
 ```
 
@@ -202,7 +243,7 @@ basic_tune --input my_mosaic.ome.zarr \
 |---|---|---|
 | `MosaicGrid` | `linum_basic.mosaic` | Tile extraction + seam-pair enumeration |
 | `SeamPair` | `linum_basic.mosaic` | Descriptor for one pair of adjacent tiles |
-| `seam_l1` | `linum_basic.metrics` | Mean absolute seam mismatch (lower is better) |
+| `seam_l1` | `linum_basic.metrics` | Mean per-seam relative mismatch (lower is better) |
 | `seam_pearson` | `linum_basic.metrics` | Mean seam Pearson correlation (higher is better) |
 | `evaluate_correction` | `linum_basic.metrics` | Combined metrics before and after correction |
 | `MosaicFit` | `linum_basic.fit` | Container for estimated flat/dark-fields |
@@ -212,4 +253,4 @@ basic_tune --input my_mosaic.ome.zarr \
 | `TuneResult` | `linum_basic.tuning` | Best trial params, value, and optional fit |
 | `tune` | `linum_basic.tuning` | Optuna-based hyperparameter search |
 
-See the {ref}`API reference <api>` for full parameter documentation.
+See the {doc}`API reference <api/index>` for full parameter documentation.
