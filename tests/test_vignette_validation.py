@@ -126,6 +126,9 @@ def _save_figure(
     ff_vmax = max(float(gt_flatfield.max()), float(ff_est.max()))
     df_vmin = 0.0
     df_vmax = max(float(gt_darkfield.max()), float(df_est.max()))
+    # Shared intensity range for corrupted vs corrected tile so brightness is directly comparable.
+    tile_vmin = min(float(stack[best].min()), float(corrected[best].min()))
+    tile_vmax = max(float(stack[best].max()), float(corrected[best].max()))
 
     fig, axes = plt.subplots(3, 3, figsize=(12, 10))
     fig.suptitle(
@@ -142,9 +145,9 @@ def _save_figure(
         (axes[1, 0], gt_darkfield, "inferno", False, "GT dark-field", df_vmin, df_vmax),
         (axes[1, 1], df_est, "inferno", False, "Estimated dark-field", df_vmin, df_vmax),
         (axes[1, 2], df_err, "inferno", False, "DF abs error", None, None),
-        # Row 2: sample tiles + mean stack
-        (axes[2, 0], stack[best], "gray", False, "Sample tile: corrupted", None, None),
-        (axes[2, 1], corrected[best], "gray", False, "Sample tile: BaSiC-corrected", None, None),
+        # Row 2: sample tiles + mean stack (shared vmin/vmax so brightness is comparable)
+        (axes[2, 0], stack[best], "gray", False, "Sample tile: corrupted", tile_vmin, tile_vmax),
+        (axes[2, 1], corrected[best], "gray", False, "Sample tile: BaSiC-corrected", tile_vmin, tile_vmax),
         (axes[2, 2], stack.mean(axis=0), "viridis", True, "Mean of corrupted stack", None, None),
     ]
     for ax, data, cmap, contours, title, vmin, vmax in panels:
