@@ -367,5 +367,80 @@ def tune_main(argv: list[str] | None = None) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# basic_preview entry point
+# ---------------------------------------------------------------------------
+
+
+def _build_preview_parser() -> argparse.ArgumentParser:
+    """Argument parser for ``basic_preview``."""
+    parser = argparse.ArgumentParser(
+        prog="basic_preview",
+        description="Render an average-intensity-projection PNG preview of an OME-Zarr volume.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    io_group = parser.add_argument_group("I/O")
+    io_group.add_argument("--input", metavar="ZARR", required=True, type=Path, help="Path to the input .ome.zarr volume.")
+    io_group.add_argument("--output", metavar="PNG", required=True, type=Path, help="Path to write the preview PNG.")
+
+    proj_group = parser.add_argument_group("Projection")
+    proj_group.add_argument("--axis", metavar="N", type=int, default=0, help="Axis to average over (0 = depth/z).")
+    proj_group.add_argument(
+        "--percentile", metavar="P", type=float, default=99.5, help="Upper display percentile for contrast (0-100)."
+    )
+    proj_group.add_argument("--cmap", metavar="NAME", default="viridis", help="Matplotlib colormap name.")
+    proj_group.add_argument("--title", metavar="TEXT", default=None, help="Optional figure title.")
+    proj_group.add_argument("--dpi", metavar="N", type=int, default=200, help="Output resolution in dots per inch.")
+
+    parser.add_argument("--verbose", action="store_true", default=False, help="Print progress information.")
+    return parser
+
+
+def preview_main(argv: list[str] | None = None) -> int:
+    """Entry point for the ``basic_preview`` command.
+
+    Renders a 2-D average-intensity projection of an OME-Zarr volume as a PNG,
+    suitable for a quick visual check of processed data.
+
+    Parameters
+    ----------
+    argv : list of str or None
+        Command-line arguments.  ``None`` reads from ``sys.argv``.
+
+    Returns
+    -------
+    int
+        Exit code (0 on success).
+    """
+    parser = _build_preview_parser()
+    args = parser.parse_args(argv)
+
+    from linum_basic import viz
+    from linum_basic.io.zarr import load_ome_zarr
+
+    volume, axes, scale = load_ome_zarr(args.input)
+
+    # In-plane pixel size (mm) from the non-projected spatial axes.
+    pixel_size_mm: float | None = None
+    in_plane = [s for i, s in enumerate(scale) if i != args.axis]
+    if in_plane:
+        pixel_size_mm = float(in_plane[-1])
+
+    fig = viz.aip_preview(
+        volume,
+        axis=args.axis,
+        pixel_size_mm=pixel_size_mm,
+        cmap=args.cmap,
+        title=args.title,
+        percentile=args.percentile,
+    )
+    viz.save_figure(fig, args.output, dpi=args.dpi)
+
+    if args.verbose:
+        print(f"Saved preview to '{args.output}' (axes={axes}, scale={scale}).")
+
+    return 0
+
+
 if __name__ == "__main__":
     sys.exit(main())

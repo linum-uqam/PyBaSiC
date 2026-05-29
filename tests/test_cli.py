@@ -187,3 +187,32 @@ class TestCliEndToEnd:
             timeout=120,
         )
         assert result.returncode == 0, f"Backend '{backend}' failed.\nstderr:\n{result.stderr}"
+
+
+class TestPreviewCli:
+    """Tests for the ``basic_preview`` AIP preview entry-point."""
+
+    def test_preview_creates_png(self, tmp_path: Path) -> None:
+        """``preview_main`` writes a non-empty PNG from a small OME-Zarr volume."""
+        from linum_basic.cli import preview_main
+        from linum_basic.io.zarr import write_ome_zarr
+
+        rng = np.random.default_rng(3)
+        volume = rng.random((5, 32, 48), dtype=np.float32)
+        zarr_path = tmp_path / "vol.ome.zarr"
+        write_ome_zarr(zarr_path, volume, axes=["z", "y", "x"], scale=[2.0, 0.01, 0.01], overwrite=True)
+
+        out_png = tmp_path / "preview.png"
+        rc = preview_main(["--input", str(zarr_path), "--output", str(out_png), "--dpi", "60"])
+
+        assert rc == 0
+        assert out_png.is_file()
+        assert out_png.stat().st_size > 0
+
+    def test_preview_help_exits_zero(self) -> None:
+        """``basic_preview --help`` exits with code 0."""
+        from linum_basic.cli import _build_preview_parser
+
+        with pytest.raises(SystemExit) as excinfo:
+            _build_preview_parser().parse_args(["--help"])
+        assert excinfo.value.code == 0
