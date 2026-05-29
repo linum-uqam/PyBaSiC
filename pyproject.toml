@@ -25,6 +25,11 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = ["torch>=2.7"]
+viz = [
+    "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
+]
 docs = [
     "sbh-simulator",
     "sphinx>=9.1",
@@ -43,6 +48,8 @@ docs = [
     "ipykernel>=6.29",
     "ipywidgets>=8.0",
     "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
 ]
 dev = [
     "pytest>=8.4",
@@ -52,11 +59,15 @@ dev = [
     "numpydoc>=1.9",
     "pre-commit>=4.2",
     "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
     "pandas>=2.2",
 ]
 notebooks = [
     "sbh-simulator",
     "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
     "notebook>=7.3",
     "ipykernel>=6.29",
     "ipywidgets>=8.0",
