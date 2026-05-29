@@ -124,6 +124,224 @@ def _smooth_fields(flatfields: np.ndarray, sigma: float) -> np.ndarray:
     return gaussian_filter1d(flatfields, sigma=sigma, axis=0)
 
 
+# ---------------------------------------------------------------------------
+# Orientation analysis helpers
+# ---------------------------------------------------------------------------
+
+
+def _find_principal_angle(flatfields: np.ndarray) -> float:
+    """Return the dominant gradient direction (degrees) of the mean flat-field.
+
+    Uses SVD of the pixel-wise gradient vectors to find the in-plane direction
+    of maximum illumination variation.  For a radially symmetric beam this is
+    arbitrary; for an asymmetric beam it points along the major axis.
+    """
+    ff_mean = flatfields.mean(axis=0)
+    gy, gx = np.gradient(ff_mean)
+    grad_stack = np.stack([gx.ravel(), gy.ravel()], axis=1)
+    _, _, vt = np.linalg.svd(grad_stack, full_matrices=False)
+    dx, dy = float(vt[0, 0]), float(vt[0, 1])
+    return float(np.degrees(np.arctan2(dy, dx)))
+
+
+def _zd_slice(flatfields: np.ndarray, angle_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    """Extract a Z x T diagonal slice from the flat-field volume.
+
+    Parameters
+    ----------
+    flatfields : numpy.ndarray, shape (n_z, th, tw)
+    angle_deg : float
+        Cut angle in degrees measured from the positive x-axis
+        (0 = horizontal, 90 = vertical, arbitrary values = diagonal).
+
+    Returns
+    -------
+    t : numpy.ndarray
+        Pixel offsets from the tile centre along the cut direction.
+    view : numpy.ndarray, shape (n_z, len(t))
+        Flat-field values sampled along the cut for every z-level.
+    """
+    from scipy.ndimage import map_coordinates
+
+    _, th, tw = flatfields.shape
+    cy, cx = th // 2, tw // 2
+    ar = np.deg2rad(angle_deg)
+    half = min(th, tw) // 2 - 1
+    t = np.arange(-half, half + 1, dtype=float)
+    rows = cy + t * np.sin(ar)
+    cols = cx + t * np.cos(ar)
+    view = np.stack(
+        [map_coordinates(flatfields[i], [rows, cols], order=1, mode="nearest") for i in range(len(flatfields))],
+        axis=0,
+    )
+    return t, view
+
+
+def _build_orientation_figure(
+    fit,
+    z_inspect: int,
+    smooth_sigma: float,
+    out_path: Path,
+    zarr_path: str = "",
+) -> None:
+    """Generate a flat-field orientation comparison figure.
+
+    Shows Z-depth cross-sections at four cut angles: axis-aligned (0°, 90°)
+    and along the principal / perpendicular gradient directions computed via
+    SVD.  Diagonal cuts slice the illumination volume along its natural
+    curvature axis rather than forcing an arbitrary axis-aligned view.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as ticker
+    from scipy.ndimage import map_coordinates
+
+    flatfields = _smooth_fields(fit.flatfields.copy(), smooth_sigma)
+    z_indices = fit.z_indices
+    _, th, tw = flatfields.shape
+    cy, cx = th // 2, tw // 2
+    z_labels = np.array(z_indices)
+
+    principal_angle = _find_principal_angle(flatfields)
+    perp_angle = principal_angle + 90.0
+
+    # Z-depth views at four cut angles
+    t_h, view_h = _zd_slice(flatfields, 0.0)
+    t_v, view_v = _zd_slice(flatfields, 90.0)
+    t_p, view_p = _zd_slice(flatfields, principal_angle)
+    t_perp, view_perp = _zd_slice(flatfields, perp_angle)
+
+    # 1-D profiles through the flat-field at z_inspect
+    z_pos = z_indices.index(z_inspect)
+    ff_zi = flatfields[z_pos]
+
+    def _profile(ff: np.ndarray, angle_deg: float) -> tuple[np.ndarray, np.ndarray]:
+        ar = np.deg2rad(angle_deg)
+        h = min(ff.shape) // 2 - 1
+        tp = np.arange(-h, h + 1, dtype=float)
+        rp = cy + tp * np.sin(ar)
+        cp = cx + tp * np.cos(ar)
+        return tp, map_coordinates(ff, [rp, cp], order=1, mode="nearest")
+
+    t1h, p_h = _profile(ff_zi, 0.0)
+    t1v, p_v = _profile(ff_zi, 90.0)
+    t1p, p_p = _profile(ff_zi, principal_angle)
+    t1perp, p_perp = _profile(ff_zi, perp_angle)
+
+    # -----------------------------------------------------------------------
+    # Layout: 2 rows x 3 cols
+    # Row 0: mean ff + cuts | Z x H (0 deg)   | Z x Principal (diagonal)
+    # Row 1: 1-D profiles   | Z x V (90 deg)  | Z x Perp (diagonal)
+    # -----------------------------------------------------------------------
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10), constrained_layout=True)
+
+    vmin, vmax = 0.7, 1.3
+    im_kw = {"aspect": "auto", "origin": "lower", "cmap": "RdYlGn", "vmin": vmin, "vmax": vmax}
+
+    # --- [0, 0] Mean flat-field with cut-direction overlay ---
+    ff_mean = flatfields.mean(axis=0)
+    ax = axes[0, 0]
+    im = ax.imshow(ff_mean, cmap="RdYlGn", vmin=vmin, vmax=vmax, origin="lower")
+    half_line = min(th, tw) // 2 - 1
+    for angle, color, lbl in [
+        (0.0, "dodgerblue", "H  (0°)"),
+        (90.0, "deepskyblue", "V  (90°)"),
+        (principal_angle, "crimson", f"Principal  ({principal_angle:.1f}°)"),
+        (perp_angle, "tomato", f"Perp  ({perp_angle:.1f}°)"),
+    ]:
+        ar = np.deg2rad(angle)
+        ax.plot(
+            [cx - half_line * np.cos(ar), cx + half_line * np.cos(ar)],
+            [cy - half_line * np.sin(ar), cy + half_line * np.sin(ar)],
+            color=color,
+            linewidth=2,
+            label=lbl,
+        )
+    ax.legend(fontsize=7, loc="upper right")
+    fig.colorbar(im, ax=ax, shrink=0.8, label="flat-field")
+    ax.set_title("Mean flat-field + cut directions")
+    ax.set_xlabel("x-pixel")
+    ax.set_ylabel("y-pixel")
+
+    # --- [0, 1] Z x H view ---
+    ax = axes[0, 1]
+    im = ax.imshow(
+        view_h,
+        **im_kw,
+        extent=(float(t_h[0]), float(t_h[-1]), float(z_labels[0]), float(z_labels[-1])),
+    )
+    ax.set_xlabel("pixel offset from centre")
+    ax.set_ylabel("z-index")
+    ax.set_title("Z x H  (axis-aligned, 0 deg)")
+    fig.colorbar(im, ax=ax, shrink=0.8, label="flat-field")
+
+    # --- [0, 2] Z x Principal view (diagonal) ---
+    ax = axes[0, 2]
+    im = ax.imshow(
+        view_p,
+        **im_kw,
+        extent=(float(t_p[0]), float(t_p[-1]), float(z_labels[0]), float(z_labels[-1])),
+    )
+    ax.set_xlabel("pixel offset from centre")
+    ax.set_ylabel("z-index")
+    ax.set_title(f"Z x Principal  ({principal_angle:.1f} deg, diagonal)")
+    fig.colorbar(im, ax=ax, shrink=0.8, label="flat-field")
+
+    # --- [1, 0] 1-D profiles at z_inspect ---
+    ax = axes[1, 0]
+    ax.plot(t1h, p_h, color="dodgerblue", label="H  (0°)")
+    ax.plot(t1v, p_v, color="deepskyblue", label="V  (90°)")
+    ax.plot(t1p, p_p, color="crimson", label=f"Principal  ({principal_angle:.1f}°)")
+    ax.plot(t1perp, p_perp, color="tomato", label=f"Perp  ({perp_angle:.1f}°)")
+    ax.axhline(1.0, color="k", linestyle="--", linewidth=0.8)
+    ax.set_xlabel("pixel offset from centre")
+    ax.set_ylabel("flat-field value")
+    ax.set_title(f"1-D profiles at z={z_inspect}")
+    ax.legend(fontsize=8)
+    ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+    ax.grid(True, which="major", alpha=0.4)
+
+    # --- [1, 1] Z x V view ---
+    ax = axes[1, 1]
+    im = ax.imshow(
+        view_v,
+        **im_kw,
+        extent=(float(t_v[0]), float(t_v[-1]), float(z_labels[0]), float(z_labels[-1])),
+    )
+    ax.set_xlabel("pixel offset from centre")
+    ax.set_ylabel("z-index")
+    ax.set_title("Z x V  (axis-aligned, 90 deg)")
+    fig.colorbar(im, ax=ax, shrink=0.8, label="flat-field")
+
+    # --- [1, 2] Z x Perp view (diagonal) ---
+    ax = axes[1, 2]
+    im = ax.imshow(
+        view_perp,
+        **im_kw,
+        extent=(float(t_perp[0]), float(t_perp[-1]), float(z_labels[0]), float(z_labels[-1])),
+    )
+    ax.set_xlabel("pixel offset from centre")
+    ax.set_ylabel("z-index")
+    ax.set_title(f"Z x Perp  ({perp_angle:.1f} deg, diagonal)")
+    fig.colorbar(im, ax=ax, shrink=0.8, label="flat-field")
+
+    dataset_name = Path(zarr_path).name if zarr_path else "dataset"
+    fig.suptitle(
+        f"Flat-field orientation analysis  |  {dataset_name}",
+        fontsize=13,
+        fontweight="bold",
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"Saved to {out_path}")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Main figure
+# ---------------------------------------------------------------------------
+
+
 def _build_figure(
     mosaic, fit, z_inspect: int, smooth_sigma: float, out_path: Path, zarr_path: str = "", n_extra_rows: int = 0
 ) -> None:
@@ -279,6 +497,14 @@ def main(argv: list[str] | None = None) -> int:
         out_path=Path(args.output),
         zarr_path=args.input,
         n_extra_rows=args.n_extra,
+    )
+    orient_path = Path(args.output).with_stem(Path(args.output).stem + "_orientation")
+    _build_orientation_figure(
+        fit,
+        z_inspect=z_inspect,
+        smooth_sigma=args.smooth_sigma,
+        out_path=orient_path,
+        zarr_path=args.input,
     )
     return 0
 
