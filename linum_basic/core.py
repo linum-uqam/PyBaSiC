@@ -13,6 +13,7 @@ References
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -251,12 +252,18 @@ class BaSiC:
         if img_stack is not None:
             self.img_stack = img_stack
         elif self.input_type in {"directory", "files_list"}:
-            raw: list[NDArray] = []
-            gen = tqdm(self.files, desc="Loading images", leave=False) if self.verbose else self.files
-            for path in gen:
-                img = cv2.imread(str(path), cv2.IMREAD_ANYDEPTH)
-                if img is not None:
-                    raw.append(img)
+            # Parallel I/O: cv2.imread releases the GIL, so threads overlap
+            # disk reads across multiple files at once.
+            n_workers = min(32, len(self.files))
+
+            def _read_one(path: Path) -> NDArray | None:
+                return cv2.imread(str(path), cv2.IMREAD_ANYDEPTH)  # type: ignore[return-value]
+
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                raw_iter = pool.map(_read_one, self.files)
+            if self.verbose:
+                raw_iter = tqdm(raw_iter, desc="Loading images", total=len(self.files), leave=False)
+            raw: list[NDArray] = [img for img in raw_iter if img is not None]
             self.img_stack = np.array(raw)
 
         self.n_images = self.img_stack.shape[0]
@@ -265,9 +272,16 @@ class BaSiC:
         new_shape = (self.working_size, self.working_size)
         interp = cv2.INTER_LINEAR if self.working_size > self.image_shape[0] else cv2.INTER_AREA
         resized = np.zeros([self.n_images, *new_shape], dtype=np.float32)
-        for i in range(self.n_images):
+
+        # Parallel resizing: cv2.resize releases the GIL; each worker writes
+        # to an independent row of the pre-allocated output array.
+        def _resize_one(i: int) -> None:
             img = self.img_stack[i].squeeze()
             resized[i] = cv2.resize(img.T, new_shape, interpolation=interp).T
+
+        with ThreadPoolExecutor(max_workers=min(32, self.n_images)) as pool:
+            list(pool.map(_resize_one, range(self.n_images)))
+
         self.img_stack_resized = resized
 
     # ------------------------------------------------------------------
@@ -486,10 +500,20 @@ class BaSiC:
         out_dir = Path(directory)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        for i in tqdm(range(self.n_images), desc="Shading correction", leave=False):
-            corrected = self.normalize(self.img_stack[i], epsilon=epsilon)
-            out_path = out_dir / self.files[i].name
-            cv2.imwrite(str(out_path), corrected)
+        # Vectorised normalisation over the whole stack at once, then
+        # parallel write (cv2.imwrite releases the GIL).
+        stack_f32 = self.img_stack.astype(np.float32)
+        corrected_stack = (stack_f32 - self.darkfield_fullsize) / (self.flatfield_fullsize + epsilon)
+        if self.img_stack.dtype not in (np.float32, np.float64):
+            info = np.iinfo(self.img_stack.dtype)
+            corrected_stack = np.clip(corrected_stack, info.min, info.max)
+        corrected_stack = corrected_stack.astype(self.img_stack.dtype)
+
+        def _write_one(i: int) -> None:
+            cv2.imwrite(str(out_dir / self.files[i].name), corrected_stack[i])
+
+        with ThreadPoolExecutor(max_workers=min(32, self.n_images)) as pool:
+            list(tqdm(pool.map(_write_one, range(self.n_images)), desc="Shading correction", total=self.n_images, leave=False))
 
     def set_flatfield(self, flatfield: NDArray) -> None:
         """Override the estimated flat-field with a pre-computed one.

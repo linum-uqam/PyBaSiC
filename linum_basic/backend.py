@@ -273,6 +273,29 @@ class ArrayNamespace:
             return self._torch.clamp_max(x, y)
         return self._torch.minimum(x, y)
 
+    def mean(self, x: Any, axis: int | None = None, keepdims: bool = False) -> Any:
+        """Compute the arithmetic mean along an axis.
+
+        Parameters
+        ----------
+        x : Any
+            Input array or tensor.
+        axis : int or None
+            Axis to reduce along.  ``None`` reduces all elements to a scalar.
+        keepdims : bool
+            If ``True`` the reduced axis is kept as a dimension of size 1.
+
+        Returns
+        -------
+        Any
+            Reduced result on the same backend as *x*.
+        """
+        if self._backend is Backend.NUMPY:
+            return np.mean(x, axis=axis, keepdims=keepdims)
+        if axis is None:
+            return self._torch.mean(x)
+        return self._torch.mean(x, dim=axis, keepdim=keepdims)
+
     # ------------------------------------------------------------------
     # Linear algebra
     # ------------------------------------------------------------------
@@ -427,6 +450,45 @@ class ArrayNamespace:
 # PyTorch DCT-II / DCT-III via FFT  (Lee 1984 / Makhoul 1980)
 # ---------------------------------------------------------------------------
 
+# Per-(length, dtype, device) cache of precomputed twiddle factors and scale
+# vectors.  Populated lazily on first use; avoids O(n) trig recomputation on
+# every DCT call inside the hot ALM loop.
+_DCT_TWIDDLE_CACHE: dict[tuple, tuple] = {}
+_IDCT_TWIDDLE_CACHE: dict[tuple, tuple] = {}
+
+
+def _get_dct_twiddles(n: int, dtype: Any, device: Any) -> tuple:
+    """Return cached (cos_k, sin_k, ortho_scale) for a forward DCT of length *n*."""
+    import torch
+
+    key = (n, dtype, str(device))
+    if key not in _DCT_TWIDDLE_CACHE:
+        k = torch.arange(n, dtype=dtype, device=device)
+        theta = math.pi * k / (2.0 * n)
+        cos_k = torch.cos(theta)
+        sin_k = torch.sin(theta)
+        scale = torch.empty(n, dtype=dtype, device=device)
+        scale[0] = 1.0 / math.sqrt(n)
+        scale[1:] = 1.0 / math.sqrt(n / 2)
+        _DCT_TWIDDLE_CACHE[key] = (cos_k, sin_k, scale)
+    return _DCT_TWIDDLE_CACHE[key]
+
+
+def _get_idct_twiddles(n: int, dtype: Any, device: Any) -> tuple:
+    """Return cached (cos_k, sin_k, ortho_scale) for an inverse DCT of length *n*."""
+    import torch
+
+    key = (n, dtype, str(device))
+    if key not in _IDCT_TWIDDLE_CACHE:
+        k = torch.arange(n, dtype=dtype, device=device)
+        cos_k = torch.cos(math.pi * k / (2.0 * n))
+        sin_k = torch.sin(math.pi * k / (2.0 * n))
+        scale = torch.empty(n, dtype=dtype, device=device)
+        scale[0] = math.sqrt(n)
+        scale[1:] = math.sqrt(n / 2)
+        _IDCT_TWIDDLE_CACHE[key] = (cos_k, sin_k, scale)
+    return _IDCT_TWIDDLE_CACHE[key]
+
 
 def _torch_dct1d(x: Any, norm: str = "ortho") -> Any:
     """Orthonormal 1-D DCT-II along the last axis.
@@ -446,26 +508,21 @@ def _torch_dct1d(x: Any, norm: str = "ortho") -> Any:
     Notes
     -----
     Algorithm reorders the input (even/odd interleaving), applies a real
-    FFT, then multiplies by twiddle factors to obtain the DCT-II spectrum.
+    FFT, then multiplies by precomputed twiddle factors to obtain the
+    DCT-II spectrum.  Twiddle factors are cached per (length, dtype, device)
+    to avoid recomputation on every call.
     """
     import torch
 
     n = x.shape[-1]  # type: ignore[union-attr]
+    cos_k, sin_k, scale = _get_dct_twiddles(n, x.dtype, x.device)  # type: ignore[union-attr]
     v = torch.cat([x[..., ::2], x[..., 1::2].flip(-1)], dim=-1)  # type: ignore[index]
     Vc = torch.fft.fft(v, n=n, dim=-1)
-    k = torch.arange(n, dtype=x.dtype, device=x.device)  # type: ignore[union-attr]
-    theta = math.pi * k / (2.0 * n)
-    cos_k = torch.cos(theta)
-    sin_k = torch.sin(theta)
     # Re(Vc * exp(-i*theta)) = Vc.real*cos + Vc.imag*sin
     y = Vc.real * cos_k + Vc.imag * sin_k
     if norm == "ortho":
-        y = y.clone()
-        y[..., 0] = y[..., 0] / math.sqrt(n)
-        y[..., 1:] = y[..., 1:] / math.sqrt(n / 2)
-    else:
-        y = 2.0 * y
-    return y
+        return y * scale
+    return 2.0 * y
 
 
 def _torch_idct1d(x: Any, norm: str = "ortho") -> Any:
@@ -486,18 +543,10 @@ def _torch_idct1d(x: Any, norm: str = "ortho") -> Any:
     import torch
 
     n = x.shape[-1]  # type: ignore[union-attr]
-    xn = x.clone()  # type: ignore[union-attr]
-    if norm == "ortho":
-        xn[..., 0] = xn[..., 0] * math.sqrt(n)
-        xn[..., 1:] = xn[..., 1:] * math.sqrt(n / 2)
-    else:
-        xn = xn / 2
-
-    k = torch.arange(n, dtype=x.dtype, device=x.device)  # type: ignore[union-attr]
-    cos_k = torch.cos(math.pi * k / (2.0 * n))
-    sin_k = torch.sin(math.pi * k / (2.0 * n))
+    cos_k, sin_k, scale = _get_idct_twiddles(n, x.dtype, x.device)  # type: ignore[union-attr]
+    xn = x * scale if norm == "ortho" else x / 2
     # Anti-Hermitian imaginary part (exploits real-signal symmetry of forward FFT)
-    Vt_i = torch.cat([xn[..., :1] * 0, -xn[..., 1:].flip(-1)], dim=-1)
+    Vt_i = torch.cat([torch.zeros_like(xn[..., :1]), -xn[..., 1:].flip(-1)], dim=-1)
     V_r = xn * cos_k - Vt_i * sin_k
     V_i = xn * sin_k + Vt_i * cos_k
     V = torch.complex(V_r, V_i)

@@ -204,40 +204,69 @@ def inexact_alm_l1(
     B1: float = 0.0  # ensure B1 is always defined
 
     pbar: tqdm | None = tqdm(desc="ALM Iteration", total=max_iter, leave=False) if verbose else None
-    S_spatial = xp.zeros((1, p * q), dtype=np.float32)
+    # Ib initialised to zeros as a safe default if the loop body never executes.
     Ib = xp.zeros_like(D)
+
+    # ------------------------------------------------------------------
+    # Pre-compute S_spatial from the initial (or warm-started) Sf so that
+    # the first iteration can reuse it directly, eliminating one iDCT per
+    # ALM iteration (the value is refreshed at the END of every iteration).
+    # ------------------------------------------------------------------
+    Sf_np = xp.to_numpy(Sf).reshape(p, q)
+    S_spatial = xp.asarray(np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32))
 
     # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
     while not converged and iteration < max_iter:
-        # 1. Update sparse residual Ir
-        Sf_np = xp.to_numpy(Sf).reshape(p, q)
-        S_spatial = xp.asarray(np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32))
+        # 1. Update sparse residual Ir.
+        # S_spatial was computed at the end of the previous iteration (or
+        # pre-computed above), so no extra iDCT is needed here.
         Ib = S_spatial * B + D_field  # (N, P*Q)
         Ir = shrink(xp, D - Ib + Y / mu, W / mu)  # type: ignore[operator]
 
-        # 2. Update flat-field DCT coefficients Sf
-        R_for_sf = xp.to_numpy(D - Ir + Y / mu)  # type: ignore[operator]
-        R_for_sf_mean = R_for_sf.reshape(n, p, q).mean(axis=0)
+        # Cache D - Ir: the same subtraction is needed in the flat-field
+        # update (step 2), the baseline update (step 4), and the Lagrange
+        # step (step 6).  Computing it once avoids two redundant N x (P*Q)
+        # allocations per iteration.
+        DminusIr = D - Ir  # type: ignore[operator]
+
+        # 2. Update flat-field DCT coefficients Sf.
+        # The mean reduction stays on the active backend (GPU-friendly):
+        # only a (P, Q) slice is transferred to CPU, not the full (N, P*Q)
+        # matrix.
+        R_dev = DminusIr + Y / mu  # type: ignore[operator]
+        R_for_sf_mean = xp.to_numpy(xp.mean(R_dev.reshape(n, p, q), axis=0))  # float64, matches original
         dSf = xp.asarray(np.asarray(xp.dctn(R_for_sf_mean, norm="ortho")).astype(np.float32))
         Sf = xp.asarray(xp.to_numpy(shrink(xp, dSf, l_s / mu)).astype(np.float32))
 
-        # 3. Reconstruct Ib from updated Sf
+        # 3. Reconstruct Ib from the updated Sf.
+        # S_spatial is stored for reuse at the START of the next iteration.
         Sf_np = xp.to_numpy(Sf).reshape(p, q)
         S_spatial = xp.asarray(np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32))
         Ib = S_spatial * B + D_field
 
-        # 5. Update baseline B
-        R = D - Ir  # type: ignore[operator]
-        R_np = xp.to_numpy(R)
-        R_mean_row = R_np.mean(axis=1, keepdims=True)
-        R_mean_all = R_np.mean()
-        B_np = np.clip(R_mean_row / (R_mean_all + 1e-9), 0, None)
+        # 4. Update baseline B.
+        # When dark-field estimation is on, the full R matrix (N x P*Q) is
+        # needed on CPU for the dark-field step below, so we transfer it
+        # once and derive the per-row / global means from it.
+        # Otherwise we compute the means on the active device and transfer
+        # only the compact (N, 1) + scalar result, avoiding the large
+        # N x (P*Q) data movement.
+        R_np: np.ndarray | None = None
+        if estimate_darkfield:
+            R_np = xp.to_numpy(DminusIr)
+            R_mean_row = R_np.mean(axis=1, keepdims=True)
+            R_mean_all = float(R_np.mean())
+        else:
+            R_mean_row = xp.to_numpy(xp.mean(DminusIr, axis=1, keepdims=True))
+            R_mean_all = float(xp.mean(DminusIr))
+        B_np = np.clip(R_mean_row / (R_mean_all + 1e-9), 0, None)  # float64 - keep for darkfield masks
         B = xp.asarray(B_np.astype(np.float32))
 
-        # 6. Dark-field estimation
+        # 5. Dark-field estimation
         if estimate_darkfield:
+            assert R_np is not None  # always set when estimate_darkfield=True
             S_np = xp.to_numpy(S_spatial)
             mask_valid_b = (B_np < 1)[:, 0]  # shape (N,)
             mask_high_s = S_np[0] > (S_np[0].mean() - 1e-6)
@@ -274,7 +303,9 @@ def inexact_alm_l1(
             Dr = xp.to_numpy(shrink(xp, xp.asarray(Dr.astype(np.float32)), l_d / (mu * ent2)))
             D_field = xp.asarray((Dr + Z).astype(np.float32))
 
-        # 6. Update Lagrange multiplier Y (primal residual: D - Ib - Ir)
+        # 6. Update Lagrange multiplier Y (primal residual: D - Ib - Ir).
+        # Evaluation order matches the original (D - Ib) - Ir, not (D - Ir) - Ib,
+        # to preserve float32 accumulation identical to the pre-optimisation code.
         dY = D - Ib - Ir  # type: ignore[operator]
         Y = Y + mu * dY  # type: ignore[operator]
         mu = min(mu * rho, mu_bar)
