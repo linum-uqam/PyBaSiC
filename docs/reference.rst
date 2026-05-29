@@ -7,6 +7,7 @@ Reference
    getting_started
    algorithm
    parameters
+   tuning
    gpu
    validation
    contributing
