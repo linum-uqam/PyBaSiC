@@ -242,7 +242,12 @@ def inexact_alm_l1(
         # The mean reduction stays on the active backend (GPU-friendly):
         # only a (P, Q) slice is transferred to CPU, not the full (N, P*Q)
         # matrix.
-        R_dev = DminusIr + Y_over_mu  # type: ignore[operator]  reuse cached Y/mu
+        # Subtract D_field (dark-field) before taking the mean so that its
+        # DC/low-frequency energy does not bleed into the flat-field estimate.
+        # This matches the MATLAB reference: temp_W = D - A1_hat - E + Y/mu,
+        # where A1_hat = S*B + D_field. When estimate_darkfield=False,
+        # D_field is identically zero so this subtraction is a no-op.
+        R_dev = DminusIr - D_field + Y_over_mu  # type: ignore[operator]  reuse cached Y/mu
         R_for_sf_mean = xp.to_numpy(xp.mean(R_dev.reshape(n, p, q), axis=0))  # float64, matches original
         dSf = xp.asarray(np.asarray(xp.dctn(R_for_sf_mean, norm="ortho")).astype(np.float32))
         Sf = xp.asarray(xp.to_numpy(shrink(xp, dSf, l_s / mu)).astype(np.float32))
@@ -304,11 +309,21 @@ def inexact_alm_l1(
                 A1_offset = np.zeros_like(S_np)
             A_offset = A1_offset - Z
 
-            Dr_f = np.asarray(xp.dctn(A_offset.reshape(p, q), norm="ortho"))
+            # Zero-mean A_offset before the proximal (DCT-shrink) step so that
+            # the DC component of the dark-field is not killed by the shrinkage
+            # thresholds.  This matches the MATLAB reference which explicitly
+            # subtracts mean(A1_offset) before the DCT step.  In the degenerate
+            # case (B1=0, Z=0) we add the mean back after shrinkage so the DC is
+            # preserved.  The second spatial shrink below is kept intact (paper
+            # Eq. 6 dual penalty |F(D_R)|_1 + |D_R|_1).
+            A_offset_mean = float(np.mean(A_offset))
+            A_offset_centered = A_offset - A_offset_mean
+
+            Dr_f = np.asarray(xp.dctn(A_offset_centered.reshape(p, q), norm="ortho"))
             Dr_f_shrunk = xp.to_numpy(shrink(xp, xp.asarray(Dr_f.astype(np.float32)), l_d / (ent2 * mu)))
             Dr = np.asarray(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho")).reshape(1, p * q)
             Dr = xp.to_numpy(shrink(xp, xp.asarray(Dr.astype(np.float32)), l_d / (mu * ent2)))
-            D_field = xp.asarray((Dr + Z).astype(np.float32))
+            D_field = xp.asarray((Dr + A_offset_mean + Z).astype(np.float32))
 
         # 6. Update Lagrange multiplier Y (primal residual: D - Ib - Ir).
         # Evaluation order matches the original (D - Ib) - Ir, not (D - Ir) - Ib,
