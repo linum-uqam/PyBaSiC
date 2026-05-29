@@ -39,11 +39,24 @@ from linum_basic.mosaic import MosaicGrid
 mosaic = MosaicGrid.from_ome_zarr("my_mosaic.ome.zarr", overlap_fraction=0.2)
 
 # Extract all tiles for z=0
-tiles = mosaic.tiles(z=0)
+tiles = mosaic.iter_tiles(z=0)
 pairs = mosaic.seam_pairs()
 
 print("Raw seam L1:", seam_l1(tiles, pairs))
 print("Raw Pearson:", seam_pearson(tiles, pairs))
+```
+
+```{figure} _static/demo/seam_metric_demo.png
+:alt: BaSiC flat-field 3-D surface and mosaic row before and after correction
+:align: center
+:width: 100%
+
+**Left:** the BaSiC-estimated flat-field rendered as a 3-D surface — the dome-shaped
+illumination curvature is the root cause of all tile-boundary artefacts.
+**Middle:** a row of four raw tiles stitched side-by-side; the vignette repeats on every tile,
+producing visible brightness jumps at each boundary (red dashed lines, mean seam L1 ≈ 0.67).
+**Right:** the same row after BaSiC correction — the illumination curvature is removed and the
+row is seamless (mean seam L1 ≈ 0.02, −96%).
 ```
 
 ---
@@ -148,6 +161,17 @@ l_s = \frac{\text{dct\_sum}}{l_s\text{\_divisor}}, \quad
 l_d = \frac{\text{dct\_sum}}{l_d\text{\_divisor}}
 $$
 
+```{figure} _static/demo/tuning_demo.png
+:alt: Optuna optimisation history, tuned flat-field, and seam-consistency improvement
+:align: center
+:width: 100%
+
+A short 25-trial tuning run on a synthetic overlapping mosaic.  **Left:** each
+Optuna trial's seam-L1 score with the running best (red).  **Centre:** the
+flat-field recovered by the best trial.  **Right:** seam consistency before and
+after correction — the optimiser drives the mismatch down by ~97 %.
+```
+
 ```python
 from linum_basic.mosaic import MosaicGrid
 from linum_basic.tuning import tune
@@ -198,7 +222,7 @@ them directly on the model when needed (see {doc}`parameters`).
 |---|---|---|
 | `z_subsample` | `4` | Number of z-levels evaluated per trial.  More = more reliable, slower. |
 | `max_tiles` | `64` | Tiles (evenly spaced) used for the seam metric per trial.  `None` uses all tiles. |
-| `n_workers` | `1` | Threads used to evaluate z-levels in parallel within each trial. |
+| `n_workers` | `1` | Worker processes used to fit z-levels in parallel within each trial (see {doc}`parallelism`). |
 | `n_extra_rows` | `0` | Leading rows per tile to drop before fitting (galvo fly-back artefact). |
 | `run_full_fit` | `False` | After tuning, run a full-z fit with the best params into `result.best_fit`. |
 

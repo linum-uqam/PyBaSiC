@@ -21,10 +21,16 @@ dependencies = [
     "zarr>=3",
     "ome-zarr>=0.10",
     "optuna>=3.6",
+    "joblib>=1.4",
 ]
 
 [project.optional-dependencies]
 gpu = ["torch>=2.7"]
+viz = [
+    "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
+]
 docs = [
     "sbh-simulator",
     "sphinx>=9.1",
@@ -43,6 +49,8 @@ docs = [
     "ipykernel>=6.29",
     "ipywidgets>=8.0",
     "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
 ]
 dev = [
     "pytest>=8.4",
@@ -52,10 +60,15 @@ dev = [
     "numpydoc>=1.9",
     "pre-commit>=4.2",
     "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
+    "pandas>=2.2",
 ]
 notebooks = [
     "sbh-simulator",
     "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
     "notebook>=7.3",
     "ipykernel>=6.29",
     "ipywidgets>=8.0",
@@ -65,6 +78,7 @@ notebooks = [
 basic_shading_correction = "linum_basic.cli:main"
 basic_fit = "linum_basic.cli:fit_main"
 basic_tune = "linum_basic.cli:tune_main"
+basic_preview = "linum_basic.cli:preview_main"
 
 [project.urls]
 Repository = "https://github.com/linum-uqam/Linum-BaSiC"

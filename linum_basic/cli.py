@@ -204,6 +204,13 @@ def _build_fit_parser() -> argparse.ArgumentParser:
     compute_group.add_argument(
         "--device", metavar="DEVICE", default=None, help="PyTorch device string (ignored for --backend=numpy)."
     )
+    compute_group.add_argument(
+        "--n-jobs",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Worker processes for parallel z-level fitting (default: CPU count - 2; forced to 1 on GPU).",
+    )
 
     parser.add_argument("--verbose", action="store_true", default=False, help="Show progress bars.")
     return parser
@@ -232,7 +239,12 @@ def fit_main(argv: list[str] | None = None) -> int:
 
     basic_kwargs: dict = {"estimate_darkfield": args.estimate_darkfield, "backend": args.backend, "device": args.device}
     fit = fit_mosaic(
-        mosaic, z_indices=args.z_indices, field_mode=args.field_mode, basic_kwargs=basic_kwargs, verbose=args.verbose
+        mosaic,
+        z_indices=args.z_indices,
+        field_mode=args.field_mode,
+        basic_kwargs=basic_kwargs,
+        n_workers=args.n_jobs,
+        verbose=args.verbose,
     )
 
     save_corrected(mosaic, fit, args.output, input_path=args.input, overwrite=True)
@@ -282,7 +294,11 @@ def _build_tune_parser() -> argparse.ArgumentParser:
     )
     tuning_group.add_argument("--seed", metavar="N", type=int, default=0, help="Random seed for reproducibility.")
     tuning_group.add_argument(
-        "--n-jobs", metavar="N", type=int, default=1, help="Parallel worker threads for z-level evaluation within each trial."
+        "--n-jobs",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Worker threads for z-level evaluation within each trial (default: CPU count - 2; 1 enables pruning).",
     )
     tuning_group.add_argument(
         "--max-tiles",
@@ -300,6 +316,21 @@ def _build_tune_parser() -> argparse.ArgumentParser:
     )
     tuning_group.add_argument(
         "--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1)."
+    )
+
+    backend_group = parser.add_argument_group("Backend")
+    backend_group.add_argument(
+        "--backend",
+        metavar="NAME",
+        default="numpy",
+        choices=["numpy", "torch"],
+        help="Compute backend ('numpy' or 'torch').",
+    )
+    backend_group.add_argument(
+        "--device",
+        metavar="DEV",
+        default=None,
+        help="Torch device string, e.g. 'cuda:0'. Ignored when --backend=numpy.",
     )
 
     parser.add_argument("--verbose", action="store_true", default=False, help="Enable Optuna logging and progress bars.")
@@ -334,6 +365,8 @@ def tune_main(argv: list[str] | None = None) -> int:
         z_subsample=args.z_subsample,
         seed=args.seed,
         n_workers=args.n_jobs,
+        backend=args.backend,
+        device=args.device,
         max_tiles=args.max_tiles if args.max_tiles > 0 else None,
         n_extra_rows=args.n_extra_rows,
         storage=args.storage,
@@ -363,6 +396,81 @@ def tune_main(argv: list[str] | None = None) -> int:
         save_corrected(mosaic, result.best_fit, args.apply, input_path=args.input, overwrite=True)
         if args.verbose:
             print(f"Saved corrected mosaic to '{args.apply}'.")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# basic_preview entry point
+# ---------------------------------------------------------------------------
+
+
+def _build_preview_parser() -> argparse.ArgumentParser:
+    """Argument parser for ``basic_preview``."""
+    parser = argparse.ArgumentParser(
+        prog="basic_preview",
+        description="Render an average-intensity-projection PNG preview of an OME-Zarr volume.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    io_group = parser.add_argument_group("I/O")
+    io_group.add_argument("--input", metavar="ZARR", required=True, type=Path, help="Path to the input .ome.zarr volume.")
+    io_group.add_argument("--output", metavar="PNG", required=True, type=Path, help="Path to write the preview PNG.")
+
+    proj_group = parser.add_argument_group("Projection")
+    proj_group.add_argument("--axis", metavar="N", type=int, default=0, help="Axis to average over (0 = depth/z).")
+    proj_group.add_argument(
+        "--percentile", metavar="P", type=float, default=99.5, help="Upper display percentile for contrast (0-100)."
+    )
+    proj_group.add_argument("--cmap", metavar="NAME", default="viridis", help="Matplotlib colormap name.")
+    proj_group.add_argument("--title", metavar="TEXT", default=None, help="Optional figure title.")
+    proj_group.add_argument("--dpi", metavar="N", type=int, default=200, help="Output resolution in dots per inch.")
+
+    parser.add_argument("--verbose", action="store_true", default=False, help="Print progress information.")
+    return parser
+
+
+def preview_main(argv: list[str] | None = None) -> int:
+    """Entry point for the ``basic_preview`` command.
+
+    Renders a 2-D average-intensity projection of an OME-Zarr volume as a PNG,
+    suitable for a quick visual check of processed data.
+
+    Parameters
+    ----------
+    argv : list of str or None
+        Command-line arguments.  ``None`` reads from ``sys.argv``.
+
+    Returns
+    -------
+    int
+        Exit code (0 on success).
+    """
+    parser = _build_preview_parser()
+    args = parser.parse_args(argv)
+
+    from linum_basic import viz
+    from linum_basic.io.zarr import load_ome_zarr
+
+    volume, axes, scale = load_ome_zarr(args.input)
+
+    # In-plane pixel size (mm) from the non-projected spatial axes.
+    pixel_size_mm: float | None = None
+    in_plane = [s for i, s in enumerate(scale) if i != args.axis]
+    if in_plane:
+        pixel_size_mm = float(in_plane[-1])
+
+    fig = viz.aip_preview(
+        volume,
+        axis=args.axis,
+        pixel_size_mm=pixel_size_mm,
+        cmap=args.cmap,
+        title=args.title,
+        percentile=args.percentile,
+    )
+    viz.save_figure(fig, args.output, dpi=args.dpi)
+
+    if args.verbose:
+        print(f"Saved preview to '{args.output}' (axes={axes}, scale={scale}).")
 
     return 0
 

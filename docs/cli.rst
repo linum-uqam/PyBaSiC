@@ -100,3 +100,32 @@ Distributed tuning with persistent SQLite storage::
                --storage sqlite:///tune.db \
                --study-name my-mosaic-tuning \
                --n-jobs 1 &  # repeat four times
+
+``basic_preview``
+-----------------
+
+Render a 2-D average-intensity projection (AIP) of an OME-Zarr volume as a PNG
+for a quick visual check of processed data.
+
+.. argparse::
+   :module: linum_basic.cli
+   :func: _build_preview_parser
+   :prog: basic_preview
+
+Examples
+^^^^^^^^
+
+Project a corrected volume along its depth axis::
+
+    basic_preview \
+        --input corrected.ome.zarr \
+        --output preview.png
+
+Project along a different axis with a custom contrast percentile::
+
+    basic_preview \
+        --input corrected.ome.zarr \
+        --output preview.png \
+        --axis 1 \
+        --percentile 99.9
+

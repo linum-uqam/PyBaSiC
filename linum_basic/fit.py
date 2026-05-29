@@ -20,12 +20,13 @@ dependence.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
-from tqdm.auto import tqdm
 
+from linum_basic._parallel import parallel_map, resolve_workers
 from linum_basic.core import BaSiC
 from linum_basic.mosaic import MosaicGrid
 
@@ -64,6 +65,39 @@ def make_model(tiles: np.ndarray, params: dict[str, Any]) -> BaSiC:
     for key, val in post_kw.items():
         setattr(model, key, val)
     return model
+
+
+def _fit_one_z(
+    tiles: np.ndarray,
+    params: dict[str, Any],
+    n_extra_rows: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit a single z-level tile stack and return its flat/dark-fields.
+
+    Module-level (picklable) so it can run inside a worker process. The
+    galvo-return rows are stripped before fitting; the caller writes the
+    returned fields back into the masked output arrays.
+
+    Parameters
+    ----------
+    tiles : numpy.ndarray
+        Tile stack for one z-level, shape ``(N, th, tw)``.
+    params : dict
+        BaSiC hyperparameters (see :func:`make_model`).
+    n_extra_rows : int
+        Number of galvo-return rows to exclude from the top of each tile.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(flatfield, darkfield)`` for the (possibly row-cropped) tiles.
+    """
+    if n_extra_rows > 0:
+        tiles = tiles[:, n_extra_rows:, :]
+    model = make_model(tiles, params)
+    model.prepare()
+    model.run()
+    return model.get_flatfield(), model.get_darkfield()
 
 
 @dataclass(init=False)
@@ -129,6 +163,7 @@ def fit_mosaic(
     field_mode: Literal["per-z", "global"] = "per-z",
     basic_kwargs: dict[str, Any] | None = None,
     n_extra_rows: int = 0,
+    n_workers: int | None = None,
     verbose: bool = False,
 ) -> MosaicFit:
     """Fit one BaSiC model per z-level over all tiles of *mosaic*.
@@ -155,6 +190,12 @@ def fit_mosaic(
         with 1.0 (flat-field) and 0.0 (dark-field) in the output so that
         :func:`apply_fit` treats them as uncorrected pass-through pixels.
         Default ``0`` (no masking).
+    n_workers : int or None
+        Number of worker processes used to fit z-levels in parallel. Each
+        z-level is an independent BaSiC solve, so this scales nearly
+        linearly on CPU. ``None`` (default) uses ``cpu_count() - 2``.
+        ``1`` runs sequentially. Forced to ``1`` on the PyTorch CUDA/MPS
+        backend (single-accelerator contention).
     verbose : bool
         Show a progress bar over z-levels.
 
@@ -170,15 +211,21 @@ def fit_mosaic(
     flatfields = np.ones((len(z_idx), th, tw), dtype=np.float32)
     darkfields = np.zeros((len(z_idx), th, tw), dtype=np.float32)
 
-    for i, z in enumerate(tqdm(z_idx, desc="Fitting z-levels", disable=not verbose)):
-        tiles = mosaic.iter_tiles(z)
-        if n_extra_rows > 0:
-            tiles = tiles[:, n_extra_rows:, :]
-        model = make_model(tiles, params)
-        model.prepare()
-        model.run()
-        flatfields[i, n_extra_rows:, :] = model.get_flatfield()
-        darkfields[i, n_extra_rows:, :] = model.get_darkfield()
+    n_eff = resolve_workers(n_workers, params.get("backend"), params.get("device"))
+
+    # Pre-extract per-z tile stacks so workers receive only the slice they
+    # need (cheap views into the in-memory mosaic) instead of the whole grid.
+    tile_stacks = [mosaic.iter_tiles(z) for z in z_idx]
+    results = parallel_map(
+        partial(_fit_one_z, params=params, n_extra_rows=n_extra_rows),
+        tile_stacks,
+        n_eff,
+        desc="Fitting z-levels",
+        verbose=verbose,
+    )
+    for i, (flatfield, darkfield) in enumerate(results):
+        flatfields[i, n_extra_rows:, :] = flatfield
+        darkfields[i, n_extra_rows:, :] = darkfield
 
     if field_mode == "global":
         flatfields_out: np.ndarray = flatfields.mean(axis=0)
@@ -241,13 +288,14 @@ def apply_fit(
             ff = fit.flatfields[pos]
             df = fit.darkfields[pos]
 
-        for r in range(nrows):
-            for c in range(ncols):
-                tile = corrected[z, r * th : (r + 1) * th, c * tw : (c + 1) * tw]
-                corrected[z, r * th : (r + 1) * th, c * tw : (c + 1) * tw] = (tile - df) / (ff + epsilon)
-                if n_extra_rows > 0:
-                    first_valid = corrected[z, r * th + n_extra_rows, c * tw : (c + 1) * tw]
-                    corrected[z, r * th : r * th + n_extra_rows, c * tw : (c + 1) * tw] = first_valid[np.newaxis, :]
+        # View the (H, W) plane as a (nrows, th, ncols, tw) tile grid and apply
+        # the (th, tw) fields to every tile at once via broadcasting.
+        view = corrected[z].reshape(nrows, th, ncols, tw)
+        view[...] = (view - df[None, :, None, :]) / (ff[None, :, None, :] + epsilon)
+        if n_extra_rows > 0:
+            first_valid = view[:, n_extra_rows : n_extra_rows + 1, :, :]
+            view[:, :n_extra_rows, :, :] = first_valid
+        corrected[z] = view.reshape(nrows * th, ncols * tw)
 
     return corrected
 

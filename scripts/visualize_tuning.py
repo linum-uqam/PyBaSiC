@@ -28,6 +28,8 @@ from pathlib import Path
 
 import numpy as np
 
+from linum_basic import viz
+
 _DEFAULT_ZARR = "/Users/Frans/Downloads/sub-22/mosaic_grid_z27_focal_fix.ome.zarr"
 _DEFAULT_OUT_DIR = str(Path(_DEFAULT_ZARR).parent)
 
@@ -152,6 +154,8 @@ def _build_optimization_figure(result, out_path: Path) -> None:
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
 
+    viz.set_theme()
+
     fig = plt.figure(figsize=(14, 5))
     gs = GridSpec(1, 2, figure=fig, width_ratios=[1.8, 1], wspace=0.35)
 
@@ -228,8 +232,7 @@ def _build_optimization_figure(result, out_path: Path) -> None:
     ax_tbl.set_title("Best trial parameters", fontsize=11, pad=12)
 
     fig.suptitle("BaSiC Hyperparameter Tuning", fontsize=13, fontweight="bold", y=1.01)
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    viz.save_figure(fig, out_path, dpi=150)
     print(f"Saved: {out_path}")
 
 
@@ -260,6 +263,8 @@ def _build_seam_figure(
     import matplotlib.pyplot as plt
 
     from linum_basic.metrics import evaluate_correction
+
+    viz.set_theme()
 
     print(f"  Fitting default params at z={z_inspect} …")
     tiles_raw = mosaic.iter_tiles(z_inspect)
@@ -298,7 +303,7 @@ def _build_seam_figure(
     fig, axes = plt.subplots(3, 2, figsize=(14, 11))
     fig.suptitle(f"Seam quality at z={z_inspect}", fontsize=13, fontweight="bold")
 
-    cmap = "gray"
+    cmap = viz.INTENSITY_CMAP
 
     def _seam_l1_label(v: float) -> str:
         return f"seam L1 = {v:.5f}"
@@ -319,7 +324,7 @@ def _build_seam_figure(
         (axes[1, 1], ff_def, "Flat-field — default"),
         (axes[2, 1], ff_tun, "Flat-field — tuned"),
     ]:
-        im = ax.imshow(ff, cmap="viridis", aspect="auto")
+        im = ax.imshow(ff, cmap=viz.FLATFIELD_CMAP, aspect="auto")
         ax.set_title(title, fontsize=10)
         ax.axis("off")
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="correction factor")
@@ -344,8 +349,7 @@ def _build_seam_figure(
         )
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    viz.save_figure(fig, out_path, dpi=150)
     print(f"Saved: {out_path}")
 
 
