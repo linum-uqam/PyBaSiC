@@ -461,6 +461,89 @@ def _build_figure(
 
 
 # ---------------------------------------------------------------------------
+# 3-D surface figure
+# ---------------------------------------------------------------------------
+
+
+def _build_3d_figure(
+    fit,
+    z_inspect: int,
+    smooth_sigma: float,
+    out_path: Path,
+    zarr_path: str = "",
+    n_stacked: int = 5,
+) -> None:
+    """Render the flat-field as true 3-D surfaces.
+
+    Two panels are produced: a single high-detail surface of the flat-field at
+    ``z_inspect``, and a stacked, translucent set of surfaces sampled across the
+    fitted depth range to show how the focal curvature evolves with z.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+
+    flatfields = _smooth_fields(fit.flatfields.copy(), smooth_sigma)
+    n_z_fit, th, tw = flatfields.shape
+    z_indices = list(fit.z_indices)
+
+    xx, yy = np.meshgrid(np.arange(tw), np.arange(th))
+    vmin, vmax = 0.7, 1.3
+    fig = plt.figure(figsize=(16, 7))
+
+    # --- Panel 1: single surface at z_inspect ---
+    ax1 = fig.add_subplot(1, 2, 1, projection="3d")
+    z_fit_idx = z_indices.index(z_inspect)
+    ff = flatfields[z_fit_idx]
+    surf = ax1.plot_surface(
+        xx, yy, ff, cmap="RdYlGn", vmin=vmin, vmax=vmax, linewidth=0, antialiased=True, rcount=80, ccount=80
+    )
+    ax1.set_title(f"Flat-field surface at z={z_inspect}")
+    ax1.set_xlabel("x-pixel")
+    ax1.set_ylabel("y-pixel")
+    ax1.set_zlabel("flat-field")
+    ax1.set_zlim(vmin, vmax)
+    fig.colorbar(surf, ax=ax1, shrink=0.6, pad=0.1, label="flat-field value")
+
+    # --- Panel 2: stacked translucent surfaces across depth ---
+    ax2 = fig.add_subplot(1, 2, 2, projection="3d")
+    sample_idx = np.unique(np.linspace(0, n_z_fit - 1, min(n_stacked, n_z_fit)).round().astype(int))
+    cmap = plt.get_cmap("viridis")
+    for i in sample_idx:
+        frac = i / max(n_z_fit - 1, 1)
+        ax2.plot_surface(
+            xx,
+            yy,
+            flatfields[i],
+            color=cmap(frac),
+            alpha=0.45,
+            linewidth=0,
+            antialiased=True,
+            rcount=40,
+            ccount=40,
+            shade=False,
+        )
+    ax2.set_title("Flat-field curvature across depth")
+    ax2.set_xlabel("x-pixel")
+    ax2.set_ylabel("y-pixel")
+    ax2.set_zlabel("flat-field")
+    mappable = cm.ScalarMappable(cmap=cmap)
+    mappable.set_array(np.array([z_indices[i] for i in sample_idx], dtype=float))
+    fig.colorbar(mappable, ax=ax2, shrink=0.6, pad=0.1, label="z-index")
+
+    dataset_name = Path(zarr_path).name if zarr_path else "dataset"
+    fig.suptitle(
+        f"BaSiC flat-field 3-D surface  |  {dataset_name}",
+        fontsize=13,
+        fontweight="bold",
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"Saved to {out_path}")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -504,6 +587,14 @@ def main(argv: list[str] | None = None) -> int:
         z_inspect=z_inspect,
         smooth_sigma=args.smooth_sigma,
         out_path=orient_path,
+        zarr_path=args.input,
+    )
+    threed_path = Path(args.output).with_stem(Path(args.output).stem + "_3d")
+    _build_3d_figure(
+        fit,
+        z_inspect=z_inspect,
+        smooth_sigma=args.smooth_sigma,
+        out_path=threed_path,
         zarr_path=args.input,
     )
     return 0
