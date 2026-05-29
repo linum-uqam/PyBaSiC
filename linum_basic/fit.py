@@ -188,6 +188,7 @@ def apply_fit(
     fit: MosaicFit,
     *,
     epsilon: float = 1e-6,
+    n_extra_rows: int = 0,
 ) -> np.ndarray:
     """Apply a :class:`MosaicFit` to produce a corrected mosaic volume.
 
@@ -199,12 +200,18 @@ def apply_fit(
         Flat/dark-field estimates from :func:`fit_mosaic`.
     epsilon : float
         Stability constant added to the flat-field denominator.
+    n_extra_rows : int
+        Number of galvo-return rows at the top of each tile to replace by
+        edge-extension from the first valid row.  Must match the value used
+        in :func:`fit_mosaic`.  Default ``0`` (no replacement).
 
     Returns
     -------
     numpy.ndarray, shape (Z, H, W), dtype float32
         Corrected mosaic where every tile has been divided by its flat-field
-        and had its dark-field subtracted.
+        and had its dark-field subtracted.  If *n_extra_rows* > 0 the galvo
+        rows are replaced with the first valid row value so that they do not
+        create a visible dark notch at tile boundaries.
     """
     nz = mosaic.n_z
     th, tw = mosaic.tile_shape
@@ -225,6 +232,9 @@ def apply_fit(
             for c in range(ncols):
                 tile = corrected[z, r * th : (r + 1) * th, c * tw : (c + 1) * tw]
                 corrected[z, r * th : (r + 1) * th, c * tw : (c + 1) * tw] = (tile - df) / (ff + epsilon)
+                if n_extra_rows > 0:
+                    first_valid = corrected[z, r * th + n_extra_rows, c * tw : (c + 1) * tw]
+                    corrected[z, r * th : r * th + n_extra_rows, c * tw : (c + 1) * tw] = first_valid[np.newaxis, :]
 
     return corrected
 

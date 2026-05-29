@@ -73,12 +73,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--n-extra",
         type=int,
-        default=7,
+        default=2,
         metavar="N",
         help=(
-            "Number of galvo-return rows at the top of each tile to exclude from the BaSiC fit. "
-            "Set to 0 to disable masking. Default: %(default)s (based on n_extra=40 at 400-px native "
-            "resolution resampled to 75-px zarr tiles)."
+            "Number of galvo-return / scan-settling rows at the top of each tile to exclude "
+            "from the BaSiC fit and replace by edge-extension in the corrected output. "
+            "Set to 0 to disable masking. Default: %(default)s (empirically determined from "
+            "per-row intensity diagnostics on the acquisition data)."
         ),
     )
     return p
@@ -123,7 +124,9 @@ def _smooth_fields(flatfields: np.ndarray, sigma: float) -> np.ndarray:
     return gaussian_filter1d(flatfields, sigma=sigma, axis=0)
 
 
-def _build_figure(mosaic, fit, z_inspect: int, smooth_sigma: float, out_path: Path, zarr_path: str = "") -> None:
+def _build_figure(
+    mosaic, fit, z_inspect: int, smooth_sigma: float, out_path: Path, zarr_path: str = "", n_extra_rows: int = 0
+) -> None:
     import matplotlib.pyplot as plt
     import matplotlib.ticker as ticker
 
@@ -149,7 +152,7 @@ def _build_figure(mosaic, fit, z_inspect: int, smooth_sigma: float, out_path: Pa
     z_fit_idx = z_indices.index(z_inspect)
     ff = flatfields[z_fit_idx]
     raw_z = mosaic.array[z_inspect]  # (H, W)
-    corrected_z = apply_fit(mosaic, fit)[z_inspect]
+    corrected_z = apply_fit(mosaic, fit, n_extra_rows=n_extra_rows)[z_inspect]
     # clip to [0, 99th-percentile] for display
     p99 = float(np.percentile(raw_z[raw_z > 0], 99))
     raw_disp = np.clip(raw_z, 0, p99)
@@ -269,7 +272,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     _build_figure(
-        mosaic, fit, z_inspect=z_inspect, smooth_sigma=args.smooth_sigma, out_path=Path(args.output), zarr_path=args.input
+        mosaic,
+        fit,
+        z_inspect=z_inspect,
+        smooth_sigma=args.smooth_sigma,
+        out_path=Path(args.output),
+        zarr_path=args.input,
+        n_extra_rows=args.n_extra,
     )
     return 0
 
