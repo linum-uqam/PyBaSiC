@@ -119,6 +119,25 @@ class ArrayNamespace:
             return np.asarray(x)
         return x.detach().cpu().numpy()
 
+    def astype(self, x: Any, dtype: type) -> Any:
+        """Cast a backend array to *dtype* without a device round-trip.
+
+        Parameters
+        ----------
+        x : object
+            Backend-native array.
+        dtype : type
+            Target NumPy dtype (e.g. ``np.float32``, ``np.float64``).
+
+        Returns
+        -------
+        object
+            Array with the requested element type, on the same device as *x*.
+        """
+        if self._backend is Backend.NUMPY:
+            return np.asarray(x, dtype=dtype)
+        return x.to(self._numpy_dtype_to_torch(np.dtype(dtype)))
+
     def zeros(self, shape: tuple[int, ...], dtype: type | None = None) -> Any:
         """Return a zero-filled array of the given shape.
 

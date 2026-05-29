@@ -189,16 +189,14 @@ def inexact_alm_l1(
         B = xp.asarray(warm_start["B"].reshape(n, 1).astype(np.float32))
         D_field = xp.asarray(warm_start["D_field"].reshape(1, p * q).astype(np.float32))
         # Reset Y and mu so changed weights don't cause divergence
-        Y = np.zeros((n, p * q), dtype=np.float64)
+        Y = xp.zeros((n, p * q), dtype=np.float64)
     else:
         # Initialise variables
-        S = xp.zeros_like(D)  # flat-field (spatial)
-        Sf = xp.dctn(xp.to_numpy(S).reshape(n, p, q).mean(axis=0), norm="ortho")
-        Sf = xp.asarray(np.asarray(Sf).astype(np.float32))
+        Sf = xp.zeros((p, q), dtype=np.float32)  # DCT of zero mean is zero
         Ir = xp.zeros_like(D)  # sparse residual
         B = xp.ones((n, 1), dtype=np.float32)  # per-image baseline
         D_field = xp.zeros((1, p * q), dtype=np.float32)  # dark-field (spatial)
-        Y = np.zeros((n, p * q), dtype=np.float64)
+        Y = xp.zeros((n, p * q), dtype=np.float64)
     mu_bar: float = mu * 1e7
     ent2: float = 10.0
     converged = False
@@ -214,8 +212,7 @@ def inexact_alm_l1(
     # the first iteration can reuse it directly, eliminating one iDCT per
     # ALM iteration (the value is refreshed at the END of every iteration).
     # ------------------------------------------------------------------
-    Sf_np = xp.to_numpy(Sf).reshape(p, q)
-    S_spatial = xp.asarray(np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32))
+    S_spatial = xp.astype(xp.idctn(Sf, norm="ortho"), np.float32).reshape(1, p * q)
 
     # ------------------------------------------------------------------
     # Main loop
@@ -227,7 +224,7 @@ def inexact_alm_l1(
         # Cast Y (float64 accumulator) to float32 at the use site to avoid
         # accumulating rounding errors in the Lagrange multiplier over ~500
         # iterations while keeping all backend tensor ops in float32.
-        Y_over_mu = xp.asarray((Y / mu).astype(np.float32))
+        Y_over_mu = xp.astype(Y / mu, np.float32)
 
         # 1. Update sparse residual Ir.
         # S_spatial was computed at the end of the previous iteration (or
@@ -251,14 +248,13 @@ def inexact_alm_l1(
         # where A1_hat = S*B + D_field. When estimate_darkfield=False,
         # D_field is identically zero so this subtraction is a no-op.
         R_dev = DminusIr - D_field + Y_over_mu  # type: ignore[operator]  reuse cached Y/mu
-        R_for_sf_mean = xp.to_numpy(xp.mean(R_dev.reshape(n, p, q), axis=0))  # float64, matches original
-        dSf = xp.asarray(np.asarray(xp.dctn(R_for_sf_mean, norm="ortho")).astype(np.float32))
-        Sf = xp.asarray(xp.to_numpy(shrink(xp, dSf, l_s / mu)).astype(np.float32))
+        R_for_sf_mean = xp.mean(R_dev.reshape(n, p, q), axis=0)  # stays on device, shape (p, q)
+        dSf = xp.astype(xp.dctn(R_for_sf_mean, norm="ortho"), np.float32)
+        Sf = shrink(xp, dSf, l_s / mu)
 
         # 3. Reconstruct Ib from the updated Sf.
         # S_spatial is stored for reuse at the START of the next iteration.
-        Sf_np = xp.to_numpy(Sf).reshape(p, q)
-        S_spatial = xp.asarray(np.asarray(xp.idctn(Sf_np, norm="ortho")).reshape(1, p * q).astype(np.float32))
+        S_spatial = xp.astype(xp.idctn(Sf, norm="ortho"), np.float32).reshape(1, p * q)
         Ib = S_spatial * B + D_field
 
         # 4. Update baseline B.
@@ -332,9 +328,10 @@ def inexact_alm_l1(
         # Evaluation order matches the original (D - Ib) - Ir, not (D - Ir) - Ib,
         # to preserve float32 accumulation identical to the pre-optimisation code.
         dY = D - Ib - Ir  # type: ignore[operator]
-        # Accumulate the Lagrange multiplier in float64 on CPU so that
-        # large mu values (mu grows as rho^iter) don't erode precision.
-        Y = Y + mu * xp.to_numpy(dY).astype(np.float64)
+        # Accumulate the Lagrange multiplier in float64 on the active device
+        # so that large mu values (mu grows as rho^iter) don't erode precision.
+        # xp.astype keeps the cast on GPU for torch backends — no device transfer.
+        Y = Y + mu * xp.astype(dY, np.float64)
         mu = min(mu * rho, mu_bar)
         iteration += 1
 
