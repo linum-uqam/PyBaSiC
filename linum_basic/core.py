@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import cv2
 import numpy as np
+from scipy.fft import dctn
 from tqdm.auto import tqdm
 
 from linum_basic._alm import inexact_alm_l1
@@ -27,7 +28,35 @@ from linum_basic.backend import get_xp
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-__all__ = ["BaSiC"]
+__all__ = ["DEFAULT_L_D_DIVISOR", "DEFAULT_L_S_DIVISOR", "BaSiC", "dct_energy"]
+
+# Default divisors for auto-tuning the regularisation weights from DCT energy:
+# ``l_s = dct_energy / DEFAULT_L_S_DIVISOR`` and likewise for ``l_d``.  These
+# are the single source of truth shared by :meth:`BaSiC.prepare` and
+# :func:`linum_basic.tuning.tune`.
+DEFAULT_L_S_DIVISOR = 800.0
+DEFAULT_L_D_DIVISOR = 2000.0
+
+
+def dct_energy(mean_image: NDArray) -> float:
+    """Return the DCT energy of a normalised mean image.
+
+    The mean image is normalised by its own mean before the 2-D DCT so the
+    result is scale-invariant across datasets.  This is the quantity BaSiC
+    uses to auto-tune its regularisation weights (``l_s``/``l_d``).
+
+    Parameters
+    ----------
+    mean_image : numpy.ndarray
+        The per-pixel mean image (e.g. ``stack.mean(axis=0)``).
+
+    Returns
+    -------
+    float
+        Sum of the absolute DCT coefficients of the normalised mean image.
+    """
+    normalised = mean_image / (float(mean_image.mean()) + 1e-9)
+    return float(np.abs(dctn(normalised, norm="ortho")).sum())
 
 
 class BaSiC:
@@ -315,16 +344,11 @@ class BaSiC:
             self._load_images(self.img_stack)
 
         # Auto-tune regularisation from the DCT of the mean image
-        mean_val = self.img_stack_resized.mean(axis=0)
-        mean_val = mean_val / (mean_val.mean() + 1e-9)
-        from scipy.fft import dctn
-
-        mean_val_dct = dctn(mean_val, norm="ortho")
-        dct_sum = float(np.abs(mean_val_dct).sum())
+        dct_sum = dct_energy(self.img_stack_resized.mean(axis=0))
         if self.l_s is None:
-            self.l_s = dct_sum / 800.0
+            self.l_s = dct_sum / DEFAULT_L_S_DIVISOR
         if self.l_d is None:
-            self.l_d = dct_sum / 2000.0
+            self.l_d = dct_sum / DEFAULT_L_D_DIVISOR
 
         self.img_sort = np.sort(self.img_stack_resized, axis=0)
 
