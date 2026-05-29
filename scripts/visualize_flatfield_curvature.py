@@ -26,6 +26,8 @@ from pathlib import Path
 
 import numpy as np
 
+from linum_basic import viz
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -195,6 +197,7 @@ def _build_orientation_figure(
     import matplotlib.ticker as ticker
     from scipy.ndimage import map_coordinates
 
+    viz.set_theme()
     flatfields = _smooth_fields(fit.flatfields.copy(), smooth_sigma)
     z_indices = fit.z_indices
     _, th, tw = flatfields.shape
@@ -235,12 +238,12 @@ def _build_orientation_figure(
     fig, axes = plt.subplots(2, 3, figsize=(18, 10), constrained_layout=True)
 
     vmin, vmax = 0.7, 1.3
-    im_kw = {"aspect": "auto", "origin": "lower", "cmap": "RdYlGn", "vmin": vmin, "vmax": vmax}
+    im_kw = {"aspect": "auto", "origin": "lower", "cmap": viz.FLATFIELD_CMAP, "vmin": vmin, "vmax": vmax}
 
     # --- [0, 0] Mean flat-field with cut-direction overlay ---
     ff_mean = flatfields.mean(axis=0)
     ax = axes[0, 0]
-    im = ax.imshow(ff_mean, cmap="RdYlGn", vmin=vmin, vmax=vmax, origin="lower")
+    im = ax.imshow(ff_mean, cmap=viz.FLATFIELD_CMAP, vmin=vmin, vmax=vmax, origin="lower")
     half_line = min(th, tw) // 2 - 1
     for angle, color, lbl in [
         (0.0, "dodgerblue", "H  (0°)"),
@@ -331,10 +334,8 @@ def _build_orientation_figure(
         fontweight="bold",
     )
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    viz.save_figure(fig, out_path, dpi=150)
     print(f"Saved to {out_path}")
-    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +348,8 @@ def _build_figure(
 ) -> None:
     import matplotlib.pyplot as plt
     import matplotlib.ticker as ticker
+
+    viz.set_theme()
 
     flatfields = _smooth_fields(fit.flatfields.copy(), smooth_sigma)
     _n_z_fit, th, tw = flatfields.shape
@@ -396,7 +399,7 @@ def _build_figure(
         aspect="auto",
         origin="lower",
         extent=(0, float(tw), float(z_labels[0]), float(z_labels[-1])),
-        cmap="RdYlGn",
+        cmap=viz.FLATFIELD_CMAP,
         vmin=0.7,
         vmax=1.3,
     )
@@ -411,7 +414,7 @@ def _build_figure(
         aspect="auto",
         origin="lower",
         extent=(0, float(th), float(z_labels[0]), float(z_labels[-1])),
-        cmap="RdYlGn",
+        cmap=viz.FLATFIELD_CMAP,
         vmin=0.7,
         vmax=1.3,
     )
@@ -421,7 +424,7 @@ def _build_figure(
     fig.colorbar(im2, ax=ax_xz, shrink=0.8, label="flat-field value")
 
     # --- Flat-field at z_inspect ---
-    im3 = ax_ff.imshow(ff, cmap="RdYlGn", vmin=0.7, vmax=1.3, origin="lower")
+    im3 = ax_ff.imshow(ff, cmap=viz.FLATFIELD_CMAP, vmin=0.7, vmax=1.3, origin="lower")
     ax_ff.set_title(f"Flat-field at z={z_inspect}")
     ax_ff.set_xlabel("x-pixel")
     ax_ff.set_ylabel("y-pixel")
@@ -454,10 +457,8 @@ def _build_figure(
         fontweight="bold",
     )
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    viz.save_figure(fig, out_path, dpi=150)
     print(f"Saved to {out_path}")
-    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +483,8 @@ def _build_3d_figure(
     import matplotlib.pyplot as plt
     from matplotlib import cm
 
+    viz.set_theme()
+
     flatfields = _smooth_fields(fit.flatfields.copy(), smooth_sigma)
     n_z_fit, th, tw = flatfields.shape
     z_indices = list(fit.z_indices)
@@ -495,7 +498,7 @@ def _build_3d_figure(
     z_fit_idx = z_indices.index(z_inspect)
     ff = flatfields[z_fit_idx]
     surf = ax1.plot_surface(
-        xx, yy, ff, cmap="RdYlGn", vmin=vmin, vmax=vmax, linewidth=0, antialiased=True, rcount=80, ccount=80
+        xx, yy, ff, cmap=viz.FLATFIELD_CMAP, vmin=vmin, vmax=vmax, linewidth=0, antialiased=True, rcount=80, ccount=80
     )
     ax1.set_title(f"Flat-field surface at z={z_inspect}")
     ax1.set_xlabel("x-pixel")
@@ -537,10 +540,8 @@ def _build_3d_figure(
         fontweight="bold",
     )
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    viz.save_figure(fig, out_path, dpi=150)
     print(f"Saved to {out_path}")
-    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------

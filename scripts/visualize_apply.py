@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 
+from linum_basic import viz
 from linum_basic.fit import MosaicFit, apply_fit, fit_mosaic
 from linum_basic.metrics import seam_l1
 from linum_basic.mosaic import MosaicGrid
@@ -49,11 +50,6 @@ def _build_figure(
     n_extra_rows: int,
 ) -> None:
     """Write the raw -> corrected diagnostic figure (no ground truth)."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     th, tw = mosaic.tile_shape
     nrows, ncols = mosaic.n_rows, mosaic.n_cols
     z_pos = fit.z_indices.index(z_inspect) if z_inspect in fit.z_indices else 0
@@ -70,7 +66,6 @@ def _build_figure(
     corr_tiles = _tiles_from_image(corrected_z, th, tw, nrows, ncols)
     seam_raw = seam_l1(raw_tiles, seam_pairs)
     seam_corr = seam_l1(corr_tiles, seam_pairs)
-    improvement = 100.0 * (seam_raw - seam_corr) / (seam_raw + 1e-12)
 
     # Pick a representative edge tile (most peripheral content) for the tile row.
     edge_mask = ff < ff.mean()
@@ -78,65 +73,20 @@ def _build_figure(
     raw_tile = raw_tiles[best]
     corr_tile = corr_tiles[best]
 
-    # Shared display ranges so raw vs corrected are directly comparable.
-    mos_vmax = float(np.percentile(raw_z, 99))
-    tile_vmax = float(np.percentile(raw_tile, 99))
-
-    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
-    fig.suptitle(
-        f"BaSiC mosaic correction  |  {Path(zarr_path).name}  |  z={z_inspect}\n"
-        f"seam L1: {seam_raw:.3f} -> {seam_corr:.3f}  ({improvement:+.1f}%)",
-        fontsize=13,
-        fontweight="bold",
+    fig = viz.figure_apply_correction(
+        flatfield=ff,
+        raw_mosaic=raw_z,
+        corrected_mosaic=corrected_z,
+        raw_tile=raw_tile,
+        corrected_tile=corr_tile,
+        seam_raw=seam_raw,
+        seam_corrected=seam_corr,
+        darkfield=df if has_df else None,
+        title=f"BaSiC mosaic correction  |  {Path(zarr_path).name}  |  z={z_inspect}",
     )
-
-    # Column 0: estimated fields.
-    im = axes[0, 0].imshow(ff, cmap="viridis", interpolation="nearest", vmin=0.7, vmax=1.3)
-    axes[0, 0].contour(ff, levels=10, colors="w", linewidths=0.6, alpha=0.7)
-    axes[0, 0].set_title("Estimated flat-field", fontsize=10)
-    fig.colorbar(im, ax=axes[0, 0], fraction=0.046, pad=0.04)
-
-    if has_df:
-        im = axes[1, 0].imshow(df, cmap="inferno", interpolation="nearest")
-        axes[1, 0].set_title("Estimated dark-field", fontsize=10)
-        fig.colorbar(im, ax=axes[1, 0], fraction=0.046, pad=0.04)
-    else:
-        # No dark-field estimated: show per-column means to expose seam flattening.
-        axes[1, 0].plot(raw_z.mean(axis=0), color="tab:red", lw=1.0, label="raw")
-        axes[1, 0].plot(corrected_z.mean(axis=0), color="tab:green", lw=1.0, label="corrected")
-        axes[1, 0].set_title("Column-mean intensity", fontsize=10)
-        axes[1, 0].set_xlabel("x-pixel")
-        axes[1, 0].legend(fontsize=8)
-        axes[1, 0].margins(x=0)
-
-    # Column 1: full mosaic raw vs corrected.
-    im = axes[0, 1].imshow(raw_z, cmap="gray", interpolation="nearest", vmin=0, vmax=mos_vmax)
-    axes[0, 1].set_title("Raw mosaic", fontsize=10)
-    fig.colorbar(im, ax=axes[0, 1], fraction=0.046, pad=0.04)
-
-    im = axes[1, 1].imshow(corrected_z, cmap="gray", interpolation="nearest", vmin=0, vmax=mos_vmax)
-    axes[1, 1].set_title("Corrected mosaic", fontsize=10)
-    fig.colorbar(im, ax=axes[1, 1], fraction=0.046, pad=0.04)
-
-    # Column 2: representative tile raw vs corrected.
-    im = axes[0, 2].imshow(raw_tile, cmap="gray", interpolation="nearest", vmin=0, vmax=tile_vmax)
-    axes[0, 2].set_title("Sample tile: raw", fontsize=10)
-    fig.colorbar(im, ax=axes[0, 2], fraction=0.046, pad=0.04)
-
-    im = axes[1, 2].imshow(corr_tile, cmap="gray", interpolation="nearest", vmin=0, vmax=tile_vmax)
-    axes[1, 2].set_title("Sample tile: corrected", fontsize=10)
-    fig.colorbar(im, ax=axes[1, 2], fraction=0.046, pad=0.04)
-
-    for ax in (axes[0, 0], axes[0, 1], axes[0, 2], axes[1, 1], axes[1, 2]):
-        ax.axis("off")
-    if has_df:
-        axes[1, 0].axis("off")
-
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved to {out_path}  (seam L1 {seam_raw:.3f} -> {seam_corr:.3f}, {improvement:+.1f}%)")
+    path = viz.save_figure(fig, out_path, dpi=150)
+    improvement = 100.0 * (seam_raw - seam_corr) / (seam_raw + 1e-12)
+    print(f"Saved to {path}  (seam L1 {seam_raw:.3f} -> {seam_corr:.3f}, {improvement:+.1f}%)")
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:

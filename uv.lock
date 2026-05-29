@@ -1365,12 +1365,14 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "matplotlib" },
+    { name = "matplotlib-scalebar" },
     { name = "numpydoc" },
     { name = "pandas" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "scienceplots" },
     { name = "ty" },
 ]
 docs = [
@@ -1378,10 +1380,12 @@ docs = [
     { name = "ipywidgets" },
     { name = "linkify-it-py" },
     { name = "matplotlib" },
+    { name = "matplotlib-scalebar" },
     { name = "myst-parser" },
     { name = "nbsphinx" },
     { name = "pydata-sphinx-theme" },
     { name = "sbh-simulator" },
+    { name = "scienceplots" },
     { name = "sphinx" },
     { name = "sphinx-argparse" },
     { name = "sphinx-autoapi" },
@@ -1399,8 +1403,15 @@ notebooks = [
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "matplotlib" },
+    { name = "matplotlib-scalebar" },
     { name = "notebook" },
     { name = "sbh-simulator" },
+    { name = "scienceplots" },
+]
+viz = [
+    { name = "matplotlib" },
+    { name = "matplotlib-scalebar" },
+    { name = "scienceplots" },
 ]
 
 [package.metadata]
@@ -1413,6 +1424,11 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.10" },
     { name = "matplotlib", marker = "extra == 'docs'", specifier = ">=3.10" },
     { name = "matplotlib", marker = "extra == 'notebooks'", specifier = ">=3.10" },
+    { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10" },
+    { name = "matplotlib-scalebar", marker = "extra == 'dev'", specifier = ">=0.9" },
+    { name = "matplotlib-scalebar", marker = "extra == 'docs'", specifier = ">=0.9" },
+    { name = "matplotlib-scalebar", marker = "extra == 'notebooks'", specifier = ">=0.9" },
+    { name = "matplotlib-scalebar", marker = "extra == 'viz'", specifier = ">=0.9" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=5.0" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9" },
     { name = "notebook", marker = "extra == 'notebooks'", specifier = ">=7.3" },
@@ -1429,6 +1445,10 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11" },
     { name = "sbh-simulator", marker = "extra == 'docs'", git = "https://github.com/linum-uqam/sbh_simulator.git?branch=master" },
     { name = "sbh-simulator", marker = "extra == 'notebooks'", git = "https://github.com/linum-uqam/sbh_simulator.git?branch=master" },
+    { name = "scienceplots", marker = "extra == 'dev'", specifier = ">=2.1" },
+    { name = "scienceplots", marker = "extra == 'docs'", specifier = ">=2.1" },
+    { name = "scienceplots", marker = "extra == 'notebooks'", specifier = ">=2.1" },
+    { name = "scienceplots", marker = "extra == 'viz'", specifier = ">=2.1" },
     { name = "scipy", specifier = ">=1.15" },
     { name = "sphinx", marker = "extra == 'docs'", specifier = ">=9.1" },
     { name = "sphinx-argparse", marker = "extra == 'docs'", specifier = ">=0.5" },
@@ -1444,7 +1464,7 @@ requires-dist = [
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a14" },
     { name = "zarr", specifier = ">=3" },
 ]
-provides-extras = ["gpu", "docs", "dev", "notebooks"]
+provides-extras = ["gpu", "viz", "docs", "dev", "notebooks"]
 
 [[package]]
 name = "locket"
@@ -1552,6 +1572,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/bd/c0/9f7c9a46090390368a4d7bcb76bb87a4a36c421e4c0792cdb53486ffac7a/matplotlib_inline-0.2.2.tar.gz", hash = "sha256:72f3fe8fce36b70d4a5b612f899090cd0401deddc4ea90e1572b9f4bfb058c79", size = 8150, upload-time = "2026-05-08T17:33:33.49Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/09/5b161152e2d90f7b87f781c2e1267494aef9c32498df793f73ad0a0a494a/matplotlib_inline-0.2.2-py3-none-any.whl", hash = "sha256:3c821cf1c209f59fb2d2d64abbf5b23b67bcb2210d663f9918dd851c6da1fcf6", size = 9534, upload-time = "2026-05-08T17:33:32.055Z" },
+]
+
+[[package]]
+name = "matplotlib-scalebar"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c5/3d/e76e0e48c96e43b656446c35990824f20136de21940a7436020ab757a54d/matplotlib_scalebar-0.9.0.tar.gz", hash = "sha256:f91adc5e4e67ac920a8fa98a55f904d56e5c2da4d56286748c31ec62146362be", size = 1180588, upload-time = "2025-01-17T22:10:59.349Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/c0/2dfab7b319dabe23f5a7b515a797c74b501d15c72e7a03837cf0cf779b9e/matplotlib_scalebar-0.9.0-py3-none-any.whl", hash = "sha256:5140525cd4e0c60bcade541b86571dabaf446fa69192530bd82d60b54601aa79", size = 16411, upload-time = "2025-01-17T22:10:57.319Z" },
 ]
 
 [[package]]
@@ -2671,6 +2703,18 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "simpleitk" },
+]
+
+[[package]]
+name = "scienceplots"
+version = "2.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ae/a5/5f858668ca1a513033a7f0d55cd12b0940a12e822f9f61f317ce344e07c6/scienceplots-2.2.1.tar.gz", hash = "sha256:51ad98c420e499d3284d07b6447a4b3aedd8ec122aca39ba91c58205226c408a", size = 17966, upload-time = "2026-02-25T01:26:54.603Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cc/22/14e7b20f7d11f3e9ea9b5ae6acf9ea695c423eee785906cd5c5914a841dc/scienceplots-2.2.1-py3-none-any.whl", hash = "sha256:a1a9f670cbf5b59d92cdd3250be85b079ee4cf08bcaf2ace5ef57995be0b6c42", size = 30237, upload-time = "2026-02-25T01:26:53.298Z" },
 ]
 
 [[package]]

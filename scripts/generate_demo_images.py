@@ -26,14 +26,11 @@ import argparse
 from pathlib import Path
 
 import cv2
-import matplotlib
 import numpy as np
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
+from linum_basic import viz
 from linum_basic.core import BaSiC
-from linum_basic.data import load_sample_image
+from linum_basic.data import load_sample_image, zernike_flatfield
 from linum_basic.fit import apply_fit
 from linum_basic.metrics import seam_l1
 from linum_basic.mosaic import MosaicGrid
@@ -83,28 +80,13 @@ def _stitch(stack: np.ndarray, nh: int, nw: int, tile: int) -> np.ndarray:
     return stack.reshape(nh, nw, tile, tile).transpose(0, 2, 1, 3).reshape(nh * tile, nw * tile)
 
 
-def _offcenter_vignette(size: int, sigma_frac: float = 0.55, shift_frac: float = 0.22) -> np.ndarray:
-    """Return a mean-normalised vignette whose peak is shifted off-centre.
-
-    An off-centre peak makes the shading *asymmetric*, so the same tissue seen
-    at the right edge of one tile and the left edge of its neighbour is darkened
-    by different amounts.  This creates a genuine, correctable seam mismatch —
-    exactly what the seam-consistency tuning objective minimises.
-    """
-    y, x = np.mgrid[0:size, 0:size].astype(np.float32)
-    cy = (size - 1) / 2
-    cx = (size - 1) / 2 + shift_frac * size
-    sigma = size * sigma_frac
-    v = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
-    return (v / v.mean()).astype(np.float32)
-
-
 def _build_synthetic_mosaic(tile: int = 96, ncols: int = 12, nrows: int = 8) -> MosaicGrid:
     """Build a single-z mosaic of genuinely overlapping, vignette-corrupted tiles.
 
     Tiles are extracted from the bundled source image with a stride of
     ``tile * (1 - overlap)`` so neighbouring tiles share content in their
-    overlap region, then each is multiplied by an off-centre vignette.
+    overlap region, then each is multiplied by a low-order Zernike shading
+    field whose asymmetry produces pronounced, correctable seams.
     """
     overlap = 0.2
     ov = round(overlap * tile)
@@ -112,7 +94,7 @@ def _build_synthetic_mosaic(tile: int = 96, ncols: int = 12, nrows: int = 8) -> 
     src = load_sample_image().astype(np.float32) / 255.0
 
     array = np.empty((nrows * tile, ncols * tile), dtype=np.float32)
-    vignette = _offcenter_vignette(tile)
+    vignette = zernike_flatfield(tile, n_max=4, contrast=0.45, seed=0)
     for r in range(nrows):
         for c in range(ncols):
             patch = src[r * stride : r * stride + tile, c * stride : c * stride + tile]
@@ -122,27 +104,8 @@ def _build_synthetic_mosaic(tile: int = 96, ncols: int = 12, nrows: int = 8) -> 
 
 def _save_flatfield_3d(flatfield: np.ndarray, out: Path) -> None:
     """Render the estimated flat-field as a 3-D surface (illumination landscape)."""
-    fig = plt.figure(figsize=(7, 6))
-    fig.patch.set_facecolor("#0d1117")
-    ax = fig.add_subplot(projection="3d")
-    ax.set_facecolor("#0d1117")
-    yy, xx = np.mgrid[0 : flatfield.shape[0], 0 : flatfield.shape[1]]
-    surf = ax.plot_surface(xx, yy, flatfield, cmap="viridis", rcount=80, ccount=80, linewidth=0, antialiased=True)
-    ax.set_title("Estimated flat-field as an illumination surface", color="white", fontsize=12, pad=10)
-    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-        axis.label.set_color("white")
-        axis.set_tick_params(colors="white")
-    ax.set_xlabel("x-pixel", color="white")
-    ax.set_ylabel("y-pixel", color="white")
-    ax.set_zlabel("gain", color="white")
-    ax.view_init(elev=32, azim=-58)
-    cbar = fig.colorbar(surf, ax=ax, fraction=0.03, pad=0.08)
-    cbar.ax.yaxis.set_tick_params(color="white")
-    plt.setp(cbar.ax.get_yticklabels(), color="white")
-    fig.tight_layout()
-    path = out / "flatfield_3d.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
-    plt.close(fig)
+    fig, _ = viz.field_surface_3d(flatfield, title="Estimated flat-field as an illumination surface")
+    path = viz.save_figure(fig, out / "flatfield_3d.png", dpi=150)
     print(f"Saved: {path}")
 
 
@@ -182,54 +145,20 @@ def _save_tuning_demo(out: Path) -> None:
     seam_tuned = seam_l1(corr_tiles, seam_pairs)
     improvement = 100.0 * (seam_raw - seam_tuned) / (seam_raw + 1e-12)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
-    fig.patch.set_facecolor("#0d1117")
-
-    # Panel 0: optimisation history.
-    ax = axes[0]
     df = result.trials_df
     if df is not None and "value" in df.columns:
         completed = df[df["state"] == "COMPLETE"].reset_index(drop=True) if "state" in df.columns else df
         values = completed["value"].to_numpy()
-        idx = np.arange(len(values))
-        ax.scatter(idx, values, c="#58a6ff", s=30, alpha=0.8, label="trial")
-        ax.step(idx, np.minimum.accumulate(values), where="post", color="#f85149", lw=2, label="best so far")
-    ax.set_xlabel("Trial", color="white")
-    ax.set_ylabel("Seam L1 (lower = better)", color="white")
-    ax.set_title("Optuna optimisation history", color="white", fontsize=11)
-    ax.legend(fontsize=9)
-    ax.tick_params(colors="white")
-    ax.set_facecolor("#0d1117")
+    else:
+        values = np.array([])
 
-    # Panel 1: tuned flat-field.
-    ax = axes[1]
-    ff = result.best_fit.flatfields[0]
-    im = ax.imshow(ff, cmap="viridis", interpolation="nearest")
-    ax.contour(ff, levels=10, colors="w", linewidths=0.5, alpha=0.6)
-    ax.set_title("Tuned flat-field", color="white", fontsize=11)
-    ax.axis("off")
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-    # Panel 2: seam-consistency before/after.
-    ax = axes[2]
-    bars = ax.bar(["raw", "tuned"], [seam_raw, seam_tuned], color=["#8b949e", "#3fb950"], width=0.6)
-    ax.bar_label(bars, fmt="%.3f", color="white", fontsize=10, padding=3)
-    ax.set_ylabel("Seam L1", color="white")
-    ax.set_title(f"Seam consistency ({improvement:+.0f}%)", color="white", fontsize=11)
-    ax.tick_params(colors="white")
-    ax.set_facecolor("#0d1117")
-
-    fig.suptitle(
-        "BaSiC hyperparameter tuning — minimising seam mismatch",
-        color="white",
-        fontsize=13,
-        fontweight="bold",
-        y=1.02,
+    fig = viz.figure_tuning_history(
+        trial_values=values,
+        flatfield=result.best_fit.flatfields[0],
+        seam_raw=seam_raw,
+        seam_tuned=seam_tuned,
     )
-    fig.tight_layout()
-    path = out / "tuning_demo.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
-    plt.close(fig)
+    path = viz.save_figure(fig, out / "tuning_demo.png", dpi=150)
     print(f"Saved: {path}  (seam L1 {seam_raw:.3f} -> {seam_tuned:.3f}, {improvement:+.0f}%)")
 
 
@@ -291,50 +220,30 @@ def main() -> None:
     _save_gray(full_corrected, "full_corrected.png")
 
     # Side-by-side full image comparison figure
-    fig2, axes2 = plt.subplots(1, 2, figsize=(14, 5))
-    fig2.patch.set_facecolor("#0d1117")
-    for ax, data, title in zip(
-        axes2,
-        [full_corrupted, full_corrected],
-        ["Full image — corrupted (synthetic vignette)", "Full image — corrected by Linum BaSiC"],
-        strict=True,
-    ):
-        ax.imshow(data, cmap="gray", interpolation="lanczos")
-        ax.set_title(title, color="white", fontsize=11, pad=8)
-        ax.axis("off")
-    fig2.tight_layout()
-    full_path = out / "full_comparison.png"
-    fig2.savefig(full_path, dpi=100, bbox_inches="tight", facecolor=fig2.get_facecolor())
-    plt.close(fig2)
+    fig2 = viz.figure_panels(
+        [
+            viz.Panel(full_corrupted, "Full image — corrupted (synthetic vignette)", kind="image"),
+            viz.Panel(full_corrected, "Full image — corrected by Linum BaSiC", kind="image"),
+        ],
+        ncols=2,
+        figsize=(14, 5),
+    )
+    full_path = viz.save_figure(fig2, out / "full_comparison.png", dpi=100)
 
     # ------------------------------------------------------------------
     # 5. Save the 3-panel comparison figure
     # ------------------------------------------------------------------
-    fig, axes = plt.subplots(1, 3, figsize=(11, 3.8))
-    fig.patch.set_facecolor("#0d1117")  # dark background
-
-    panel_data = [
-        (sample_corrupted, "gray", "Corrupted tile\n(with vignette)"),
-        (flatfield, "inferno", "Estimated flat-field"),
-        (sample_corrected, "gray", "Corrected tile"),
-    ]
-    for ax, (data, cmap, title) in zip(axes, panel_data, strict=True):
-        im = ax.imshow(data, cmap=cmap, interpolation="nearest")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        ax.set_title(title, color="white", fontsize=11, pad=8)
-        ax.axis("off")
-
-    fig.suptitle(
-        "BaSiC illumination correction demo",
-        color="white",
-        fontsize=13,
-        fontweight="bold",
-        y=1.02,
+    fig = viz.figure_panels(
+        [
+            viz.Panel(sample_corrupted, "Corrupted tile\n(with vignette)", kind="image"),
+            viz.Panel(flatfield, "Estimated flat-field", kind="flatfield"),
+            viz.Panel(sample_corrected, "Corrected tile", kind="image"),
+        ],
+        ncols=3,
+        figsize=(11, 3.8),
+        suptitle="BaSiC illumination correction demo",
     )
-    fig.tight_layout()
-    comparison_path = out / "demo_comparison.png"
-    fig.savefig(comparison_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
-    plt.close(fig)
+    comparison_path = viz.save_figure(fig, out / "demo_comparison.png", dpi=150)
 
     print(f"Saved: {comparison_path}")
     print(f"Saved: {out / 'tile_corrupted.png'}")
@@ -378,57 +287,49 @@ def main() -> None:
     # 6-panel comparison: 2 rows x 3 cols
     # Row 0: corrupted tile | GT flat-field | GT dark-field
     # Row 1: corrected tile | estimated flat-field | estimated dark-field
-    fig3, axes3 = plt.subplots(2, 3, figsize=(12, 7))
-    fig3.patch.set_facecolor("#0d1117")
-
     # Shared colour limits for flat-field row and dark-field row
     ff_vmin = min(gt_vignette.min(), est_flatfield.min())
     ff_vmax = max(gt_vignette.max(), est_flatfield.max())
     df_vmax = max(gt_darkfield.max(), est_darkfield.max())
 
-    panels_df = [
-        (axes3[0, 0], sample_corrupt_df, "gray", "Corrupted tile\n(vignette + dark-field)", None, None),
-        (axes3[0, 1], gt_vignette, "viridis", f"GT flat-field\n(mean = {gt_vignette.mean():.2f})", ff_vmin, ff_vmax),
-        (axes3[0, 2], gt_darkfield, "inferno", f"GT dark-field\n(max = {gt_darkfield.max():.3f})", 0, df_vmax),
-        (axes3[1, 0], sample_corrected_df, "gray", "Corrected tile", None, None),
-        (
-            axes3[1, 1],
-            est_flatfield,
-            "viridis",
-            f"Estimated flat-field\n(mean = {est_flatfield.mean():.2f})",
-            ff_vmin,
-            ff_vmax,
-        ),
-        (
-            axes3[1, 2],
-            est_darkfield,
-            "inferno",
-            f"Estimated dark-field\n(max = {est_darkfield.max():.3f})",
-            0,
-            df_vmax,
-        ),
-    ]
-    for ax, data, cmap, title, vmin, vmax in panels_df:
-        kw: dict = {"interpolation": "nearest"}
-        if vmin is not None:
-            kw["vmin"] = vmin
-            kw["vmax"] = vmax
-        im3 = ax.imshow(data, cmap=cmap, **kw)
-        fig3.colorbar(im3, ax=ax, fraction=0.046, pad=0.04)
-        ax.set_title(title, color="white", fontsize=10, pad=6)
-        ax.axis("off")
-
-    fig3.suptitle(
-        "BaSiC dark-field estimation demo — ground truth vs estimate",
-        color="white",
-        fontsize=12,
-        fontweight="bold",
-        y=1.01,
+    fig3 = viz.figure_panels(
+        [
+            viz.Panel(sample_corrupt_df, "Corrupted tile\n(vignette + dark-field)", kind="image"),
+            viz.Panel(
+                gt_vignette,
+                f"GT flat-field\n(mean = {gt_vignette.mean():.2f})",
+                kind="flatfield",
+                vmin=ff_vmin,
+                vmax=ff_vmax,
+            ),
+            viz.Panel(
+                gt_darkfield,
+                f"GT dark-field\n(max = {gt_darkfield.max():.3f})",
+                kind="darkfield",
+                vmin=0,
+                vmax=df_vmax,
+            ),
+            viz.Panel(sample_corrected_df, "Corrected tile", kind="image"),
+            viz.Panel(
+                est_flatfield,
+                f"Estimated flat-field\n(mean = {est_flatfield.mean():.2f})",
+                kind="flatfield",
+                vmin=ff_vmin,
+                vmax=ff_vmax,
+            ),
+            viz.Panel(
+                est_darkfield,
+                f"Estimated dark-field\n(max = {est_darkfield.max():.3f})",
+                kind="darkfield",
+                vmin=0,
+                vmax=df_vmax,
+            ),
+        ],
+        ncols=3,
+        figsize=(12, 7),
+        suptitle="BaSiC dark-field estimation demo — ground truth vs estimate",
     )
-    fig3.tight_layout()
-    darkfield_path = out / "darkfield_demo_comparison.png"
-    fig3.savefig(darkfield_path, dpi=150, bbox_inches="tight", facecolor=fig3.get_facecolor())
-    plt.close(fig3)
+    darkfield_path = viz.save_figure(fig3, out / "darkfield_demo_comparison.png", dpi=150)
 
     print(f"Saved: {darkfield_path}")
     print(f"Saved: {out / 'darkfield_gt.png'}")
