@@ -252,7 +252,7 @@ class BaSiC:
             self.img_stack = img_stack
         elif self.input_type in {"directory", "files_list"}:
             raw: list[NDArray] = []
-            gen = tqdm(self.files, desc="Loading images") if self.verbose else self.files
+            gen = tqdm(self.files, desc="Loading images", leave=False) if self.verbose else self.files
             for path in gen:
                 img = cv2.imread(str(path), cv2.IMREAD_ANYDEPTH)
                 if img is not None:
@@ -419,7 +419,7 @@ class BaSiC:
         :meth:`prepare` must be called before this method.
         """
         if self.verbose:
-            pbar: tqdm | None = tqdm(desc="Reweighting", total=self.max_reweighting_iterations)
+            pbar: tqdm | None = tqdm(desc="Reweighting", total=self.max_reweighting_iterations, leave=False)
         else:
             pbar = None
         while self._flag_reweighting:
@@ -486,7 +486,7 @@ class BaSiC:
         out_dir = Path(directory)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        for i in tqdm(range(self.n_images), desc="Shading correction"):
+        for i in tqdm(range(self.n_images), desc="Shading correction", leave=False):
             corrected = self.normalize(self.img_stack[i], epsilon=epsilon)
             out_path = out_dir / self.files[i].name
             cv2.imwrite(str(out_path), corrected)

@@ -111,6 +111,15 @@ corrected = model.normalize(stack[0])
 > acquisition exposure or scene content).  If all images have nearly identical
 > mean intensity, set `estimate_darkfield=False`.
 
+```{figure} _static/demo/darkfield_demo_comparison.png
+:alt: Darkfield correction comparison
+:align: center
+
+**Darkfield correction demo.**  Top row: one input tile with simulated
+vignette + dark offset, ground-truth flat-field, ground-truth dark-field.
+Bottom row: BaSiC-corrected tile, estimated flat-field, estimated dark-field.
+```
+
 ---
 
 ## Command-line interface

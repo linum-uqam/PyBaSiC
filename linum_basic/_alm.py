@@ -203,7 +203,7 @@ def inexact_alm_l1(
     iteration = 0
     B1: float = 0.0  # ensure B1 is always defined
 
-    pbar: tqdm | None = tqdm(desc="ALM Iteration", total=max_iter) if verbose else None
+    pbar: tqdm | None = tqdm(desc="ALM Iteration", total=max_iter, leave=False) if verbose else None
     S_spatial = xp.zeros((1, p * q), dtype=np.float32)
     Ib = xp.zeros_like(D)
 
