@@ -39,7 +39,7 @@ from linum_basic.mosaic import MosaicGrid
 mosaic = MosaicGrid.from_ome_zarr("my_mosaic.ome.zarr", overlap_fraction=0.2)
 
 # Extract all tiles for z=0
-tiles = mosaic.tiles(z=0)
+tiles = mosaic.iter_tiles(z=0)
 pairs = mosaic.seam_pairs()
 
 print("Raw seam L1:", seam_l1(tiles, pairs))
@@ -147,6 +147,17 @@ $$
 l_s = \frac{\text{dct\_sum}}{l_s\text{\_divisor}}, \quad
 l_d = \frac{\text{dct\_sum}}{l_d\text{\_divisor}}
 $$
+
+```{figure} _static/demo/tuning_demo.png
+:alt: Optuna optimisation history, tuned flat-field, and seam-consistency improvement
+:align: center
+:width: 100%
+
+A short 25-trial tuning run on a synthetic overlapping mosaic.  **Left:** each
+Optuna trial's seam-L1 score with the running best (red).  **Centre:** the
+flat-field recovered by the best trial.  **Right:** seam consistency before and
+after correction — the optimiser drives the mismatch down by ~97 %.
+```
 
 ```python
 from linum_basic.mosaic import MosaicGrid

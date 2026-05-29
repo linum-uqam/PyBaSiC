@@ -26,6 +26,15 @@ offsets (darkfield) from fluorescence, bright-field, and other modalities.
    tile's vignette — dark corners caused by non-uniform illumination — is removed
    uniformly across the entire field of view.
 
+.. figure:: _static/demo/flatfield_3d.png
+   :alt: 3-D surface plot of the estimated flat-field
+   :align: center
+   :width: 80%
+
+   The estimated flat-field rendered as an illumination surface.  The smooth dome
+   captures the microscope's spatially varying gain — bright at the centre, falling
+   off towards the edges — which BaSiC divides out of every tile.
+
 .. code-block:: python
 
    from linum_basic import BaSiC
