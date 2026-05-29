@@ -2,24 +2,32 @@
 
 These tests exercise the DC (mean) preservation fix in the ALM dark-field
 path and verify basic shape-correlation quality on small synthetic stacks.
-They run without sbh-simulator and complete in a few seconds.
+Vignettes are generated with the sbh-simulator Python API (Gaussian family).
 """
 
 from __future__ import annotations
 
+import random
+
 import numpy as np
+import pytest
 
 from linum_basic.core import BaSiC
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+try:
+    from sbh_simulator.simulator import (
+        generate_gaussian_darkfield,
+        generate_gaussian_vignette,
+    )
 
+    _SBH_SIMULATOR_AVAILABLE = True
+except ImportError:
+    _SBH_SIMULATOR_AVAILABLE = False
 
-def _gaussian_field(size: int, sigma: float) -> np.ndarray:
-    """Return a 2-D Gaussian array of shape (size, size) with values in (0, 1]."""
-    y, x = np.mgrid[-1 : 1 : size * 1j, -1 : 1 : size * 1j]  # type: ignore[misc]
-    return np.exp(-0.5 * (x**2 + y**2) / sigma**2).astype(np.float32)
+pytestmark = pytest.mark.skipif(
+    not _SBH_SIMULATOR_AVAILABLE,
+    reason="sbh-simulator not installed. Install with: uv pip install sbh-simulator",
+)
 
 
 def _make_stack(
@@ -68,7 +76,7 @@ def test_darkfield_dc_magnitude_preserved() -> None:
     true_df_mean = 0.04
 
     # Slightly non-uniform flat-field so BaSiC has spatial contrast to work with
-    flat_field = _gaussian_field(size, sigma=0.5)
+    flat_field = generate_gaussian_vignette(width=size, height=size, sigma=0.7, rng=random.Random(0)).astype(np.float32)
     flat_field /= flat_field.mean()
     dark_field = np.full((size, size), true_df_mean, dtype=np.float32)
 
@@ -100,7 +108,7 @@ def test_darkfield_sensitivity_above_baseline() -> None:
     rng = np.random.default_rng(0)
     size = 32
 
-    flat_field = _gaussian_field(size, sigma=0.5)
+    flat_field = generate_gaussian_vignette(width=size, height=size, sigma=0.7, rng=random.Random(0)).astype(np.float32)
     flat_field /= flat_field.mean()
 
     B = rng.uniform(0.2, 0.8, (30, 1, 1)).astype(np.float32)
@@ -136,9 +144,11 @@ def test_darkfield_does_not_degrade_flatfield() -> None:
     rng = np.random.default_rng(0)
     size = 32
 
-    flat_field = _gaussian_field(size, sigma=0.5)
+    flat_field = generate_gaussian_vignette(width=size, height=size, sigma=0.7, rng=random.Random(0)).astype(np.float32)
     flat_field /= flat_field.mean()
-    dark_field = (0.02 + 0.03 * _gaussian_field(size, sigma=0.4)).astype(np.float32)
+    dark_field = generate_gaussian_darkfield(width=size, height=size, sigma=0.5, max_offset=0.05, rng=random.Random(1)).astype(
+        np.float32
+    )
 
     stack = _make_stack(30, size, flat_field, dark_field, rng=rng)
 

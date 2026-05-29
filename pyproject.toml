@@ -18,6 +18,9 @@ dependencies = [
     "scipy>=1.15",
     "opencv-python>=4.11",
     "tqdm>=4.67",
+    "zarr>=3",
+    "ome-zarr>=0.10",
+    "optuna>=3.6",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +63,8 @@ notebooks = [
 
 [project.scripts]
 basic_shading_correction = "linum_basic.cli:main"
+basic_fit = "linum_basic.cli:fit_main"
+basic_tune = "linum_basic.cli:tune_main"
 
 [project.urls]
 Repository = "https://github.com/linum-uqam/Linum-BaSiC"
