@@ -32,18 +32,31 @@ from linum_basic.mosaic import MosaicGrid
 if TYPE_CHECKING:
     pass
 
-__all__ = ["MosaicFit", "apply_fit", "fit_mosaic"]
+__all__ = ["MosaicFit", "apply_fit", "fit_mosaic", "make_model"]
 
 # BaSiC.__init__ keyword-argument names; everything else is a post-init attr.
 _BASIC_INIT_PARAMS: frozenset[str] = frozenset({"estimate_darkfield", "extension", "verbose", "backend", "device"})
 
 
-def _make_model(tiles: np.ndarray, params: dict[str, Any]) -> BaSiC:
+def make_model(tiles: np.ndarray, params: dict[str, Any]) -> BaSiC:
     """Construct and fully configure a :class:`BaSiC` model from *params*.
 
     Parameters accepted by ``BaSiC.__init__`` are passed as keyword
     arguments; the rest (``working_size``, ``l_s``, ``l_d``,
     ``epsilon``, …) are set as attributes after construction.
+
+    Parameters
+    ----------
+    tiles : numpy.ndarray
+        Tile stack, shape ``(N, th, tw)``, used to initialise the model.
+    params : dict
+        BaSiC hyperparameters.  Keys matching ``BaSiC.__init__`` arguments
+        are passed to the constructor; remaining keys are set as attributes.
+
+    Returns
+    -------
+    BaSiC
+        The configured model, ready for ``prepare()`` and ``run()``.
     """
     init_kw = {k: v for k, v in params.items() if k in _BASIC_INIT_PARAMS}
     post_kw = {k: v for k, v in params.items() if k not in _BASIC_INIT_PARAMS}
@@ -161,7 +174,7 @@ def fit_mosaic(
         tiles = mosaic.iter_tiles(z)
         if n_extra_rows > 0:
             tiles = tiles[:, n_extra_rows:, :]
-        model = _make_model(tiles, params)
+        model = make_model(tiles, params)
         model.prepare()
         model.run()
         flatfields[i, n_extra_rows:, :] = model.get_flatfield()

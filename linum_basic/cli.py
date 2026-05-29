@@ -282,7 +282,7 @@ def _build_tune_parser() -> argparse.ArgumentParser:
     )
     tuning_group.add_argument("--seed", metavar="N", type=int, default=0, help="Random seed for reproducibility.")
     tuning_group.add_argument(
-        "--n-jobs", metavar="N", type=int, default=1, help="Parallel Optuna workers (requires --storage)."
+        "--n-jobs", metavar="N", type=int, default=1, help="Parallel worker threads for z-level evaluation within each trial."
     )
     tuning_group.add_argument(
         "--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1)."
@@ -319,7 +319,7 @@ def tune_main(argv: list[str] | None = None) -> int:
         n_trials=args.n_trials,
         z_subsample=args.z_subsample,
         seed=args.seed,
-        n_jobs=args.n_jobs,
+        n_workers=args.n_jobs,
         storage=args.storage,
         study_name=args.study_name,
         run_full_fit=run_full_fit,
