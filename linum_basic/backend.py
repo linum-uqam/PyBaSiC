@@ -552,9 +552,9 @@ def _torch_dct1d(x: Any, norm: str = "ortho") -> Any:
     """
     import torch
 
-    n = x.shape[-1]  # type: ignore[union-attr]
-    cos_k, sin_k, scale = _get_dct_twiddles(n, x.dtype, x.device)  # type: ignore[union-attr]
-    v = torch.cat([x[..., ::2], x[..., 1::2].flip(-1)], dim=-1)  # type: ignore[index]
+    n = x.shape[-1]
+    cos_k, sin_k, scale = _get_dct_twiddles(n, x.dtype, x.device)
+    v = torch.cat([x[..., ::2], x[..., 1::2].flip(-1)], dim=-1)
     Vc = torch.fft.fft(v, n=n, dim=-1)
     # Re(Vc * exp(-i*theta)) = Vc.real*cos + Vc.imag*sin
     y = Vc.real * cos_k + Vc.imag * sin_k
@@ -580,8 +580,8 @@ def _torch_idct1d(x: Any, norm: str = "ortho") -> Any:
     """
     import torch
 
-    n = x.shape[-1]  # type: ignore[union-attr]
-    cos_k, sin_k, scale = _get_idct_twiddles(n, x.dtype, x.device)  # type: ignore[union-attr]
+    n = x.shape[-1]
+    cos_k, sin_k, scale = _get_idct_twiddles(n, x.dtype, x.device)
     xn = x * scale if norm == "ortho" else x / 2
     # Anti-Hermitian imaginary part (exploits real-signal symmetry of forward FFT)
     Vt_i = torch.cat([torch.zeros_like(xn[..., :1]), -xn[..., 1:].flip(-1)], dim=-1)
@@ -611,8 +611,8 @@ def _torch_dctn(x: Any, norm: str = "ortho") -> Any:
         DCT-II coefficients, same shape as *x*.
     """
     y = x
-    for i in range(y.ndim):  # type: ignore[union-attr]
-        y = _torch_dct1d(y.transpose(-1, i), norm=norm).transpose(-1, i)  # type: ignore[union-attr]
+    for i in range(y.ndim):
+        y = _torch_dct1d(y.transpose(-1, i), norm=norm).transpose(-1, i)
     return y
 
 
@@ -632,8 +632,8 @@ def _torch_idctn(x: Any, norm: str = "ortho") -> Any:
         Reconstructed tensor, same shape as *x*.
     """
     y = x
-    for i in range(y.ndim):  # type: ignore[union-attr]
-        y = _torch_idct1d(y.transpose(-1, i), norm=norm).transpose(-1, i)  # type: ignore[union-attr]
+    for i in range(y.ndim):
+        y = _torch_idct1d(y.transpose(-1, i), norm=norm).transpose(-1, i)
     return y
 
 

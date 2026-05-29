@@ -257,7 +257,7 @@ class BaSiC:
             n_workers = min(32, len(self.files))
 
             def _read_one(path: Path) -> NDArray | None:
-                return cv2.imread(str(path), cv2.IMREAD_ANYDEPTH)  # type: ignore[return-value]
+                return cv2.imread(str(path), cv2.IMREAD_ANYDEPTH)
 
             with ThreadPoolExecutor(max_workers=n_workers) as pool:
                 raw_iter = pool.map(_read_one, self.files)
@@ -267,7 +267,7 @@ class BaSiC:
             self.img_stack = np.array(raw)
 
         self.n_images = self.img_stack.shape[0]
-        self.image_shape = self.img_stack.shape[1:]  # type: ignore[assignment]
+        self.image_shape = self.img_stack.shape[1:]
 
         new_shape = (self.working_size, self.working_size)
         interp = cv2.INTER_LINEAR if self.working_size > self.image_shape[0] else cv2.INTER_AREA

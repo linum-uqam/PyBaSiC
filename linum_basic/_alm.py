@@ -16,7 +16,7 @@ from linum_basic.backend import ArrayNamespace, Backend, get_xp
 __all__ = ["inexact_alm_l1", "shrink"]
 
 
-def shrink(xp: ArrayNamespace, theta: object, epsilon: float = 1e-3) -> object:
+def shrink[ArrayT](xp: ArrayNamespace, theta: ArrayT, epsilon: float = 1e-3) -> ArrayT:
     """Scalar shrink (soft-threshold) operator.
 
     Computes ``sign(θ) · max(|θ| - ε, 0)`` element-wise, implemented as
@@ -230,13 +230,13 @@ def inexact_alm_l1(
         # S_spatial was computed at the end of the previous iteration (or
         # pre-computed above), so no extra iDCT is needed here.
         Ib = S_spatial * B + D_field  # (N, P*Q)
-        Ir = shrink(xp, D - Ib + Y_over_mu, W / mu)  # type: ignore[operator]
+        Ir = shrink(xp, D - Ib + Y_over_mu, W / mu)
 
         # Cache D - Ir: the same subtraction is needed in the flat-field
         # update (step 2), the baseline update (step 4), and the Lagrange
         # step (step 6).  Computing it once avoids two redundant N x (P*Q)
         # allocations per iteration.
-        DminusIr = D - Ir  # type: ignore[operator]
+        DminusIr = D - Ir
 
         # 2. Update flat-field DCT coefficients Sf.
         # The mean reduction stays on the active backend (GPU-friendly):
@@ -247,7 +247,7 @@ def inexact_alm_l1(
         # This matches the MATLAB reference: temp_W = D - A1_hat - E + Y/mu,
         # where A1_hat = S*B + D_field. When estimate_darkfield=False,
         # D_field is identically zero so this subtraction is a no-op.
-        R_dev = DminusIr - D_field + Y_over_mu  # type: ignore[operator]  reuse cached Y/mu
+        R_dev = DminusIr - D_field + Y_over_mu  # reuse cached Y/mu
         R_for_sf_mean = xp.mean(R_dev.reshape(n, p, q), axis=0)  # stays on device, shape (p, q)
         dSf = xp.astype(xp.dctn(R_for_sf_mean, norm="ortho"), np.float32)
         Sf = shrink(xp, dSf, l_s / mu)
@@ -318,14 +318,14 @@ def inexact_alm_l1(
 
             Dr_f = xp.astype(xp.dctn(A_offset_centered.reshape(p, q), norm="ortho"), np.float32)
             Dr_f_shrunk = shrink(xp, Dr_f, l_d / (ent2 * mu))
-            Dr = xp.astype(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho"), np.float32).reshape(1, p * q)  # type: ignore
+            Dr = xp.astype(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho"), np.float32).reshape(1, p * q)
             Dr = shrink(xp, Dr, l_d / (mu * ent2))
-            D_field = xp.astype(Dr + A_offset_mean + Z, np.float32)  # type: ignore
+            D_field = xp.astype(Dr + A_offset_mean + Z, np.float32)
 
         # 6. Update Lagrange multiplier Y (primal residual: D - Ib - Ir).
         # Evaluation order matches the original (D - Ib) - Ir, not (D - Ir) - Ib,
         # to preserve float32 accumulation identical to the pre-optimisation code.
-        dY = D - Ib - Ir  # type: ignore[operator]
+        dY = D - Ib - Ir
         # Accumulate the Lagrange multiplier in float64 on the active device
         # so that large mu values (mu grows as rho^iter) don't erode precision.
         # xp.astype keeps the cast on GPU for torch backends — no device transfer.
