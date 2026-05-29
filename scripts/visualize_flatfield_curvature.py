@@ -31,7 +31,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 _DEFAULT_ZARR = "/Users/Frans/Downloads/sub-22/mosaic_grid_z27_focal_fix.ome.zarr"
-_DEFAULT_OUT = str(Path(__file__).parent.parent / "docs" / "_static" / "demo" / "flatfield_curvature.png")
+_DEFAULT_OUT = str(Path(_DEFAULT_ZARR).parent / "flatfield_curvature.png")
 
 
 def _build_parser() -> argparse.ArgumentParser:
