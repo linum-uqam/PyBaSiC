@@ -19,7 +19,9 @@ __all__ = ["inexact_alm_l1", "shrink"]
 def shrink(xp: ArrayNamespace, theta: object, epsilon: float = 1e-3) -> object:
     """Scalar shrink (soft-threshold) operator.
 
-    Computes ``sign(θ) · max(|θ| - ε, 0)`` element-wise.
+    Computes ``sign(θ) · max(|θ| - ε, 0)`` element-wise, implemented as
+    ``copysign(max(|θ| - ε, 0), θ)`` which avoids a separate sign array and
+    is significantly faster for large arrays on the NumPy backend.
 
     Parameters
     ----------
@@ -40,7 +42,7 @@ def shrink(xp: ArrayNamespace, theta: object, epsilon: float = 1e-3) -> object:
     .. [1] Candès, E., Li, X., Ma, Y. & Wright, J. "Robust Principal Component
        Analysis?" *J. ACM* 58, 1-37 (2011).
     """
-    return xp.sign(theta) * xp.maximum(xp.abs(theta) - epsilon, 0.0)
+    return xp.copysign(xp.maximum(xp.abs(theta) - epsilon, 0.0), theta)
 
 
 def inexact_alm_l1(
@@ -219,11 +221,16 @@ def inexact_alm_l1(
     # Main loop
     # ------------------------------------------------------------------
     while not converged and iteration < max_iter:
+        # Pre-compute Y / mu once per iteration: the quotient is reused in
+        # both the Ir update (step 1) and the Sf mean update (step 2),
+        # avoiding a second O(N * P*Q) division.
+        Y_over_mu = Y / mu  # type: ignore[operator]  scalar when Y=0.0 (first iter)
+
         # 1. Update sparse residual Ir.
         # S_spatial was computed at the end of the previous iteration (or
         # pre-computed above), so no extra iDCT is needed here.
         Ib = S_spatial * B + D_field  # (N, P*Q)
-        Ir = shrink(xp, D - Ib + Y / mu, W / mu)  # type: ignore[operator]
+        Ir = shrink(xp, D - Ib + Y_over_mu, W / mu)  # type: ignore[operator]
 
         # Cache D - Ir: the same subtraction is needed in the flat-field
         # update (step 2), the baseline update (step 4), and the Lagrange
@@ -235,7 +242,7 @@ def inexact_alm_l1(
         # The mean reduction stays on the active backend (GPU-friendly):
         # only a (P, Q) slice is transferred to CPU, not the full (N, P*Q)
         # matrix.
-        R_dev = DminusIr + Y / mu  # type: ignore[operator]
+        R_dev = DminusIr + Y_over_mu  # type: ignore[operator]  reuse cached Y/mu
         R_for_sf_mean = xp.to_numpy(xp.mean(R_dev.reshape(n, p, q), axis=0))  # float64, matches original
         dSf = xp.asarray(np.asarray(xp.dctn(R_for_sf_mean, norm="ortho")).astype(np.float32))
         Sf = xp.asarray(xp.to_numpy(shrink(xp, dSf, l_s / mu)).astype(np.float32))

@@ -273,6 +273,25 @@ class ArrayNamespace:
             return self._torch.clamp_max(x, y)
         return self._torch.minimum(x, y)
 
+    def copysign(self, magnitude: Any, sign_source: Any) -> Any:
+        """Element-wise copysign: return *magnitude* with the sign of *sign_source*.
+
+        Parameters
+        ----------
+        magnitude : Any
+            Array of non-negative magnitudes.
+        sign_source : Any
+            Array from which the sign information is taken.
+
+        Returns
+        -------
+        Any
+            Array with values from *magnitude* and signs from *sign_source*.
+        """
+        if self._backend is Backend.NUMPY:
+            return np.copysign(magnitude, sign_source)
+        return self._torch.copysign(magnitude, sign_source)
+
     def mean(self, x: Any, axis: int | None = None, keepdims: bool = False) -> Any:
         """Compute the arithmetic mean along an axis.
 
