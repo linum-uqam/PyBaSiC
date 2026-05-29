@@ -115,6 +115,7 @@ def fit_mosaic(
     z_indices: list[int] | None = None,
     field_mode: Literal["per-z", "global"] = "per-z",
     basic_kwargs: dict[str, Any] | None = None,
+    n_extra_rows: int = 0,
     verbose: bool = False,
 ) -> MosaicFit:
     """Fit one BaSiC model per z-level over all tiles of *mosaic*.
@@ -135,6 +136,12 @@ def fit_mosaic(
         Hyperparameters forwarded to :class:`~linum_basic.core.BaSiC`.
         May include ``working_size``, ``l_s``, ``l_d``, ``epsilon``,
         ``estimate_darkfield``, ``backend``, ``device``, etc.
+    n_extra_rows : int
+        Number of rows at the top of each tile to exclude from the BaSiC
+        fit (galvo return / flyback signal).  The excluded rows are filled
+        with 1.0 (flat-field) and 0.0 (dark-field) in the output so that
+        :func:`apply_fit` treats them as uncorrected pass-through pixels.
+        Default ``0`` (no masking).
     verbose : bool
         Show a progress bar over z-levels.
 
@@ -147,16 +154,18 @@ def fit_mosaic(
     z_idx = list(z_indices) if z_indices is not None else list(range(mosaic.n_z))
 
     th, tw = mosaic.tile_shape
-    flatfields = np.zeros((len(z_idx), th, tw), dtype=np.float32)
+    flatfields = np.ones((len(z_idx), th, tw), dtype=np.float32)
     darkfields = np.zeros((len(z_idx), th, tw), dtype=np.float32)
 
     for i, z in enumerate(tqdm(z_idx, desc="Fitting z-levels", disable=not verbose)):
         tiles = mosaic.iter_tiles(z)
+        if n_extra_rows > 0:
+            tiles = tiles[:, n_extra_rows:, :]
         model = _make_model(tiles, params)
         model.prepare()
         model.run()
-        flatfields[i] = model.get_flatfield()
-        darkfields[i] = model.get_darkfield()
+        flatfields[i, n_extra_rows:, :] = model.get_flatfield()
+        darkfields[i, n_extra_rows:, :] = model.get_darkfield()
 
     if field_mode == "global":
         flatfields_out: np.ndarray = flatfields.mean(axis=0)

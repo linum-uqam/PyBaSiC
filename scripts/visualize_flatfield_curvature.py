@@ -70,6 +70,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--estimate-darkfield", action="store_true", default=False, help="Estimate dark-field in addition to flat-field."
     )
     p.add_argument("--verbose", action="store_true", default=False, help="Show BaSiC progress bars.")
+    p.add_argument(
+        "--n-extra",
+        type=int,
+        default=7,
+        metavar="N",
+        help=(
+            "Number of galvo-return rows at the top of each tile to exclude from the BaSiC fit. "
+            "Set to 0 to disable masking. Default: %(default)s (based on n_extra=40 at 400-px native "
+            "resolution resampled to 75-px zarr tiles)."
+        ),
+    )
     return p
 
 
@@ -78,7 +89,14 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
-def _load_and_fit(zarr_path: str, z_indices: list[int] | None, overlap: float, estimate_darkfield: bool, verbose: bool):
+def _load_and_fit(
+    zarr_path: str,
+    z_indices: list[int] | None,
+    overlap: float,
+    estimate_darkfield: bool,
+    n_extra_rows: int,
+    verbose: bool,
+):
     from linum_basic.fit import fit_mosaic
     from linum_basic.mosaic import MosaicGrid
 
@@ -88,12 +106,11 @@ def _load_and_fit(zarr_path: str, z_indices: list[int] | None, overlap: float, e
     print(f"  shape={mosaic.array.shape}  tile={mosaic.tile_shape}  grid={mosaic.n_rows}x{mosaic.n_cols}")
 
     if z_indices is None:
-        step = max(1, n_z // 10)
-        z_indices = list(range(0, n_z, step))
+        z_indices = list(range(n_z))
 
     print(f"Fitting {len(z_indices)} z-levels: {z_indices}")
     basic_kwargs = {"estimate_darkfield": estimate_darkfield}
-    fit = fit_mosaic(mosaic, z_indices=z_indices, basic_kwargs=basic_kwargs, verbose=verbose)
+    fit = fit_mosaic(mosaic, z_indices=z_indices, basic_kwargs=basic_kwargs, n_extra_rows=n_extra_rows, verbose=verbose)
     print(f"  flatfields shape: {fit.flatfields.shape}")
     return mosaic, fit
 
@@ -111,7 +128,6 @@ def _build_figure(mosaic, fit, z_inspect: int, smooth_sigma: float, out_path: Pa
     import matplotlib.ticker as ticker
 
     flatfields = _smooth_fields(fit.flatfields.copy(), smooth_sigma)
-    darkfields = fit.darkfields
     _n_z_fit, th, tw = flatfields.shape
     z_indices = fit.z_indices
 
@@ -128,13 +144,12 @@ def _build_figure(mosaic, fit, z_inspect: int, smooth_sigma: float, out_path: Pa
     # -----------------------------------------------------------------------
     # Raw vs corrected at z_inspect
     # -----------------------------------------------------------------------
+    from linum_basic.fit import apply_fit
+
     z_fit_idx = z_indices.index(z_inspect)
     ff = flatfields[z_fit_idx]
-    df = darkfields[z_fit_idx]
     raw_z = mosaic.array[z_inspect]  # (H, W)
-    corrected_z = (raw_z.astype(np.float32) - df.repeat(mosaic.n_rows, axis=0).repeat(mosaic.n_cols, axis=1)) / (
-        ff.repeat(mosaic.n_rows, axis=0).repeat(mosaic.n_cols, axis=1) + 1e-6
-    )
+    corrected_z = apply_fit(mosaic, fit)[z_inspect]
     # clip to [0, 99th-percentile] for display
     p99 = float(np.percentile(raw_z[raw_z > 0], 99))
     raw_disp = np.clip(raw_z, 0, p99)
@@ -159,7 +174,7 @@ def _build_figure(mosaic, fit, z_inspect: int, smooth_sigma: float, out_path: Pa
         yz_view,
         aspect="auto",
         origin="lower",
-        extent=[0, tw, z_labels[0], z_labels[-1]],
+        extent=(0, float(tw), float(z_labels[0]), float(z_labels[-1])),
         cmap="RdYlGn",
         vmin=0.7,
         vmax=1.3,
@@ -174,7 +189,7 @@ def _build_figure(mosaic, fit, z_inspect: int, smooth_sigma: float, out_path: Pa
         xz_view,
         aspect="auto",
         origin="lower",
-        extent=[0, th, z_labels[0], z_labels[-1]],
+        extent=(0, float(th), float(z_labels[0]), float(z_labels[-1])),
         cmap="RdYlGn",
         vmin=0.7,
         vmax=1.3,
@@ -237,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         z_indices=args.z_indices,
         overlap=args.overlap,
         estimate_darkfield=args.estimate_darkfield,
+        n_extra_rows=args.n_extra,
         verbose=args.verbose,
     )
 
