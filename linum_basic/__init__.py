@@ -31,6 +31,22 @@ Examples
 from linum_basic.algorithms import inexact_alm_l1, shrink
 from linum_basic.core import BaSiC
 from linum_basic.data import load_sample_image
+from linum_basic.fit import MosaicFit, apply_fit, fit_mosaic
+from linum_basic.mosaic import MosaicGrid, SeamPair
+from linum_basic.tuning import TuneResult, tune
 
 __version__ = "0.2.0"
-__all__ = ["BaSiC", "__version__", "inexact_alm_l1", "load_sample_image", "shrink"]
+__all__ = [
+    "BaSiC",
+    "MosaicFit",
+    "MosaicGrid",
+    "SeamPair",
+    "TuneResult",
+    "__version__",
+    "apply_fit",
+    "fit_mosaic",
+    "inexact_alm_l1",
+    "load_sample_image",
+    "shrink",
+    "tune",
+]
