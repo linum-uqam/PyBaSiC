@@ -257,38 +257,28 @@ def inexact_alm_l1(
         S_spatial = xp.astype(xp.idctn(Sf, norm="ortho"), np.float32).reshape(1, p * q)
         Ib = S_spatial * B + D_field
 
-        # 4. Update baseline B.
-        # When dark-field estimation is on, the full R matrix (N x P*Q) is
-        # needed on CPU for the dark-field step below, so we transfer it
-        # once and derive the per-row / global means from it.
-        # Otherwise we compute the means on the active device and transfer
-        # only the compact (N, 1) + scalar result, avoiding the large
-        # N x (P*Q) data movement.
-        R_np: np.ndarray | None = None
-        if estimate_darkfield:
-            R_np = xp.to_numpy(DminusIr)
-            R_mean_row = R_np.mean(axis=1, keepdims=True)
-            R_mean_all = float(R_np.mean())
-        else:
-            R_mean_row = xp.to_numpy(xp.mean(DminusIr, axis=1, keepdims=True))
-            R_mean_all = float(xp.mean(DminusIr))
-        B_np = np.clip(R_mean_row / (R_mean_all + 1e-9), 0, None)  # float64 - keep for darkfield masks
-        B = xp.asarray(B_np.astype(np.float32))
+        # 4. Update baseline B (stays on the active backend device).
+        # Per-row and global means computed on device; no CPU transfer needed.
+        R_mean_row = xp.mean(DminusIr, axis=1, keepdims=True)  # (N, 1), on device
+        R_mean_all = float(xp.mean(DminusIr))
+        B = xp.astype(xp.maximum(R_mean_row / (R_mean_all + 1e-9), 0.0), np.float32)
 
-        # 5. Dark-field estimation
+        # 5. Dark-field estimation (all operations on the active backend device).
+        # PyTorch supports boolean fancy indexing and masked reductions — no
+        # CPU round-trip is needed.
         if estimate_darkfield:
-            assert R_np is not None  # always set when estimate_darkfield=True
-            S_np = xp.to_numpy(S_spatial)
-            mask_valid_b = (B_np < 1)[:, 0]  # shape (N,)
-            mask_high_s = S_np[0] > (S_np[0].mean() - 1e-6)
-            mask_low_s = S_np[0] < (S_np[0].mean() + 1e-6)
+            S_mean = float(xp.mean(S_spatial))
+            mask_valid_b = (B < 1.0)[:, 0]  # shape (N,) bool, on device
+            mask_high_s = S_spatial[0] > (S_mean - 1e-6)  # shape (P*Q,)
+            mask_low_s = S_spatial[0] < (S_mean + 1e-6)
 
-            R_high = float(np.mean(R_np[mask_valid_b][:, mask_high_s])) if mask_valid_b.any() else 0.0
-            R_low = float(np.mean(R_np[mask_valid_b][:, mask_low_s])) if mask_valid_b.any() else 0.0
+            any_valid = bool(mask_valid_b.any())
+            R_high = float(xp.mean(DminusIr[mask_valid_b][:, mask_high_s])) if any_valid else 0.0
+            R_low = float(xp.mean(DminusIr[mask_valid_b][:, mask_low_s])) if any_valid else 0.0
             b1_cand = (R_high - R_low) / (R_mean_all + 1e-9)
 
             k_cnt = int(mask_valid_b.sum())
-            b_valid = B_np[mask_valid_b, 0]
+            b_valid = B[mask_valid_b][:, 0]  # shape (k_cnt,), on device
             if k_cnt > 0:
                 temp1 = float((b_valid**2).sum())
                 temp2 = float(b_valid.sum())
@@ -299,14 +289,14 @@ def inexact_alm_l1(
             else:
                 B1 = 0.0
 
-            B1 = float(np.clip(B1, 0.0, B1_uplimit / (S_np[0].mean() + 1e-9)))
+            B1 = max(0.0, min(B1, B1_uplimit / (S_mean + 1e-9)))
 
-            Z = B1 * (S_np[0].mean() - S_np[0])
-            if mask_valid_b.any():
-                A1_offset = R_np[mask_valid_b].mean(axis=0, keepdims=True) - float(b_valid.mean()) * S_np
+            Z = B1 * (S_mean - S_spatial)  # shape (1, P*Q), on device
+            if any_valid:
+                A1_offset = xp.mean(DminusIr[mask_valid_b], axis=0, keepdims=True) - float(b_valid.mean()) * S_spatial
             else:
-                A1_offset = np.zeros_like(S_np)
-            A_offset = A1_offset - Z
+                A1_offset = xp.zeros_like(S_spatial)
+            A_offset = A1_offset - Z  # shape (1, P*Q), on device
 
             # Zero-mean A_offset before the proximal (DCT-shrink) step so that
             # the DC component of the dark-field is not killed by the shrinkage
@@ -315,14 +305,14 @@ def inexact_alm_l1(
             # case (B1=0, Z=0) we add the mean back after shrinkage so the DC is
             # preserved.  The second spatial shrink below is kept intact (paper
             # Eq. 6 dual penalty |F(D_R)|_1 + |D_R|_1).
-            A_offset_mean = float(np.mean(A_offset))
-            A_offset_centered = A_offset - A_offset_mean
+            A_offset_mean = float(xp.mean(A_offset))
+            A_offset_centered = xp.astype(A_offset - A_offset_mean, np.float32)
 
-            Dr_f = np.asarray(xp.dctn(A_offset_centered.reshape(p, q), norm="ortho"))
-            Dr_f_shrunk = xp.to_numpy(shrink(xp, xp.asarray(Dr_f.astype(np.float32)), l_d / (ent2 * mu)))
-            Dr = np.asarray(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho")).reshape(1, p * q)
-            Dr = xp.to_numpy(shrink(xp, xp.asarray(Dr.astype(np.float32)), l_d / (mu * ent2)))
-            D_field = xp.asarray((Dr + A_offset_mean + Z).astype(np.float32))
+            Dr_f = xp.astype(xp.dctn(A_offset_centered.reshape(p, q), norm="ortho"), np.float32)
+            Dr_f_shrunk = shrink(xp, Dr_f, l_d / (ent2 * mu))
+            Dr = xp.astype(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho"), np.float32).reshape(1, p * q)  # type: ignore
+            Dr = shrink(xp, Dr, l_d / (mu * ent2))
+            D_field = xp.astype(Dr + A_offset_mean + Z, np.float32)  # type: ignore
 
         # 6. Update Lagrange multiplier Y (primal residual: D - Ib - Ir).
         # Evaluation order matches the original (D - Ib) - Ir, not (D - Ir) - Ib,
@@ -346,9 +336,8 @@ def inexact_alm_l1(
     if pbar is not None:
         pbar.close()
 
-    # Fold B1 into D_field
-    S_final_np = xp.to_numpy(S_spatial)
-    D_field = xp.asarray((xp.to_numpy(D_field) + B1 * S_final_np).astype(np.float32))
+    # Fold B1 into D_field (stays on device)
+    D_field = xp.astype(D_field + B1 * S_spatial, np.float32)
 
     # Convert outputs back to NumPy
     Ib_np = xp.to_numpy(Ib).reshape(n, p, q)
