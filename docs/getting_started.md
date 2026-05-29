@@ -61,6 +61,56 @@ model.run()
 model.write_images("/path/to/corrected")
 ```
 
+Three factory classmethods provide equivalent, more explicit alternatives:
+
+```python
+# From a directory
+model = BaSiC.from_directory("/path/to/tiles", estimate_darkfield=True)
+
+# From an explicit list of file paths
+model = BaSiC.from_files(sorted(Path("/path/to/tiles").glob("*.tif")))
+
+# From a pre-loaded NumPy array
+model = BaSiC.from_array(stack, estimate_darkfield=True)
+```
+
+---
+
+## Dark-field estimation
+
+Enable joint dark-field estimation with `estimate_darkfield=True`. This is
+recommended for fluorescence microscopy where auto-fluorescence from the
+objective, coverslip, or mounting medium produces a spatially varying
+additive background:
+
+```python
+import numpy as np
+from linum_basic import BaSiC
+
+# Synthetic example: Gaussian vignette + constant dark-field offset
+rng = np.random.default_rng(0)
+stack = rng.uniform(0.3, 1.0, (100, 512, 512)).astype(np.float32)
+
+# Enable dark-field estimation
+model = BaSiC(stack, estimate_darkfield=True)
+model.prepare()
+model.run()
+
+flatfield = model.get_flatfield()   # shape (512, 512), mean ≈ 1
+darkfield = model.get_darkfield()   # shape (512, 512), small non-negative values
+
+print(f"Flat-field mean : {flatfield.mean():.4f}")
+print(f"Dark-field mean : {darkfield.mean():.4f}")
+
+# Correct a single image: (image - darkfield) / flatfield
+corrected = model.normalize(stack[0])
+```
+
+> **Note:** Dark-field estimation works best when at least some images in the
+> stack have noticeably different per-image brightnesses (i.e. varying
+> acquisition exposure or scene content).  If all images have nearly identical
+> mean intensity, set `estimate_darkfield=False`.
+
 ---
 
 ## Command-line interface
