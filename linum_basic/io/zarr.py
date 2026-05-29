@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import zarr
+import zarr.storage
 
 __all__ = ["load_ome_zarr", "write_ome_zarr"]
 
