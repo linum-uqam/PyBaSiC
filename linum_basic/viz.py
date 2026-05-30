@@ -46,7 +46,7 @@ __all__ = [
     "aip_preview",
     "field_surface_3d",
     "figure_apply_correction",
-    "figure_field_flatten",
+    "figure_focal_volume",
     "figure_panels",
     "figure_seam_metric",
     "figure_tuning_history",
@@ -776,120 +776,124 @@ def figure_seam_metric(
     return fig
 
 
-def figure_field_flatten(
+def figure_focal_volume(
     *,
-    raw_tile: np.ndarray,
-    flatfield: np.ndarray,
-    darkfield: np.ndarray | None = None,
-    epsilon: float = 1e-6,
-    pixel_size_mm: float | None = None,
+    raw_side: np.ndarray,
+    est_side: np.ndarray,
+    corrected_side: np.ndarray,
+    seam_before: np.ndarray,
+    seam_after: np.ndarray,
+    focal_z: int | None = None,
     title: str | None = None,
 ) -> Figure:
-    r"""Visualise the illumination field going from curved (raw) to flat (corrected).
+    """Visualise how BaSiC corrects a depth-varying illumination focal curve.
 
-    The raw tile is dimmed by a spatially varying ``flatfield`` $S$, so the
-    effective illumination across the tile is *curved* — bright in the centre,
-    dim at the edges.  Dividing by $S$ flattens that field to a uniform gain of
-    one.  This figure shows the real tile before/after correction alongside the
-    field's 3-D surface and cross-sections so the curved-to-flat change is
-    explicit.
+    In volumetric fluorescence microscopy the illumination field changes with
+    depth: at the focal plane the field is nearly flat; away from focus the
+    vignette deepens and the mean intensity drops following the Gaussian beam
+    envelope.  BaSiC is applied independently at each z-level.
 
-    Layout (2x3):
+    The figure shows the volume *from the side* — a lateral x depth cross-
+    section — so the lens-shaped focal curve is visible before correction and
+    absent after.
 
-    * column 0: the raw tile (top) and corrected tile (bottom) as 2-D images;
-    * column 1: the illumination field $S$ as a curved 3-D surface (top) and the
-      uniform corrected field $S / S \\equiv 1$ as a flat surface (bottom),
-      drawn on a shared vertical scale;
-    * column 2: horizontal (top) and vertical (bottom) cross-sections through
-      the field centre, curved field vs the flat corrected field.
+    Layout (2x2):
+
+    * [0,0]: raw illumination side-view — the focal curve (bright/flat at
+      focus, dim/curved away from focus);
+    * [0,1]: BaSiC-estimated flat-field side-view — what the algorithm learnt;
+    * [1,0]: corrected illumination side-view — spatial non-uniformity removed;
+    * [1,1]: seam-L1 per z before and after correction.
 
     Parameters
     ----------
-    raw_tile : numpy.ndarray, shape (h, w)
-        The raw (uncorrected) tile, dimmed by ``flatfield``.
-    flatfield : numpy.ndarray, shape (h, w)
-        The multiplicative illumination field (mean ~ 1).
-    darkfield : numpy.ndarray, optional
-        Additive dark-field, subtracted before dividing by the flat-field.
-    epsilon : float, optional
-        Stabiliser added to the flat-field before division (default ``1e-6``).
-    pixel_size_mm : float, optional
-        Physical pixel size for a scale bar on the raw tile panel.
+    raw_side : numpy.ndarray, shape (n_z, n_x)
+        Central row of the raw illumination profile at each z-level
+        (field x z-dependent mean scale).
+    est_side : numpy.ndarray, shape (n_z, n_x)
+        Central row of the BaSiC-estimated flat-field at each z-level.
+    corrected_side : numpy.ndarray, shape (n_z, n_x)
+        Central row of the residual illumination after correction at each z.
+    seam_before : numpy.ndarray, shape (n_z,)
+        Seam discrepancy before correction at each z-level.
+    seam_after : numpy.ndarray, shape (n_z,)
+        Seam discrepancy after correction at each z-level.
+    focal_z : int, optional
+        Index of the focal z-level; marked with a dashed line on all panels.
     title : str, optional
-        Figure title.
+        Overall figure title.
 
     Returns
     -------
     matplotlib.figure.Figure
-        The assembled field-flattening figure.
+        The assembled focal-volume figure.
     """
     set_theme()
-    raw = np.asarray(raw_tile, dtype=np.float32)
-    flat = np.asarray(flatfield, dtype=np.float32)
-    dark = np.zeros_like(flat) if darkfield is None else np.asarray(darkfield, dtype=np.float32)
-    cor = (raw - dark) / (flat + epsilon)
+    raw_s = np.asarray(raw_side, dtype=np.float32)
+    est_s = np.asarray(est_side, dtype=np.float32)
+    cor_s = np.asarray(corrected_side, dtype=np.float32)
+    sb = np.asarray(seam_before, dtype=np.float64)
+    sa = np.asarray(seam_after, dtype=np.float64)
+    n_z, n_x = raw_s.shape
 
-    h, w = raw.shape
-    # The illumination field itself: curved (raw) and the flat unit field that
-    # remains after dividing the tile by it.
-    raw_field = flat / (flat.mean() + 1e-12)
-    flat_field = np.ones_like(flat)
-    zmin = float(min(raw_field.min(), 1.0)) - 0.05
-    zmax = float(max(raw_field.max(), 1.0)) + 0.05
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    if title:
+        fig.suptitle(title, fontsize=11)
 
-    raw_vmax = float(np.percentile(raw, 99))
-    cor_vmax = float(np.percentile(cor, 99))
+    # Shared colour limits for the raw and estimated panels so they are
+    # directly comparable; corrected uses its own (narrower) range.
+    vmin = float(min(raw_s.min(), est_s.min()))
+    vmax = float(max(raw_s.max(), est_s.max()))
 
-    fig = plt.figure(figsize=(16, 9))
-    head = "illumination field: curved (raw) to flat (corrected)"
-    fig.suptitle(f"{title}\n{head}" if title else head)
+    def _side(ax: plt.Axes, data: np.ndarray, label: str, vn: float, vx: float) -> None:
+        im = ax.imshow(
+            data,
+            aspect="auto",
+            cmap=FLATFIELD_CMAP,
+            vmin=vn,
+            vmax=vx,
+            interpolation="nearest",
+        )
+        ax.set_title(label)
+        ax.set_xlabel("lateral position (px)")
+        ax.set_ylabel("z-level (depth)")
+        if focal_z is not None:
+            ax.axhline(focal_z, color="white", lw=1.2, ls="--", alpha=0.85)
+            ax.text(
+                n_x * 0.98,
+                focal_z - 0.4,
+                "focal plane",
+                color="white",
+                fontsize=7,
+                ha="right",
+                va="bottom",
+            )
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="illumination gain")
 
-    # Column 0 — 2-D tiles, before and after correction.
-    ax_raw = fig.add_subplot(2, 3, 1)
-    show_image(ax_raw, raw, title="Raw tile", vmin=0, vmax=raw_vmax, pixel_size_mm=pixel_size_mm, scalebar=True)
-    ax_cor = fig.add_subplot(2, 3, 4)
-    show_image(ax_cor, cor, title="Corrected tile", vmin=0, vmax=cor_vmax)
+    _side(axes[0, 0], raw_s, "Raw — illumination focal curve", vmin, vmax)
+    _side(axes[0, 1], est_s, "BaSiC estimated flat-field per z", vmin, vmax)
+    _side(
+        axes[1, 0],
+        cor_s,
+        "Corrected — spatial non-uniformity removed",
+        float(cor_s.min()),
+        float(cor_s.max()),
+    )
 
-    # Column 1 — the illumination field surface, curved then flat.
-    yy, xx = np.mgrid[0:h, 0:w]
-    ax_s_raw = fig.add_subplot(2, 3, 2, projection="3d")
-    ax_s_raw.plot_surface(xx, yy, raw_field, cmap=FLATFIELD_CMAP, rcount=60, ccount=60, linewidth=0, antialiased=True)
-    ax_s_raw.set_zlim(zmin, zmax)
-    ax_s_raw.set_title("Illumination field (curved)")
-    ax_s_raw.set_xlabel("x")
-    ax_s_raw.set_ylabel("y")
-    ax_s_raw.set_zlabel("gain")
-    ax_s_raw.view_init(elev=32, azim=-58)
-
-    ax_s_cor = fig.add_subplot(2, 3, 5, projection="3d")
-    ax_s_cor.plot_surface(xx, yy, flat_field, cmap=FLATFIELD_CMAP, rcount=60, ccount=60, linewidth=0, antialiased=True)
-    ax_s_cor.set_zlim(zmin, zmax)
-    ax_s_cor.set_title("Corrected field (flat)")
-    ax_s_cor.set_xlabel("x")
-    ax_s_cor.set_ylabel("y")
-    ax_s_cor.set_zlabel("gain")
-    ax_s_cor.view_init(elev=32, azim=-58)
-
-    # Column 2 — central field cross-sections, curved vs flat.
-    mid_row = raw_field[h // 2, :]
-    mid_col = raw_field[:, w // 2]
-    ax_h = fig.add_subplot(2, 3, 3)
-    ax_h.plot(mid_row, color="tab:red", lw=1.6, label="field (curved)")
-    ax_h.axhline(1.0, color="tab:green", lw=1.6, label="corrected (flat)")
-    ax_h.set_title("Horizontal field profile")
-    ax_h.set_xlabel("x-pixel")
-    ax_h.set_ylabel("gain")
-    ax_h.legend(fontsize=8)
-    ax_h.margins(x=0)
-
-    ax_v = fig.add_subplot(2, 3, 6)
-    ax_v.plot(mid_col, color="tab:red", lw=1.6, label="field (curved)")
-    ax_v.axhline(1.0, color="tab:green", lw=1.6, label="corrected (flat)")
-    ax_v.set_title("Vertical field profile")
-    ax_v.set_xlabel("y-pixel")
-    ax_v.set_ylabel("gain")
-    ax_v.legend(fontsize=8)
-    ax_v.margins(x=0)
+    # Seam metric per z — before vs after.
+    z_idx = np.arange(n_z)
+    ax = axes[1, 1]
+    ax.plot(z_idx, sb, color="tab:red", lw=1.8, marker="o", ms=4, label="raw")
+    ax.plot(z_idx, sa, color="tab:green", lw=1.8, marker="o", ms=4, label="corrected")
+    if focal_z is not None:
+        ax.axvline(focal_z, color="0.5", lw=1.0, ls="--", alpha=0.7)
+    improvement = 100.0 * (sb.mean() - sa.mean()) / (sb.mean() + 1e-12)
+    ax.set_title(f"Seam-consistency per z  ({improvement:+.0f}% avg. improvement)")
+    ax.set_xlabel("z-level (depth)")
+    ax.set_ylabel("seam discrepancy (a.u.)")
+    ax.legend(fontsize=9)
+    ax.margins(x=0.02)
+    ax.set_ylim(bottom=0.0)
 
     fig.tight_layout()
     return fig

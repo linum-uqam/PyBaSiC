@@ -36,23 +36,6 @@ Linum BaSiC — a smooth, centralised gain map recovered from a stack of 176 suc
 tiles.  **Right:** corrected tile $\hat{I} = (D - B) / S$.
 ```
 
-The effect of the correction is clearest when the tile intensity is viewed as
-a *surface*.  The raw tile is **curved** — bright in the centre and dim at the
-edges where the vignette $S$ attenuates the signal.  Dividing by $S$ removes
-that gradient and the surface becomes **flat**.
-
-```{figure} _static/demo/field_flatten_demo.png
-:alt: Illumination surface going from curved (raw) to flat (corrected)
-:align: center
-:width: 100%
-
-**Top row:** raw tile, its curved intensity surface, and a horizontal
-cross-section.  **Bottom row:** the corrected tile, its flat surface (drawn on
-the same vertical scale), and a vertical cross-section.  Each profile is
-normalised to its own mean so the change in *shape* — not brightness — is what
-is compared.
-```
-
 ---
 
 ## Matrix formulation

@@ -162,68 +162,106 @@ def _save_tuning_demo(out: Path) -> None:
     print(f"Saved: {path}  (seam L1 {seam_raw:.3f} -> {seam_tuned:.3f}, {improvement:+.0f}%)")
 
 
-def _save_seam_metric_demo(out: Path, tile: int = 128, overlap: float = 0.2) -> None:
-    """Render the seam-consistency metric demo on two adjacent synthetic tiles.
+def _seam_discrepancy(tiles: np.ndarray, n_rows: int, n_cols: int, overlap_px: int) -> float:
+    """Mean absolute pixel difference in overlap strips between adjacent tiles."""
+    diffs = []
+    for row in range(n_rows):
+        for col in range(n_cols):
+            t = tiles[row * n_cols + col]
+            if col + 1 < n_cols:
+                r = tiles[row * n_cols + col + 1]
+                diffs.append(np.abs(t[:, -overlap_px:] - r[:, :overlap_px]).mean())
+            if row + 1 < n_rows:
+                b = tiles[(row + 1) * n_cols + col]
+                diffs.append(np.abs(t[-overlap_px:, :] - b[:overlap_px, :]).mean())
+    return float(np.mean(diffs))
 
-    Two horizontally adjacent tiles are extracted from the bundled source
-    image with a shared overlap strip, then dimmed by the *same* low-order
-    Zernike illumination field.  The figure shows how dividing both tiles by
-    that shared field brings their overlapping pixels into agreement — the
-    quantity the ``seam_l1`` metric measures.
+
+def _save_seam_metric_demo(
+    out: Path,
+    tile: int = 64,
+    n_z: int = 13,
+    grid: int = 5,
+    overlap_px: int = 8,
+) -> None:
+    """Render a 3-D focal-volume demo showing depth-varying illumination correction.
+
+    Generates a synthetic z-stack with ``n_z`` depth levels, each containing
+    a ``grid x grid`` mosaic of tiles.  The illumination field at each z
+    follows a lens-like focal profile: nearly flat and bright at the focal
+    plane, increasingly vignetted and dim away from focus (Gaussian beam
+    envelope).  BaSiC is fitted independently at each z-level and the
+    estimated flat-fields are collected.
+
+    The output figure shows the volume *from the side* (lateral x vs depth z)
+    so the focal curve is visible before correction and absent after.
     """
-    print("\nGenerating seam-metric demo (two adjacent synthetic tiles)...")
+    print("\nGenerating focal-volume seam demo (3-D z-stack with focal curve)...")
     src = load_sample_image().astype(np.float32) / 255.0
-    ov = round(overlap * tile)
-    stride = tile - ov
+    h_src, w_src = src.shape
 
-    # Two left/right neighbours sharing their overlap strip.
-    r0 = (src.shape[0] - tile) // 2
-    c0 = (src.shape[1] - 2 * stride) // 2
-    tile_a = src[r0 : r0 + tile, c0 : c0 + tile].copy()
-    tile_b = src[r0 : r0 + tile, c0 + stride : c0 + stride + tile].copy()
+    focal_z = n_z // 2
+    rng = np.random.default_rng(42)
 
-    field = zernike_flatfield(tile, n_max=4, contrast=0.45, seed=0)
-    field = field / field.mean()  # BaSiC convention: mean ~ 1
+    raw_sides: list[np.ndarray] = []
+    est_sides: list[np.ndarray] = []
+    corrected_sides: list[np.ndarray] = []
+    seam_before: list[float] = []
+    seam_after: list[float] = []
 
-    raw_a = tile_a * field
-    raw_b = tile_b * field
+    for z in range(n_z):
+        # Defocus: 0 at focal plane, 1 at the outermost z-level.
+        defocus = abs(z - focal_z) / (focal_z + 1e-6)
+        # Vignette contrast increases away from focus.
+        contrast = 0.05 + 0.40 * defocus**2
+        # Mean intensity follows the Gaussian beam envelope.
+        mean_scale = float(0.45 + 0.55 * np.exp(-3.0 * defocus**2))
 
-    fig = viz.figure_seam_metric(
-        raw_tile_a=raw_a,
-        raw_tile_b=raw_b,
-        flatfield=field,
-        orientation="horizontal",
-        overlap_fraction=overlap,
-        title="Seam-consistency metric — two adjacent tiles sharing one illumination field",
+        # Ground-truth illumination field for this depth.
+        field = zernike_flatfield(tile, n_max=4, contrast=contrast, seed=42)
+        field = (field / field.mean()).astype(np.float32)  # mean == 1
+
+        # Build a grid x grid mosaic: each tile is a random crop of the source
+        # image multiplied by the depth-dependent illumination field.
+        n_tiles = grid * grid
+        tiles_raw = np.empty((n_tiles, tile, tile), dtype=np.float32)
+        for i in range(n_tiles):
+            r = rng.integers(0, h_src - tile)
+            c = rng.integers(0, w_src - tile)
+            tiles_raw[i] = src[r : r + tile, c : c + tile] * field * mean_scale
+
+        # Fit BaSiC on this z-level.
+        model = BaSiC(tiles_raw, estimate_darkfield=False)
+        model.prepare()
+        model.run()
+        ff = model.get_flatfield()
+
+        # Correct tiles by dividing by the estimated flat-field.
+        tiles_cor = tiles_raw / (ff[np.newaxis] + 1e-6)
+
+        # Side-view profiles: central row of the illumination at each z.
+        # raw  = actual field x mean_scale (captures both spatial shape and z brightness).
+        # est  = BaSiC estimate (spatial vignette, normalised to mean ~ 1).
+        # cor  = residual after correction (should be spatially flat, z-brightness intact).
+        raw_sides.append((field * mean_scale)[tile // 2, :])
+        est_sides.append(ff[tile // 2, :])
+        residual = field * mean_scale / (ff + 1e-6)
+        corrected_sides.append(residual[tile // 2, :])
+
+        # Seam discrepancy: mean absolute difference in overlap strips.
+        seam_before.append(_seam_discrepancy(tiles_raw, grid, grid, overlap_px))
+        seam_after.append(_seam_discrepancy(tiles_cor, grid, grid, overlap_px))
+
+    fig = viz.figure_focal_volume(
+        raw_side=np.array(raw_sides),
+        est_side=np.array(est_sides),
+        corrected_side=np.array(corrected_sides),
+        seam_before=np.array(seam_before),
+        seam_after=np.array(seam_after),
+        focal_z=focal_z,
+        title="Illumination focal curve through a synthetic 3-D volume",
     )
     path = viz.save_figure(fig, out / "seam_metric_demo.png", dpi=150)
-    print(f"Saved: {path}")
-
-
-def _save_field_flatten_demo(out: Path, tile: int = 128) -> None:
-    """Render the curved-to-flat field-flattening demo on one synthetic tile.
-
-    A centred crop of the bundled source image is dimmed by a low-order
-    Zernike illumination field, producing a *curved* intensity surface that is
-    bright in the centre and dim at the edges.  The figure contrasts that raw
-    surface with the *flat* surface obtained after dividing by the field.
-    """
-    print("\nGenerating field-flattening demo (curved to flat)...")
-    src = load_sample_image().astype(np.float32) / 255.0
-    r0 = (src.shape[0] - tile) // 2
-    c0 = (src.shape[1] - tile) // 2
-    crop = src[r0 : r0 + tile, c0 : c0 + tile].copy()
-
-    field = zernike_flatfield(tile, n_max=4, contrast=0.45, seed=0)
-    field = field / field.mean()  # BaSiC convention: mean ~ 1
-    raw = crop * field
-
-    fig = viz.figure_field_flatten(
-        raw_tile=raw,
-        flatfield=field,
-        title="Illumination field: curved (raw) to flat (corrected)",
-    )
-    path = viz.save_figure(fig, out / "field_flatten_demo.png", dpi=150)
     print(f"Saved: {path}")
 
 
@@ -412,10 +450,9 @@ def main() -> None:
     _save_tuning_demo(out)
 
     # ------------------------------------------------------------------
-    # 9. Seam-consistency metric demo on two adjacent tiles
+    # 9. Seam-consistency metric demo — 3-D focal-volume side view
     # ------------------------------------------------------------------
     _save_seam_metric_demo(out)
-    _save_field_flatten_demo(out)
     print("Done.")
 
 

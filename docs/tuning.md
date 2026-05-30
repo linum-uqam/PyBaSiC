@@ -47,18 +47,20 @@ print("Raw Pearson:", seam_pearson(tiles, pairs))
 ```
 
 ```{figure} _static/demo/seam_metric_demo.png
-:alt: Two adjacent tiles sharing one illumination field, before and after correction
+:alt: 3-D focal-volume side view before and after BaSiC correction
 :align: center
 :width: 100%
 
-The seam-consistency metric on two adjacent tiles that share a physical
-overlap (orange box) and the *same* illumination field. **Top row:** the
-shared flat-field, the two raw tiles, and the intensity profile *along the
-seam* — tiles A and B disagree wherever the field is not flat (shaded
-mismatch). **Bottom row:** the per-column tile profile (raw is vignetted,
-corrected is flat), the two corrected tiles, and the seam profile after
-correction — dividing by the shared field collapses the mismatch and the
-overlap curves coincide, driving `seam_l1` to zero.
+The illumination field viewed **from the side** of a synthetic 3-D volume
+(lateral position x vs. depth z).  Each z-level has its own illumination field
+corrected independently by BaSiC.  **Top-left:** raw illumination — the
+lens-shaped focal curve is visible: near-flat and bright at the focal plane
+(dashed line), increasingly vignetted and dim away from focus (Gaussian beam
+envelope).  **Top-right:** BaSiC-estimated flat-field per z — the algorithm
+recovered the spatial pattern at each depth.  **Bottom-left:** corrected
+illumination — the spatial non-uniformity is removed and only the
+z-dependent brightness envelope remains.  **Bottom-right:** seam-consistency
+metric (`seam_l1`) per z before and after correction; lower is better.
 ```
 
 ---
@@ -224,7 +226,7 @@ them directly on the model when needed (see {doc}`parameters`).
 |---|---|---|
 | `z_subsample` | `4` | Number of z-levels evaluated per trial.  More = more reliable, slower. |
 | `max_tiles` | `64` | Tiles (evenly spaced) used for the seam metric per trial.  `None` uses all tiles. |
-| `n_workers` | `1` | Threads used to evaluate z-levels in parallel within each trial. |
+| `n_workers` | `1` | Worker processes used to fit z-levels in parallel within each trial (see {doc}`parallelism`). |
 | `n_extra_rows` | `0` | Leading rows per tile to drop before fitting (galvo fly-back artefact). |
 | `run_full_fit` | `False` | After tuning, run a full-z fit with the best params into `result.best_fit`. |
 
