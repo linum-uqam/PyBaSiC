@@ -46,7 +46,9 @@ __all__ = [
     "aip_preview",
     "field_surface_3d",
     "figure_apply_correction",
+    "figure_field_flatten",
     "figure_panels",
+    "figure_seam_metric",
     "figure_tuning_history",
     "save_figure",
     "set_theme",
@@ -485,6 +487,69 @@ def figure_panels(
     return fig
 
 
+def _improvement_pct(before: float, after: float) -> float:
+    """Return the percentage reduction from *before* to *after* (higher = better)."""
+    return 100.0 * (before - after) / (before + 1e-12)
+
+
+def _normalised_profile(arr: np.ndarray, axis: int) -> np.ndarray:
+    """Mean-collapse *arr* along *axis* and divide by its mean (mean -> 1)."""
+    profile = np.asarray(arr, dtype=np.float32).mean(axis=axis)
+    return profile / (profile.mean() + 1e-12)
+
+
+def _overlap_slices(
+    shape: tuple[int, int], orientation: str, overlap_fraction: float
+) -> tuple[tuple[slice, slice], tuple[slice, slice], int, str]:
+    """Compute the overlap slices for two adjacent tiles.
+
+    Returns the slice into tile A, the slice into tile B, the axis to average
+    over to obtain a profile *along* the seam, and a label for that seam axis.
+    """
+    th, tw = shape
+    if orientation == "horizontal":
+        ov = max(1, round(overlap_fraction * tw))
+        return (slice(None), slice(tw - ov, tw)), (slice(None), slice(0, ov)), 1, "y-pixel (along seam)"
+    if orientation == "vertical":
+        ov = max(1, round(overlap_fraction * th))
+        return (slice(th - ov, th), slice(None)), (slice(0, ov), slice(None)), 0, "x-pixel (along seam)"
+    raise ValueError(f"orientation must be 'horizontal' or 'vertical', got {orientation!r}")
+
+
+def _seam_l1(a: np.ndarray, b: np.ndarray, ovl_a: tuple[slice, slice], ovl_b: tuple[slice, slice]) -> float:
+    """Scale-invariant mean L1 disagreement over the shared overlap (0 = perfect)."""
+    oa = a[ovl_a].ravel()
+    ob = b[ovl_b].ravel()
+    local = float((np.abs(oa) + np.abs(ob)).mean()) / 2.0
+    return float(np.abs(oa - ob).mean()) / (local + 1e-9)
+
+
+def _draw_overlap_outline(ax: plt.Axes, ovl: tuple[slice, slice], shape: tuple[int, int]) -> None:
+    """Outline an overlap region (given as array slices) on an image axes."""
+    th, tw = shape
+    rs, cs = ovl
+    r0 = rs.start or 0
+    r1 = rs.stop if rs.stop is not None else th
+    c0 = cs.start or 0
+    c1 = cs.stop if cs.stop is not None else tw
+    ax.add_patch(plt.Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0, fill=False, edgecolor="tab:orange", lw=1.8))
+
+
+def _plot_seam_overlap(
+    ax: plt.Axes, prof_a: np.ndarray, prof_b: np.ndarray, *, mismatch_color: str, title: str, xlabel: str
+) -> None:
+    """Plot tile-A vs tile-B seam profiles with the mismatch area shaded."""
+    pos = np.arange(prof_a.size)
+    ax.plot(pos, prof_a, color="tab:blue", lw=1.4, label="tile A overlap")
+    ax.plot(pos, prof_b, color="tab:purple", lw=1.4, label="tile B overlap")
+    ax.fill_between(pos, prof_a, prof_b, color=mismatch_color, alpha=0.25, label="mismatch")
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("mean intensity")
+    ax.legend(fontsize=8)
+    ax.margins(x=0)
+
+
 def figure_apply_correction(
     *,
     flatfield: np.ndarray,
@@ -534,7 +599,7 @@ def figure_apply_correction(
     raw_mosaic = np.asarray(raw_mosaic, dtype=np.float32)
     corrected_mosaic = np.asarray(corrected_mosaic, dtype=np.float32)
     has_df = darkfield is not None and float(np.asarray(darkfield).max()) > 1e-6
-    improvement = 100.0 * (seam_raw - seam_corrected) / (seam_raw + 1e-12)
+    improvement = _improvement_pct(seam_raw, seam_corrected)
 
     mos_vmax = float(np.percentile(raw_mosaic, 99))
     tile_vmax = float(np.percentile(np.asarray(raw_tile), 99))
@@ -572,6 +637,264 @@ def figure_apply_correction(
     return fig
 
 
+def figure_seam_metric(
+    *,
+    raw_tile_a: np.ndarray,
+    raw_tile_b: np.ndarray,
+    flatfield: np.ndarray,
+    darkfield: np.ndarray | None = None,
+    orientation: str = "horizontal",
+    overlap_fraction: float = 0.2,
+    epsilon: float = 1e-6,
+    pixel_size_mm: float | None = None,
+    title: str | None = None,
+) -> Figure:
+    """Illustrate the seam-consistency metric on two adjacent tiles.
+
+    Two neighbouring mosaic tiles physically overlap (by ``overlap_fraction``
+    of the tile size) and therefore image the *same* tissue in that strip.
+    Both tiles are dimmed by the *same* multiplicative illumination field, so
+    before correction the overlapping pixels disagree wherever the field is
+    not flat.  Dividing each tile by the shared flat-field removes the vignette
+    and the overlap regions come into agreement — exactly what the ``seam_l1``
+    metric measures (mean relative disagreement over the overlap; 0 = perfect).
+
+    The figure is a 2x4 grid that tells this story end to end:
+
+    * column 0: the shared flat-field (top) and the per-column tile profile
+      (bottom), showing the raw vignette flattening after correction;
+    * columns 1-2: tiles A and B, raw (top) and corrected (bottom), with the
+      overlap strip outlined;
+    * column 3: the intensity profile *along the seam* for A vs B, raw (top)
+      and corrected (bottom).  The shaded gap between the two curves is the
+      disagreement the metric penalises; it collapses after correction.
+
+    Parameters
+    ----------
+    raw_tile_a, raw_tile_b : numpy.ndarray, shape (th, tw)
+        The two raw (uncorrected) adjacent tiles, dimmed by ``flatfield``.
+    flatfield : numpy.ndarray, shape (th, tw)
+        The shared multiplicative illumination field (mean ~ 1).
+    darkfield : numpy.ndarray, optional
+        Shared additive dark-field.  Subtracted before dividing by the
+        flat-field when provided.
+    orientation : {"horizontal", "vertical"}, optional
+        Tile adjacency.  ``"horizontal"`` (default) = left/right neighbours
+        overlapping in columns; ``"vertical"`` = top/bottom neighbours
+        overlapping in rows.
+    overlap_fraction : float, optional
+        Fraction of the tile size shared by the two tiles (default ``0.2``).
+    epsilon : float, optional
+        Stabiliser added to the flat-field before division (default ``1e-6``).
+    pixel_size_mm : float, optional
+        Physical pixel size for scale bars on the tile panels.
+    title : str, optional
+        Title prefix; the seam-L1 values are appended automatically.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The assembled seam-metric demonstration figure.
+    """
+    set_theme()
+    a_raw = np.asarray(raw_tile_a, dtype=np.float32)
+    b_raw = np.asarray(raw_tile_b, dtype=np.float32)
+    flat = np.asarray(flatfield, dtype=np.float32)
+    dark = np.zeros_like(flat) if darkfield is None else np.asarray(darkfield, dtype=np.float32)
+
+    a_cor = (a_raw - dark) / (flat + epsilon)
+    b_cor = (b_raw - dark) / (flat + epsilon)
+
+    th, tw = a_raw.shape
+    ovl_a, ovl_b, reduce_axis, seam_axis_label = _overlap_slices((th, tw), orientation, overlap_fraction)
+
+    seam_raw = _seam_l1(a_raw, b_raw, ovl_a, ovl_b)
+    seam_cor = _seam_l1(a_cor, b_cor, ovl_a, ovl_b)
+    improvement = _improvement_pct(seam_raw, seam_cor)
+
+    prof_a_raw = a_raw[ovl_a].mean(axis=reduce_axis)
+    prof_b_raw = b_raw[ovl_b].mean(axis=reduce_axis)
+    prof_a_cor = a_cor[ovl_a].mean(axis=reduce_axis)
+    prof_b_cor = b_cor[ovl_b].mean(axis=reduce_axis)
+
+    tile_vmax = float(np.percentile(a_raw, 99))
+    cor_vmax = float(np.percentile(np.concatenate([a_cor.ravel(), b_cor.ravel()]), 99))
+
+    fig, axes = plt.subplots(2, 4, figsize=(19, 9))
+    head = f"seam L1: {seam_raw:.3f} -> {seam_cor:.3f}  ({improvement:+.1f}%)"
+    fig.suptitle(f"{title}\n{head}" if title else head)
+
+    # Column 0 — shared field + flatness demonstration.
+    show_field(axes[0, 0], flat, title="Shared illumination field")
+
+    # Per-position tile profile perpendicular to the seam (the vignette axis):
+    # raw is curved by the field, corrected is flat.  Normalise each curve by
+    # its own mean so their shapes are directly comparable.
+    vig_axis = 0 if orientation == "horizontal" else 1  # average along the seam
+    raw_profile = _normalised_profile(a_raw, vig_axis)
+    cor_profile = _normalised_profile(a_cor, vig_axis)
+    pos = np.arange(raw_profile.size)
+    ax = axes[1, 0]
+    ax.plot(pos, raw_profile, color="tab:red", lw=1.4, label="raw (vignetted)")
+    ax.plot(pos, cor_profile, color="tab:green", lw=1.4, label="corrected (flat)")
+    ax.axhline(1.0, color="0.6", lw=0.8, ls="--")
+    ax.set_title("Tile profile across the field")
+    ax.set_xlabel("x-pixel" if orientation == "horizontal" else "y-pixel")
+    ax.set_ylabel("normalised intensity")
+    ax.legend(fontsize=8)
+    ax.margins(x=0)
+
+    # Columns 1-2 — the two tiles, raw and corrected, overlap outlined.
+    show_image(axes[0, 1], a_raw, title="Tile A: raw", vmin=0, vmax=tile_vmax, pixel_size_mm=pixel_size_mm, scalebar=True)
+    _draw_overlap_outline(axes[0, 1], ovl_a, (th, tw))
+    show_image(axes[0, 2], b_raw, title="Tile B: raw", vmin=0, vmax=tile_vmax, pixel_size_mm=pixel_size_mm, scalebar=True)
+    _draw_overlap_outline(axes[0, 2], ovl_b, (th, tw))
+    show_image(axes[1, 1], a_cor, title="Tile A: corrected", vmin=0, vmax=cor_vmax)
+    _draw_overlap_outline(axes[1, 1], ovl_a, (th, tw))
+    show_image(axes[1, 2], b_cor, title="Tile B: corrected", vmin=0, vmax=cor_vmax)
+    _draw_overlap_outline(axes[1, 2], ovl_b, (th, tw))
+
+    # Column 3 — seam overlap agreement, raw vs corrected.
+    _plot_seam_overlap(
+        axes[0, 3],
+        prof_a_raw,
+        prof_b_raw,
+        mismatch_color="tab:red",
+        title=f"Seam overlap: raw (L1={seam_raw:.3f})",
+        xlabel=seam_axis_label,
+    )
+    _plot_seam_overlap(
+        axes[1, 3],
+        prof_a_cor,
+        prof_b_cor,
+        mismatch_color="tab:green",
+        title=f"Seam overlap: corrected (L1={seam_cor:.3f})",
+        xlabel=seam_axis_label,
+    )
+
+    fig.tight_layout()
+    return fig
+
+
+def figure_field_flatten(
+    *,
+    raw_tile: np.ndarray,
+    flatfield: np.ndarray,
+    darkfield: np.ndarray | None = None,
+    epsilon: float = 1e-6,
+    pixel_size_mm: float | None = None,
+    title: str | None = None,
+) -> Figure:
+    r"""Visualise the illumination field going from curved (raw) to flat (corrected).
+
+    The raw tile is dimmed by a spatially varying ``flatfield`` $S$, so the
+    effective illumination across the tile is *curved* — bright in the centre,
+    dim at the edges.  Dividing by $S$ flattens that field to a uniform gain of
+    one.  This figure shows the real tile before/after correction alongside the
+    field's 3-D surface and cross-sections so the curved-to-flat change is
+    explicit.
+
+    Layout (2x3):
+
+    * column 0: the raw tile (top) and corrected tile (bottom) as 2-D images;
+    * column 1: the illumination field $S$ as a curved 3-D surface (top) and the
+      uniform corrected field $S / S \\equiv 1$ as a flat surface (bottom),
+      drawn on a shared vertical scale;
+    * column 2: horizontal (top) and vertical (bottom) cross-sections through
+      the field centre, curved field vs the flat corrected field.
+
+    Parameters
+    ----------
+    raw_tile : numpy.ndarray, shape (h, w)
+        The raw (uncorrected) tile, dimmed by ``flatfield``.
+    flatfield : numpy.ndarray, shape (h, w)
+        The multiplicative illumination field (mean ~ 1).
+    darkfield : numpy.ndarray, optional
+        Additive dark-field, subtracted before dividing by the flat-field.
+    epsilon : float, optional
+        Stabiliser added to the flat-field before division (default ``1e-6``).
+    pixel_size_mm : float, optional
+        Physical pixel size for a scale bar on the raw tile panel.
+    title : str, optional
+        Figure title.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The assembled field-flattening figure.
+    """
+    set_theme()
+    raw = np.asarray(raw_tile, dtype=np.float32)
+    flat = np.asarray(flatfield, dtype=np.float32)
+    dark = np.zeros_like(flat) if darkfield is None else np.asarray(darkfield, dtype=np.float32)
+    cor = (raw - dark) / (flat + epsilon)
+
+    h, w = raw.shape
+    # The illumination field itself: curved (raw) and the flat unit field that
+    # remains after dividing the tile by it.
+    raw_field = flat / (flat.mean() + 1e-12)
+    flat_field = np.ones_like(flat)
+    zmin = float(min(raw_field.min(), 1.0)) - 0.05
+    zmax = float(max(raw_field.max(), 1.0)) + 0.05
+
+    raw_vmax = float(np.percentile(raw, 99))
+    cor_vmax = float(np.percentile(cor, 99))
+
+    fig = plt.figure(figsize=(16, 9))
+    head = "illumination field: curved (raw) to flat (corrected)"
+    fig.suptitle(f"{title}\n{head}" if title else head)
+
+    # Column 0 — 2-D tiles, before and after correction.
+    ax_raw = fig.add_subplot(2, 3, 1)
+    show_image(ax_raw, raw, title="Raw tile", vmin=0, vmax=raw_vmax, pixel_size_mm=pixel_size_mm, scalebar=True)
+    ax_cor = fig.add_subplot(2, 3, 4)
+    show_image(ax_cor, cor, title="Corrected tile", vmin=0, vmax=cor_vmax)
+
+    # Column 1 — the illumination field surface, curved then flat.
+    yy, xx = np.mgrid[0:h, 0:w]
+    ax_s_raw = fig.add_subplot(2, 3, 2, projection="3d")
+    ax_s_raw.plot_surface(xx, yy, raw_field, cmap=FLATFIELD_CMAP, rcount=60, ccount=60, linewidth=0, antialiased=True)
+    ax_s_raw.set_zlim(zmin, zmax)
+    ax_s_raw.set_title("Illumination field (curved)")
+    ax_s_raw.set_xlabel("x")
+    ax_s_raw.set_ylabel("y")
+    ax_s_raw.set_zlabel("gain")
+    ax_s_raw.view_init(elev=32, azim=-58)
+
+    ax_s_cor = fig.add_subplot(2, 3, 5, projection="3d")
+    ax_s_cor.plot_surface(xx, yy, flat_field, cmap=FLATFIELD_CMAP, rcount=60, ccount=60, linewidth=0, antialiased=True)
+    ax_s_cor.set_zlim(zmin, zmax)
+    ax_s_cor.set_title("Corrected field (flat)")
+    ax_s_cor.set_xlabel("x")
+    ax_s_cor.set_ylabel("y")
+    ax_s_cor.set_zlabel("gain")
+    ax_s_cor.view_init(elev=32, azim=-58)
+
+    # Column 2 — central field cross-sections, curved vs flat.
+    mid_row = raw_field[h // 2, :]
+    mid_col = raw_field[:, w // 2]
+    ax_h = fig.add_subplot(2, 3, 3)
+    ax_h.plot(mid_row, color="tab:red", lw=1.6, label="field (curved)")
+    ax_h.axhline(1.0, color="tab:green", lw=1.6, label="corrected (flat)")
+    ax_h.set_title("Horizontal field profile")
+    ax_h.set_xlabel("x-pixel")
+    ax_h.set_ylabel("gain")
+    ax_h.legend(fontsize=8)
+    ax_h.margins(x=0)
+
+    ax_v = fig.add_subplot(2, 3, 6)
+    ax_v.plot(mid_col, color="tab:red", lw=1.6, label="field (curved)")
+    ax_v.axhline(1.0, color="tab:green", lw=1.6, label="corrected (flat)")
+    ax_v.set_title("Vertical field profile")
+    ax_v.set_xlabel("y-pixel")
+    ax_v.set_ylabel("gain")
+    ax_v.legend(fontsize=8)
+    ax_v.margins(x=0)
+
+    fig.tight_layout()
+    return fig
+
+
 def figure_tuning_history(
     *,
     trial_values: np.ndarray,
@@ -601,7 +924,7 @@ def figure_tuning_history(
     """
     set_theme()
     values = np.asarray(trial_values, dtype=float)
-    improvement = 100.0 * (seam_raw - seam_tuned) / (seam_raw + 1e-12)
+    improvement = _improvement_pct(seam_raw, seam_tuned)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
 

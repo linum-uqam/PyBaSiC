@@ -162,6 +162,71 @@ def _save_tuning_demo(out: Path) -> None:
     print(f"Saved: {path}  (seam L1 {seam_raw:.3f} -> {seam_tuned:.3f}, {improvement:+.0f}%)")
 
 
+def _save_seam_metric_demo(out: Path, tile: int = 128, overlap: float = 0.2) -> None:
+    """Render the seam-consistency metric demo on two adjacent synthetic tiles.
+
+    Two horizontally adjacent tiles are extracted from the bundled source
+    image with a shared overlap strip, then dimmed by the *same* low-order
+    Zernike illumination field.  The figure shows how dividing both tiles by
+    that shared field brings their overlapping pixels into agreement — the
+    quantity the ``seam_l1`` metric measures.
+    """
+    print("\nGenerating seam-metric demo (two adjacent synthetic tiles)...")
+    src = load_sample_image().astype(np.float32) / 255.0
+    ov = round(overlap * tile)
+    stride = tile - ov
+
+    # Two left/right neighbours sharing their overlap strip.
+    r0 = (src.shape[0] - tile) // 2
+    c0 = (src.shape[1] - 2 * stride) // 2
+    tile_a = src[r0 : r0 + tile, c0 : c0 + tile].copy()
+    tile_b = src[r0 : r0 + tile, c0 + stride : c0 + stride + tile].copy()
+
+    field = zernike_flatfield(tile, n_max=4, contrast=0.45, seed=0)
+    field = field / field.mean()  # BaSiC convention: mean ~ 1
+
+    raw_a = tile_a * field
+    raw_b = tile_b * field
+
+    fig = viz.figure_seam_metric(
+        raw_tile_a=raw_a,
+        raw_tile_b=raw_b,
+        flatfield=field,
+        orientation="horizontal",
+        overlap_fraction=overlap,
+        title="Seam-consistency metric — two adjacent tiles sharing one illumination field",
+    )
+    path = viz.save_figure(fig, out / "seam_metric_demo.png", dpi=150)
+    print(f"Saved: {path}")
+
+
+def _save_field_flatten_demo(out: Path, tile: int = 128) -> None:
+    """Render the curved-to-flat field-flattening demo on one synthetic tile.
+
+    A centred crop of the bundled source image is dimmed by a low-order
+    Zernike illumination field, producing a *curved* intensity surface that is
+    bright in the centre and dim at the edges.  The figure contrasts that raw
+    surface with the *flat* surface obtained after dividing by the field.
+    """
+    print("\nGenerating field-flattening demo (curved to flat)...")
+    src = load_sample_image().astype(np.float32) / 255.0
+    r0 = (src.shape[0] - tile) // 2
+    c0 = (src.shape[1] - tile) // 2
+    crop = src[r0 : r0 + tile, c0 : c0 + tile].copy()
+
+    field = zernike_flatfield(tile, n_max=4, contrast=0.45, seed=0)
+    field = field / field.mean()  # BaSiC convention: mean ~ 1
+    raw = crop * field
+
+    fig = viz.figure_field_flatten(
+        raw_tile=raw,
+        flatfield=field,
+        title="Illumination field: curved (raw) to flat (corrected)",
+    )
+    path = viz.save_figure(fig, out / "field_flatten_demo.png", dpi=150)
+    print(f"Saved: {path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -345,6 +410,12 @@ def main() -> None:
     # 8. Tuning / training demo on a synthetic overlapping mosaic
     # ------------------------------------------------------------------
     _save_tuning_demo(out)
+
+    # ------------------------------------------------------------------
+    # 9. Seam-consistency metric demo on two adjacent tiles
+    # ------------------------------------------------------------------
+    _save_seam_metric_demo(out)
+    _save_field_flatten_demo(out)
     print("Done.")
 
 

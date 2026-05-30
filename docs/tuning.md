@@ -46,6 +46,21 @@ print("Raw seam L1:", seam_l1(tiles, pairs))
 print("Raw Pearson:", seam_pearson(tiles, pairs))
 ```
 
+```{figure} _static/demo/seam_metric_demo.png
+:alt: Two adjacent tiles sharing one illumination field, before and after correction
+:align: center
+:width: 100%
+
+The seam-consistency metric on two adjacent tiles that share a physical
+overlap (orange box) and the *same* illumination field. **Top row:** the
+shared flat-field, the two raw tiles, and the intensity profile *along the
+seam* — tiles A and B disagree wherever the field is not flat (shaded
+mismatch). **Bottom row:** the per-column tile profile (raw is vignetted,
+corrected is flat), the two corrected tiles, and the seam profile after
+correction — dividing by the shared field collapses the mismatch and the
+overlap curves coincide, driving `seam_l1` to zero.
+```
+
 ---
 
 ## Loading an OME-Zarr Mosaic
