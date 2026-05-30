@@ -162,6 +162,50 @@ def _save_tuning_demo(out: Path) -> None:
     print(f"Saved: {path}  (seam L1 {seam_raw:.3f} -> {seam_tuned:.3f}, {improvement:+.0f}%)")
 
 
+def _save_seam_metric_demo(out: Path, tile: int = 128, overlap: float = 0.2) -> None:
+    """Render the seam-consistency demo using the full MosaicGrid + fit_mosaic pipeline.
+
+    Builds a synthetic mosaic that mimics real acquisition data: tiles share
+    a physical overlap region and are all dimmed by the same illumination
+    field.  BaSiC is fitted on the full tile stack (as in the real pipeline),
+    then two horizontally adjacent tiles are extracted from the raw and
+    corrected mosaics and shown side-by-side so the seam artefact — and its
+    removal — is directly visible as a 2-D image.
+    """
+    from linum_basic.fit import apply_fit, fit_mosaic
+
+    print("\nGenerating seam-metric demo (MosaicGrid + fit_mosaic pipeline)...")
+    mosaic = _build_synthetic_mosaic(tile=tile, ncols=8, nrows=6)
+
+    fit = fit_mosaic(mosaic, z_indices=[0], field_mode="global", n_workers=1, verbose=False)
+
+    # Corrected mosaic: shape (Z, H, W); z=0 slice is (H, W).
+    corrected_vol = apply_fit(mosaic, fit)
+    raw_z0 = mosaic.array[0]  # (n_rows*tile, n_cols*tile)
+    cor_z0 = corrected_vol[0]
+
+    # Pick a central pair of horizontally adjacent tiles.
+    row = mosaic.n_rows // 2
+    col = mosaic.n_cols // 2 - 1  # left tile of the pair
+    th, tw = mosaic.tile_shape
+    raw_a = raw_z0[row * th : (row + 1) * th, col * tw : (col + 1) * tw]
+    raw_b = raw_z0[row * th : (row + 1) * th, (col + 1) * tw : (col + 2) * tw]
+    cor_a = cor_z0[row * th : (row + 1) * th, col * tw : (col + 1) * tw]
+    cor_b = cor_z0[row * th : (row + 1) * th, (col + 1) * tw : (col + 2) * tw]
+
+    fig = viz.figure_seam_metric(
+        raw_tile_a=raw_a,
+        raw_tile_b=raw_b,
+        cor_tile_a=cor_a,
+        cor_tile_b=cor_b,
+        overlap_fraction=overlap,
+        orientation="horizontal",
+        title="Seam-consistency metric — two adjacent tiles (MosaicGrid + BaSiC)",
+    )
+    path = viz.save_figure(fig, out / "seam_metric_demo.png", dpi=150)
+    print(f"Saved: {path}")
+
+
 def _seam_discrepancy(tiles: np.ndarray, n_rows: int, n_cols: int, overlap_px: int) -> float:
     """Mean absolute pixel difference in overlap strips between adjacent tiles."""
     diffs = []
@@ -177,7 +221,7 @@ def _seam_discrepancy(tiles: np.ndarray, n_rows: int, n_cols: int, overlap_px: i
     return float(np.mean(diffs))
 
 
-def _save_seam_metric_demo(
+def _save_focal_volume_demo(
     out: Path,
     tile: int = 64,
     n_z: int = 13,
@@ -196,7 +240,7 @@ def _save_seam_metric_demo(
     The output figure shows the volume *from the side* (lateral x vs depth z)
     so the focal curve is visible before correction and absent after.
     """
-    print("\nGenerating focal-volume seam demo (3-D z-stack with focal curve)...")
+    print("\nGenerating focal-volume demo (3-D z-stack with focal curve)...")
     src = load_sample_image().astype(np.float32) / 255.0
     h_src, w_src = src.shape
 
@@ -210,19 +254,13 @@ def _save_seam_metric_demo(
     seam_after: list[float] = []
 
     for z in range(n_z):
-        # Defocus: 0 at focal plane, 1 at the outermost z-level.
         defocus = abs(z - focal_z) / (focal_z + 1e-6)
-        # Vignette contrast increases away from focus.
         contrast = 0.05 + 0.40 * defocus**2
-        # Mean intensity follows the Gaussian beam envelope.
         mean_scale = float(0.45 + 0.55 * np.exp(-3.0 * defocus**2))
 
-        # Ground-truth illumination field for this depth.
         field = zernike_flatfield(tile, n_max=4, contrast=contrast, seed=42)
-        field = (field / field.mean()).astype(np.float32)  # mean == 1
+        field = (field / field.mean()).astype(np.float32)
 
-        # Build a grid x grid mosaic: each tile is a random crop of the source
-        # image multiplied by the depth-dependent illumination field.
         n_tiles = grid * grid
         tiles_raw = np.empty((n_tiles, tile, tile), dtype=np.float32)
         for i in range(n_tiles):
@@ -230,25 +268,16 @@ def _save_seam_metric_demo(
             c = rng.integers(0, w_src - tile)
             tiles_raw[i] = src[r : r + tile, c : c + tile] * field * mean_scale
 
-        # Fit BaSiC on this z-level.
         model = BaSiC(tiles_raw, estimate_darkfield=False)
         model.prepare()
         model.run()
         ff = model.get_flatfield()
-
-        # Correct tiles by dividing by the estimated flat-field.
         tiles_cor = tiles_raw / (ff[np.newaxis] + 1e-6)
 
-        # Side-view profiles: central row of the illumination at each z.
-        # raw  = actual field x mean_scale (captures both spatial shape and z brightness).
-        # est  = BaSiC estimate (spatial vignette, normalised to mean ~ 1).
-        # cor  = residual after correction (should be spatially flat, z-brightness intact).
         raw_sides.append((field * mean_scale)[tile // 2, :])
         est_sides.append(ff[tile // 2, :])
         residual = field * mean_scale / (ff + 1e-6)
         corrected_sides.append(residual[tile // 2, :])
-
-        # Seam discrepancy: mean absolute difference in overlap strips.
         seam_before.append(_seam_discrepancy(tiles_raw, grid, grid, overlap_px))
         seam_after.append(_seam_discrepancy(tiles_cor, grid, grid, overlap_px))
 
@@ -261,7 +290,7 @@ def _save_seam_metric_demo(
         focal_z=focal_z,
         title="Illumination focal curve through a synthetic 3-D volume",
     )
-    path = viz.save_figure(fig, out / "seam_metric_demo.png", dpi=150)
+    path = viz.save_figure(fig, out / "focal_volume_demo.png", dpi=150)
     print(f"Saved: {path}")
 
 
@@ -450,7 +479,7 @@ def main() -> None:
     _save_tuning_demo(out)
 
     # ------------------------------------------------------------------
-    # 9. Seam-consistency metric demo — 3-D focal-volume side view
+    # 9. Seam-consistency metric demo — two adjacent tiles, before/after
     # ------------------------------------------------------------------
     _save_seam_metric_demo(out)
     print("Done.")

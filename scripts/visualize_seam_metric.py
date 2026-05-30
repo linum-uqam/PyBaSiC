@@ -2,17 +2,16 @@
 
 Fits a BaSiC flat-field for one z-level of a mosaic grid, picks two adjacent
 tiles that share a physical overlap, and renders the seam-metric demo figure
-(:func:`linum_basic.viz.figure_seam_metric`).  The figure shows how dividing
-both tiles by the shared illumination field flattens the vignette and brings
-their overlapping pixels into agreement -- the quantity the ``seam_l1`` metric
-penalises.
+(:func:`linum_basic.viz.figure_seam_metric`).  The figure shows the two
+stitched tiles as a 2-D image — raw (with visible seam) on the left and
+BaSiC-corrected (seamless) on the right.
 
 Usage::
 
     uv run python scripts/visualize_seam_metric.py \\
         --input /path/to/mosaic.ome.zarr \\
-        --output seam_metric.png \
-        --z 0 --row 2 --col 2 \
+        --output seam_metric.png \\
+        --z 0 --row 2 --col 2 \\
         --overlap 0.2
 
 ``--input`` and ``--output`` are required; all other arguments have sensible
@@ -106,19 +105,23 @@ def main(argv: list[str] | None = None) -> int:
         n_extra_rows=args.n_extra,
         verbose=args.verbose,
     )
-    flatfield = fit.flatfields  # (th, tw) for field_mode="global"
-    darkfield = fit.darkfields if args.estimate_darkfield else None
-    print(f"  flatfield shape: {flatfield.shape}")
+    print(f"  flatfield shape: {fit.flatfields.shape}")
 
     raw_a = mosaic.get_tile(args.z, row, col)
     raw_b = mosaic.get_tile(args.z, *neighbour)
     print(f"Tiles: A=(row={row}, col={col})  B=(row={neighbour[0]}, col={neighbour[1]})")
 
+    dark = fit.darkfields if args.estimate_darkfield else 0.0
+    flat = fit.flatfields  # (th, tw) for field_mode="global"
+    epsilon = 1e-6
+    cor_a = (raw_a - dark) / (flat + epsilon)
+    cor_b = (raw_b - dark) / (flat + epsilon)
+
     fig = viz.figure_seam_metric(
         raw_tile_a=raw_a,
         raw_tile_b=raw_b,
-        flatfield=flatfield,
-        darkfield=darkfield,
+        cor_tile_a=cor_a,
+        cor_tile_b=cor_b,
         orientation=args.orientation,
         overlap_fraction=args.overlap,
         title=f"Seam-consistency metric on real data (z={args.z})",

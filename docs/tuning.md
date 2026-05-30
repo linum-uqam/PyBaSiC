@@ -47,20 +47,16 @@ print("Raw Pearson:", seam_pearson(tiles, pairs))
 ```
 
 ```{figure} _static/demo/seam_metric_demo.png
-:alt: 3-D focal-volume side view before and after BaSiC correction
+:alt: Two adjacent mosaic tiles before and after BaSiC correction showing seam removal
 :align: center
 :width: 100%
 
-The illumination field viewed **from the side** of a synthetic 3-D volume
-(lateral position x vs. depth z).  Each z-level has its own illumination field
-corrected independently by BaSiC.  **Top-left:** raw illumination — the
-lens-shaped focal curve is visible: near-flat and bright at the focal plane
-(dashed line), increasingly vignetted and dim away from focus (Gaussian beam
-envelope).  **Top-right:** BaSiC-estimated flat-field per z — the algorithm
-recovered the spatial pattern at each depth.  **Bottom-left:** corrected
-illumination — the spatial non-uniformity is removed and only the
-z-dependent brightness envelope remains.  **Bottom-right:** seam-consistency
-metric (`seam_l1`) per z before and after correction; lower is better.
+Two horizontally adjacent tiles from a synthetic mosaic (MosaicGrid + `fit_mosaic` pipeline).
+**Left:** raw tiles stitched side-by-side — the illumination vignette causes a clear brightness
+discontinuity at the tile boundary (red dashed line; seam L1 = 0.60).
+**Right:** after BaSiC correction the seam vanishes (seam L1 = 0.01, −98%).
+Both panels share the same colour scale so the intensity change is directly
+comparable.
 ```
 
 ---

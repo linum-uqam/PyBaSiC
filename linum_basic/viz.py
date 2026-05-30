@@ -492,12 +492,6 @@ def _improvement_pct(before: float, after: float) -> float:
     return 100.0 * (before - after) / (before + 1e-12)
 
 
-def _normalised_profile(arr: np.ndarray, axis: int) -> np.ndarray:
-    """Mean-collapse *arr* along *axis* and divide by its mean (mean -> 1)."""
-    profile = np.asarray(arr, dtype=np.float32).mean(axis=axis)
-    return profile / (profile.mean() + 1e-12)
-
-
 def _overlap_slices(
     shape: tuple[int, int], orientation: str, overlap_fraction: float
 ) -> tuple[tuple[slice, slice], tuple[slice, slice], int, str]:
@@ -522,32 +516,6 @@ def _seam_l1(a: np.ndarray, b: np.ndarray, ovl_a: tuple[slice, slice], ovl_b: tu
     ob = b[ovl_b].ravel()
     local = float((np.abs(oa) + np.abs(ob)).mean()) / 2.0
     return float(np.abs(oa - ob).mean()) / (local + 1e-9)
-
-
-def _draw_overlap_outline(ax: plt.Axes, ovl: tuple[slice, slice], shape: tuple[int, int]) -> None:
-    """Outline an overlap region (given as array slices) on an image axes."""
-    th, tw = shape
-    rs, cs = ovl
-    r0 = rs.start or 0
-    r1 = rs.stop if rs.stop is not None else th
-    c0 = cs.start or 0
-    c1 = cs.stop if cs.stop is not None else tw
-    ax.add_patch(plt.Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0, fill=False, edgecolor="tab:orange", lw=1.8))
-
-
-def _plot_seam_overlap(
-    ax: plt.Axes, prof_a: np.ndarray, prof_b: np.ndarray, *, mismatch_color: str, title: str, xlabel: str
-) -> None:
-    """Plot tile-A vs tile-B seam profiles with the mismatch area shaded."""
-    pos = np.arange(prof_a.size)
-    ax.plot(pos, prof_a, color="tab:blue", lw=1.4, label="tile A overlap")
-    ax.plot(pos, prof_b, color="tab:purple", lw=1.4, label="tile B overlap")
-    ax.fill_between(pos, prof_a, prof_b, color=mismatch_color, alpha=0.25, label="mismatch")
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("mean intensity")
-    ax.legend(fontsize=8)
-    ax.margins(x=0)
 
 
 def figure_apply_correction(
@@ -641,136 +609,93 @@ def figure_seam_metric(
     *,
     raw_tile_a: np.ndarray,
     raw_tile_b: np.ndarray,
-    flatfield: np.ndarray,
-    darkfield: np.ndarray | None = None,
-    orientation: str = "horizontal",
+    cor_tile_a: np.ndarray,
+    cor_tile_b: np.ndarray,
     overlap_fraction: float = 0.2,
-    epsilon: float = 1e-6,
-    pixel_size_mm: float | None = None,
+    orientation: str = "horizontal",
     title: str | None = None,
 ) -> Figure:
-    """Illustrate the seam-consistency metric on two adjacent tiles.
+    """Show the physical seam between two adjacent tiles before and after correction.
 
-    Two neighbouring mosaic tiles physically overlap (by ``overlap_fraction``
-    of the tile size) and therefore image the *same* tissue in that strip.
-    Both tiles are dimmed by the *same* multiplicative illumination field, so
-    before correction the overlapping pixels disagree wherever the field is
-    not flat.  Dividing each tile by the shared flat-field removes the vignette
-    and the overlap regions come into agreement — exactly what the ``seam_l1``
-    metric measures (mean relative disagreement over the overlap; 0 = perfect).
+    Two tiles that share a physical overlap region are stitched side-by-side
+    and shown as 2-D images.  Before correction the illumination field
+    creates a visible brightness discontinuity at the tile boundary; after
+    correction the transition is seamless.
 
-    The figure is a 2x4 grid that tells this story end to end:
+    Layout (1x2):
 
-    * column 0: the shared flat-field (top) and the per-column tile profile
-      (bottom), showing the raw vignette flattening after correction;
-    * columns 1-2: tiles A and B, raw (top) and corrected (bottom), with the
-      overlap strip outlined;
-    * column 3: the intensity profile *along the seam* for A vs B, raw (top)
-      and corrected (bottom).  The shaded gap between the two curves is the
-      disagreement the metric penalises; it collapses after correction.
+    * left:  raw tile A | tile B stitched — seam artefact visible;
+    * right: corrected tile A | tile B stitched — seam removed.
+
+    A vertical marker highlights the tile boundary and the seam-L1
+    discrepancy (mean absolute normalised difference in the overlap strip)
+    is annotated on each panel.
 
     Parameters
     ----------
     raw_tile_a, raw_tile_b : numpy.ndarray, shape (th, tw)
-        The two raw (uncorrected) adjacent tiles, dimmed by ``flatfield``.
-    flatfield : numpy.ndarray, shape (th, tw)
-        The shared multiplicative illumination field (mean ~ 1).
-    darkfield : numpy.ndarray, optional
-        Shared additive dark-field.  Subtracted before dividing by the
-        flat-field when provided.
-    orientation : {"horizontal", "vertical"}, optional
-        Tile adjacency.  ``"horizontal"`` (default) = left/right neighbours
-        overlapping in columns; ``"vertical"`` = top/bottom neighbours
-        overlapping in rows.
+        The raw (uncorrected) adjacent tiles.
+    cor_tile_a, cor_tile_b : numpy.ndarray, shape (th, tw)
+        The corrected tiles (same shape).
     overlap_fraction : float, optional
-        Fraction of the tile size shared by the two tiles (default ``0.2``).
-    epsilon : float, optional
-        Stabiliser added to the flat-field before division (default ``1e-6``).
-    pixel_size_mm : float, optional
-        Physical pixel size for scale bars on the tile panels.
+        Fraction of the tile size that the two tiles share (default 0.2).
+    orientation : {"horizontal", "vertical"}, optional
+        How the tiles are adjacent (default ``"horizontal"``: A left, B right).
     title : str, optional
-        Title prefix; the seam-L1 values are appended automatically.
+        Figure title.
 
     Returns
     -------
     matplotlib.figure.Figure
-        The assembled seam-metric demonstration figure.
+        The assembled seam figure.
     """
     set_theme()
     a_raw = np.asarray(raw_tile_a, dtype=np.float32)
     b_raw = np.asarray(raw_tile_b, dtype=np.float32)
-    flat = np.asarray(flatfield, dtype=np.float32)
-    dark = np.zeros_like(flat) if darkfield is None else np.asarray(darkfield, dtype=np.float32)
-
-    a_cor = (a_raw - dark) / (flat + epsilon)
-    b_cor = (b_raw - dark) / (flat + epsilon)
-
+    a_cor = np.asarray(cor_tile_a, dtype=np.float32)
+    b_cor = np.asarray(cor_tile_b, dtype=np.float32)
     th, tw = a_raw.shape
-    ovl_a, ovl_b, reduce_axis, seam_axis_label = _overlap_slices((th, tw), orientation, overlap_fraction)
 
+    ovl_a, ovl_b, _reduce_axis, _label = _overlap_slices((th, tw), orientation, overlap_fraction)
     seam_raw = _seam_l1(a_raw, b_raw, ovl_a, ovl_b)
     seam_cor = _seam_l1(a_cor, b_cor, ovl_a, ovl_b)
     improvement = _improvement_pct(seam_raw, seam_cor)
 
-    prof_a_raw = a_raw[ovl_a].mean(axis=reduce_axis)
-    prof_b_raw = b_raw[ovl_b].mean(axis=reduce_axis)
-    prof_a_cor = a_cor[ovl_a].mean(axis=reduce_axis)
-    prof_b_cor = b_cor[ovl_b].mean(axis=reduce_axis)
+    # Stitch the two tiles into one image for display.
+    if orientation == "horizontal":
+        stitch_raw = np.concatenate([a_raw, b_raw], axis=1)
+        stitch_cor = np.concatenate([a_cor, b_cor], axis=1)
+        seam_pos = tw  # column where tiles meet
+        seam_axis = "x"
+    else:
+        stitch_raw = np.concatenate([a_raw, b_raw], axis=0)
+        stitch_cor = np.concatenate([a_cor, b_cor], axis=0)
+        seam_pos = th
+        seam_axis = "y"
 
-    tile_vmax = float(np.percentile(a_raw, 99))
-    cor_vmax = float(np.percentile(np.concatenate([a_cor.ravel(), b_cor.ravel()]), 99))
+    # Shared colour scale: stretch to the raw data range so the seam
+    # contrast is preserved and both panels are directly comparable.
+    vmin = 0.0
+    vmax = float(np.percentile(stitch_raw, 99))
 
-    fig, axes = plt.subplots(2, 4, figsize=(19, 9))
-    head = f"seam L1: {seam_raw:.3f} -> {seam_cor:.3f}  ({improvement:+.1f}%)"
-    fig.suptitle(f"{title}\n{head}" if title else head)
+    fig, (ax_raw, ax_cor) = plt.subplots(1, 2, figsize=(13, 5))
+    head = f"seam L1  {seam_raw:.3f} \u2192 {seam_cor:.3f}  ({improvement:+.0f}%)"
+    fig.suptitle(f"{title}\n{head}" if title else head, fontsize=10)
 
-    # Column 0 — shared field + flatness demonstration.
-    show_field(axes[0, 0], flat, title="Shared illumination field")
+    def _show_stitch(ax: plt.Axes, img: np.ndarray, label: str, color: str) -> None:
+        ax.imshow(img, cmap=INTENSITY_CMAP, vmin=vmin, vmax=vmax, aspect="equal", interpolation="nearest")
+        # Mark tile boundary.
+        if orientation == "horizontal":
+            ax.axvline(seam_pos - 0.5, color=color, lw=1.4, ls="--", alpha=0.9)
+        else:
+            ax.axhline(seam_pos - 0.5, color=color, lw=1.4, ls="--", alpha=0.9)
+        ax.set_title(label, fontsize=9)
+        ax.set_xlabel(f"{seam_axis}-pixel")
+        ax.set_ylabel("y-pixel" if seam_axis == "x" else "x-pixel")
+        ax.tick_params(labelsize=7)
 
-    # Per-position tile profile perpendicular to the seam (the vignette axis):
-    # raw is curved by the field, corrected is flat.  Normalise each curve by
-    # its own mean so their shapes are directly comparable.
-    vig_axis = 0 if orientation == "horizontal" else 1  # average along the seam
-    raw_profile = _normalised_profile(a_raw, vig_axis)
-    cor_profile = _normalised_profile(a_cor, vig_axis)
-    pos = np.arange(raw_profile.size)
-    ax = axes[1, 0]
-    ax.plot(pos, raw_profile, color="tab:red", lw=1.4, label="raw (vignetted)")
-    ax.plot(pos, cor_profile, color="tab:green", lw=1.4, label="corrected (flat)")
-    ax.axhline(1.0, color="0.6", lw=0.8, ls="--")
-    ax.set_title("Tile profile across the field")
-    ax.set_xlabel("x-pixel" if orientation == "horizontal" else "y-pixel")
-    ax.set_ylabel("normalised intensity")
-    ax.legend(fontsize=8)
-    ax.margins(x=0)
-
-    # Columns 1-2 — the two tiles, raw and corrected, overlap outlined.
-    show_image(axes[0, 1], a_raw, title="Tile A: raw", vmin=0, vmax=tile_vmax, pixel_size_mm=pixel_size_mm, scalebar=True)
-    _draw_overlap_outline(axes[0, 1], ovl_a, (th, tw))
-    show_image(axes[0, 2], b_raw, title="Tile B: raw", vmin=0, vmax=tile_vmax, pixel_size_mm=pixel_size_mm, scalebar=True)
-    _draw_overlap_outline(axes[0, 2], ovl_b, (th, tw))
-    show_image(axes[1, 1], a_cor, title="Tile A: corrected", vmin=0, vmax=cor_vmax)
-    _draw_overlap_outline(axes[1, 1], ovl_a, (th, tw))
-    show_image(axes[1, 2], b_cor, title="Tile B: corrected", vmin=0, vmax=cor_vmax)
-    _draw_overlap_outline(axes[1, 2], ovl_b, (th, tw))
-
-    # Column 3 — seam overlap agreement, raw vs corrected.
-    _plot_seam_overlap(
-        axes[0, 3],
-        prof_a_raw,
-        prof_b_raw,
-        mismatch_color="tab:red",
-        title=f"Seam overlap: raw (L1={seam_raw:.3f})",
-        xlabel=seam_axis_label,
-    )
-    _plot_seam_overlap(
-        axes[1, 3],
-        prof_a_cor,
-        prof_b_cor,
-        mismatch_color="tab:green",
-        title=f"Seam overlap: corrected (L1={seam_cor:.3f})",
-        xlabel=seam_axis_label,
-    )
+    _show_stitch(ax_raw, stitch_raw, f"Raw  (seam L1 = {seam_raw:.3f})", "tab:red")
+    _show_stitch(ax_cor, stitch_cor, f"Corrected  (seam L1 = {seam_cor:.3f})", "tab:green")
 
     fig.tight_layout()
     return fig
