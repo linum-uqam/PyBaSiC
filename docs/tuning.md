@@ -47,16 +47,16 @@ print("Raw Pearson:", seam_pearson(tiles, pairs))
 ```
 
 ```{figure} _static/demo/seam_metric_demo.png
-:alt: Two adjacent mosaic tiles before and after BaSiC correction showing seam removal
+:alt: BaSiC flat-field 3-D surface and mosaic row before and after correction
 :align: center
 :width: 100%
 
-Two horizontally adjacent tiles from a synthetic mosaic (MosaicGrid + `fit_mosaic` pipeline).
-**Left:** raw tiles stitched side-by-side — the illumination vignette causes a clear brightness
-discontinuity at the tile boundary (red dashed line; seam L1 = 0.60).
-**Right:** after BaSiC correction the seam vanishes (seam L1 = 0.01, −98%).
-Both panels share the same colour scale so the intensity change is directly
-comparable.
+**Left:** the BaSiC-estimated flat-field rendered as a 3-D surface — the dome-shaped
+illumination curvature is the root cause of all tile-boundary artefacts.
+**Middle:** a row of four raw tiles stitched side-by-side; the vignette repeats on every tile,
+producing visible brightness jumps at each boundary (red dashed lines, mean seam L1 ≈ 0.67).
+**Right:** the same row after BaSiC correction — the illumination curvature is removed and the
+row is seamless (mean seam L1 ≈ 0.02, −96%).
 ```
 
 ---

@@ -165,42 +165,37 @@ def _save_tuning_demo(out: Path) -> None:
 def _save_seam_metric_demo(out: Path, tile: int = 128, overlap: float = 0.2) -> None:
     """Render the seam-consistency demo using the full MosaicGrid + fit_mosaic pipeline.
 
-    Builds a synthetic mosaic that mimics real acquisition data: tiles share
-    a physical overlap region and are all dimmed by the same illumination
-    field.  BaSiC is fitted on the full tile stack (as in the real pipeline),
-    then two horizontally adjacent tiles are extracted from the raw and
-    corrected mosaics and shown side-by-side so the seam artefact — and its
-    removal — is directly visible as a 2-D image.
+    Three-panel figure: (1) the BaSiC-estimated flat-field as a 3-D surface
+    showing the illumination curvature; (2) a row of raw tiles stitched
+    side-by-side — the vignette repeats and creates visible seams; (3) the
+    same row after BaSiC correction — seamless.
     """
     from linum_basic.fit import apply_fit, fit_mosaic
 
-    print("\nGenerating seam-metric demo (MosaicGrid + fit_mosaic pipeline)...")
-    mosaic = _build_synthetic_mosaic(tile=tile, ncols=8, nrows=6)
-
+    print("\nGenerating seam-metric demo (3-D flat-field + mosaic row before/after BaSiC)...")
+    mosaic = _build_synthetic_mosaic(tile=tile, ncols=4, nrows=4)
     fit = fit_mosaic(mosaic, z_indices=[0], field_mode="global", n_workers=1, verbose=False)
-
-    # Corrected mosaic: shape (Z, H, W); z=0 slice is (H, W).
     corrected_vol = apply_fit(mosaic, fit)
-    raw_z0 = mosaic.array[0]  # (n_rows*tile, n_cols*tile)
-    cor_z0 = corrected_vol[0]
 
-    # Pick a central pair of horizontally adjacent tiles.
+    # Extract a central row of all tiles.
     row = mosaic.n_rows // 2
-    col = mosaic.n_cols // 2 - 1  # left tile of the pair
     th, tw = mosaic.tile_shape
-    raw_a = raw_z0[row * th : (row + 1) * th, col * tw : (col + 1) * tw]
-    raw_b = raw_z0[row * th : (row + 1) * th, (col + 1) * tw : (col + 2) * tw]
-    cor_a = cor_z0[row * th : (row + 1) * th, col * tw : (col + 1) * tw]
-    cor_b = cor_z0[row * th : (row + 1) * th, (col + 1) * tw : (col + 2) * tw]
+    raw_z0 = mosaic.array[0]
+    cor_z0 = corrected_vol[0]
+    tiles_raw = np.stack(
+        [raw_z0[row * th : (row + 1) * th, c * tw : (c + 1) * tw] for c in range(mosaic.n_cols)]
+    )  # (n_cols, th, tw)
+    tiles_cor = np.stack(
+        [cor_z0[row * th : (row + 1) * th, c * tw : (c + 1) * tw] for c in range(mosaic.n_cols)]
+    )  # (n_cols, th, tw)
 
     fig = viz.figure_seam_metric(
-        raw_tile_a=raw_a,
-        raw_tile_b=raw_b,
-        cor_tile_a=cor_a,
-        cor_tile_b=cor_b,
+        flatfield=fit.flatfields,
+        tiles_raw=tiles_raw,
+        tiles_cor=tiles_cor,
         overlap_fraction=overlap,
         orientation="horizontal",
-        title="Seam-consistency metric — two adjacent tiles (MosaicGrid + BaSiC)",
+        title="Seam-consistency metric — BaSiC illumination field + mosaic row",
     )
     path = viz.save_figure(fig, out / "seam_metric_demo.png", dpi=150)
     print(f"Saved: {path}")

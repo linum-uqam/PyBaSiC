@@ -607,96 +607,114 @@ def figure_apply_correction(
 
 def figure_seam_metric(
     *,
-    raw_tile_a: np.ndarray,
-    raw_tile_b: np.ndarray,
-    cor_tile_a: np.ndarray,
-    cor_tile_b: np.ndarray,
+    flatfield: np.ndarray,
+    tiles_raw: np.ndarray,
+    tiles_cor: np.ndarray,
     overlap_fraction: float = 0.2,
     orientation: str = "horizontal",
     title: str | None = None,
 ) -> Figure:
-    """Show the physical seam between two adjacent tiles before and after correction.
+    """Explain the seam-consistency metric: illumination field + mosaic row before/after BaSiC.
 
-    Two tiles that share a physical overlap region are stitched side-by-side
-    and shown as 2-D images.  Before correction the illumination field
-    creates a visible brightness discontinuity at the tile boundary; after
-    correction the transition is seamless.
+    Three-panel figure that shows *why* adjacent tiles have a seam and how
+    BaSiC removes it:
 
-    Layout (1x2):
+    * **left** (3-D surface): the BaSiC-estimated flat-field — the spatially
+      non-uniform illumination field whose curvature causes the brightness
+      mismatch between neighbouring tiles;
+    * **middle** (2-D image): a row of raw tiles stitched side-by-side — the
+      vignette repeats across tiles, producing visible seams at boundaries
+      (dashed red lines);
+    * **right** (2-D image): the same row after BaSiC correction — the
+      illumination variation is removed and the row is seamless (dashed green
+      lines).
 
-    * left:  raw tile A | tile B stitched — seam artefact visible;
-    * right: corrected tile A | tile B stitched — seam removed.
-
-    A vertical marker highlights the tile boundary and the seam-L1
-    discrepancy (mean absolute normalised difference in the overlap strip)
-    is annotated on each panel.
+    The seam-L1 metric (mean absolute normalised difference over the overlap
+    strip) is averaged across all adjacent pairs and annotated on both image
+    panels.
 
     Parameters
     ----------
-    raw_tile_a, raw_tile_b : numpy.ndarray, shape (th, tw)
-        The raw (uncorrected) adjacent tiles.
-    cor_tile_a, cor_tile_b : numpy.ndarray, shape (th, tw)
-        The corrected tiles (same shape).
+    flatfield : numpy.ndarray, shape (th, tw)
+        BaSiC-estimated illumination flat-field.
+    tiles_raw : numpy.ndarray, shape (n_tiles, th, tw)
+        Row of raw (uncorrected) tiles in display order.
+    tiles_cor : numpy.ndarray, shape (n_tiles, th, tw)
+        Row of BaSiC-corrected tiles (same ordering).
     overlap_fraction : float, optional
-        Fraction of the tile size that the two tiles share (default 0.2).
+        Fraction of the tile size used as the overlap strip for the seam-L1
+        metric (default 0.2).
     orientation : {"horizontal", "vertical"}, optional
-        How the tiles are adjacent (default ``"horizontal"``: A left, B right).
+        Tile adjacency direction (default ``"horizontal"``).
     title : str, optional
-        Figure title.
+        Figure suptitle.
 
     Returns
     -------
     matplotlib.figure.Figure
-        The assembled seam figure.
+        The assembled seam-metric figure.
     """
     set_theme()
-    a_raw = np.asarray(raw_tile_a, dtype=np.float32)
-    b_raw = np.asarray(raw_tile_b, dtype=np.float32)
-    a_cor = np.asarray(cor_tile_a, dtype=np.float32)
-    b_cor = np.asarray(cor_tile_b, dtype=np.float32)
-    th, tw = a_raw.shape
+    ff = np.asarray(flatfield, dtype=np.float32)
+    raw = np.asarray(tiles_raw, dtype=np.float32)
+    cor = np.asarray(tiles_cor, dtype=np.float32)
+    n_tiles, th, tw = raw.shape
 
-    ovl_a, ovl_b, _reduce_axis, _label = _overlap_slices((th, tw), orientation, overlap_fraction)
-    seam_raw = _seam_l1(a_raw, b_raw, ovl_a, ovl_b)
-    seam_cor = _seam_l1(a_cor, b_cor, ovl_a, ovl_b)
-    improvement = _improvement_pct(seam_raw, seam_cor)
+    ovl_a, ovl_b, *_ = _overlap_slices((th, tw), orientation, overlap_fraction)
+    seam_raw_mean = float(np.mean([_seam_l1(raw[i], raw[i + 1], ovl_a, ovl_b) for i in range(n_tiles - 1)]))
+    seam_cor_mean = float(np.mean([_seam_l1(cor[i], cor[i + 1], ovl_a, ovl_b) for i in range(n_tiles - 1)]))
+    improvement = _improvement_pct(seam_raw_mean, seam_cor_mean)
 
-    # Stitch the two tiles into one image for display.
     if orientation == "horizontal":
-        stitch_raw = np.concatenate([a_raw, b_raw], axis=1)
-        stitch_cor = np.concatenate([a_cor, b_cor], axis=1)
-        seam_pos = tw  # column where tiles meet
-        seam_axis = "x"
+        row_raw = np.concatenate(list(raw), axis=1)  # (th, n_tiles * tw)
+        row_cor = np.concatenate(list(cor), axis=1)
+        boundaries = [tw * (i + 1) for i in range(n_tiles - 1)]
+        draw_vertical = True
+        xlabel, ylabel = "x-pixel", "y-pixel"
     else:
-        stitch_raw = np.concatenate([a_raw, b_raw], axis=0)
-        stitch_cor = np.concatenate([a_cor, b_cor], axis=0)
-        seam_pos = th
-        seam_axis = "y"
+        row_raw = np.concatenate(list(raw), axis=0)  # (n_tiles * th, tw)
+        row_cor = np.concatenate(list(cor), axis=0)
+        boundaries = [th * (i + 1) for i in range(n_tiles - 1)]
+        draw_vertical = False
+        xlabel, ylabel = "y-pixel", "x-pixel"
 
-    # Shared colour scale: stretch to the raw data range so the seam
-    # contrast is preserved and both panels are directly comparable.
     vmin = 0.0
-    vmax = float(np.percentile(stitch_raw, 99))
+    vmax = float(np.percentile(row_raw, 99))
 
-    fig, (ax_raw, ax_cor) = plt.subplots(1, 2, figsize=(13, 5))
-    head = f"seam L1  {seam_raw:.3f} \u2192 {seam_cor:.3f}  ({improvement:+.0f}%)"
-    fig.suptitle(f"{title}\n{head}" if title else head, fontsize=10)
+    fig = plt.figure(figsize=(18, 5))
+    ax3d = fig.add_subplot(1, 3, 1, projection="3d")
+    ax_raw = fig.add_subplot(1, 3, 2)
+    ax_cor = fig.add_subplot(1, 3, 3)
 
-    def _show_stitch(ax: plt.Axes, img: np.ndarray, label: str, color: str) -> None:
-        ax.imshow(img, cmap=INTENSITY_CMAP, vmin=vmin, vmax=vmax, aspect="equal", interpolation="nearest")
-        # Mark tile boundary.
-        if orientation == "horizontal":
-            ax.axvline(seam_pos - 0.5, color=color, lw=1.4, ls="--", alpha=0.9)
-        else:
-            ax.axhline(seam_pos - 0.5, color=color, lw=1.4, ls="--", alpha=0.9)
+    # --- Panel 1: 3-D flat-field surface ---
+    yy, xx = np.mgrid[0 : ff.shape[0], 0 : ff.shape[1]]
+    surf = ax3d.plot_surface(xx, yy, ff, cmap=FLATFIELD_CMAP, rcount=60, ccount=60, linewidth=0, antialiased=True)
+    ax3d.set_xlabel("x-pixel", fontsize=7, labelpad=2)
+    ax3d.set_ylabel("y-pixel", fontsize=7, labelpad=2)
+    ax3d.set_zlabel("gain", fontsize=7, labelpad=2)
+    ax3d.set_title("BaSiC flat-field\n(illumination curvature)", fontsize=9)
+    ax3d.view_init(elev=32, azim=-58)
+    ax3d.tick_params(labelsize=6)
+    fig.colorbar(surf, ax=ax3d, fraction=0.025, pad=0.1, shrink=0.65)
+
+    # --- Panels 2 & 3: mosaic row before/after ---
+    def _show_row(ax: plt.Axes, img: np.ndarray, label: str, color: str) -> None:
+        ax.imshow(img, cmap=INTENSITY_CMAP, vmin=vmin, vmax=vmax, aspect="auto", interpolation="nearest")
+        for b in boundaries:
+            if draw_vertical:
+                ax.axvline(b - 0.5, color=color, lw=1.2, ls="--", alpha=0.85)
+            else:
+                ax.axhline(b - 0.5, color=color, lw=1.2, ls="--", alpha=0.85)
         ax.set_title(label, fontsize=9)
-        ax.set_xlabel(f"{seam_axis}-pixel")
-        ax.set_ylabel("y-pixel" if seam_axis == "x" else "x-pixel")
+        ax.set_xlabel(xlabel, fontsize=8)
+        ax.set_ylabel(ylabel, fontsize=8)
         ax.tick_params(labelsize=7)
 
-    _show_stitch(ax_raw, stitch_raw, f"Raw  (seam L1 = {seam_raw:.3f})", "tab:red")
-    _show_stitch(ax_cor, stitch_cor, f"Corrected  (seam L1 = {seam_cor:.3f})", "tab:green")
+    _show_row(ax_raw, row_raw, f"Raw mosaic row  (mean seam L1 = {seam_raw_mean:.3f})", "tab:red")
+    _show_row(ax_cor, row_cor, f"Corrected  (mean seam L1 = {seam_cor_mean:.3f}, {improvement:+.0f}%)", "tab:green")
 
+    head = f"seam L1  {seam_raw_mean:.3f} \u2192 {seam_cor_mean:.3f}  ({improvement:+.0f}%)"
+    fig.suptitle(f"{title}\n{head}" if title else head, fontsize=10)
     fig.tight_layout()
     return fig
 
