@@ -204,6 +204,13 @@ def _build_fit_parser() -> argparse.ArgumentParser:
     compute_group.add_argument(
         "--device", metavar="DEVICE", default=None, help="PyTorch device string (ignored for --backend=numpy)."
     )
+    compute_group.add_argument(
+        "--n-jobs",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Worker processes for parallel z-level fitting (default: CPU count - 2; forced to 1 on GPU).",
+    )
 
     parser.add_argument("--verbose", action="store_true", default=False, help="Show progress bars.")
     return parser
@@ -232,7 +239,12 @@ def fit_main(argv: list[str] | None = None) -> int:
 
     basic_kwargs: dict = {"estimate_darkfield": args.estimate_darkfield, "backend": args.backend, "device": args.device}
     fit = fit_mosaic(
-        mosaic, z_indices=args.z_indices, field_mode=args.field_mode, basic_kwargs=basic_kwargs, verbose=args.verbose
+        mosaic,
+        z_indices=args.z_indices,
+        field_mode=args.field_mode,
+        basic_kwargs=basic_kwargs,
+        n_workers=args.n_jobs,
+        verbose=args.verbose,
     )
 
     save_corrected(mosaic, fit, args.output, input_path=args.input, overwrite=True)
@@ -282,7 +294,11 @@ def _build_tune_parser() -> argparse.ArgumentParser:
     )
     tuning_group.add_argument("--seed", metavar="N", type=int, default=0, help="Random seed for reproducibility.")
     tuning_group.add_argument(
-        "--n-jobs", metavar="N", type=int, default=1, help="Parallel worker threads for z-level evaluation within each trial."
+        "--n-jobs",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Worker threads for z-level evaluation within each trial (default: CPU count - 2; 1 enables pruning).",
     )
     tuning_group.add_argument(
         "--max-tiles",

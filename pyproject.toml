@@ -21,6 +21,7 @@ dependencies = [
     "zarr>=3",
     "ome-zarr>=0.10",
     "optuna>=3.6",
+    "joblib>=1.4",
 ]
 
 [project.optional-dependencies]
