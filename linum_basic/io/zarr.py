@@ -59,12 +59,18 @@ def load_ome_zarr(path: str | Path) -> tuple[np.ndarray, list[str], list[float]]
     arr = zarr.open_array(str(Path(path) / multiscale.datasets[0]), mode="r")
     array = np.asarray(arr[:])
 
-    # Axes and scale from the OME-Zarr attrs (root.attrs["ome"]["multiscales"][0])
+    # Axes and scale from the OME-Zarr attrs.  The spec keeps metadata under
+    # root.attrs["ome"]["multiscales"] (v0.4+), but some writers (and older
+    # stores) use the bare top-level "multiscales" key instead.  Try both so
+    # we don't silently fall back to guessed axes/scale for valid stores.
     root_attrs: dict = dict(zarr.open_group(str(path), mode="r").attrs)  # type: ignore[arg-type]
-    ms_meta: dict = root_attrs.get("ome", {}).get("multiscales", [{}])[0]
+    ms_meta: dict = (root_attrs.get("ome", {}).get("multiscales") or root_attrs.get("multiscales") or [{}])[0]
 
     axes_meta = ms_meta.get("axes", [])
-    axes: list[str] = [ax["name"] for ax in axes_meta] if axes_meta else ["z", "y", "x"]
+    # When axes metadata is absent, derive a fallback from ndim so 2-D data
+    # gets ["y", "x"] instead of always returning the 3-D ["z", "y", "x"] list.
+    _fallback_axes = ["t", "c", "z", "y", "x"]
+    axes: list[str] = [ax["name"] for ax in axes_meta] if axes_meta else _fallback_axes[-array.ndim :]
 
     scale: list[float] = [1.0] * array.ndim
     for tr in (ms_meta.get("datasets", [{}])[0]).get("coordinateTransformations", []):
@@ -137,7 +143,9 @@ def write_ome_zarr(
     store = zarr.storage.LocalStore(str(out_path))
     root = zarr.open_group(store, mode="w", zarr_format=3)
 
-    axes_dicts = [{"name": ax, "type": _axis_type(ax), "unit": "millimeter"} for ax in axes]
+    axes_dicts = [
+        {"name": ax, "type": _axis_type(ax)} | ({"unit": "millimeter"} if _axis_type(ax) == "space" else {}) for ax in axes
+    ]
 
     # Build scale_factors for write_image.
     # volumetric=True: all spatial axes downsampled 2x per level (cumulative dict format).
@@ -161,8 +169,9 @@ def write_ome_zarr(
 
     # Patch coordinate_transformations so every level carries the correct
     # physical voxel size (scale_i = scale_0 * shape_0[d] / shape_i[d]).
+    # Try both the OME-NGFF v0.4+ wrapper key and the bare top-level key.
     root_attrs_w: dict = dict(root.attrs)  # type: ignore[arg-type]
-    ms_meta: dict = root_attrs_w.get("ome", {}).get("multiscales", [{}])[0]
+    ms_meta: dict = (root_attrs_w.get("ome", {}).get("multiscales") or root_attrs_w.get("multiscales") or [{}])[0]
     s0_shape = np.array(array.shape, dtype=float)
     for ds in ms_meta.get("datasets", []):
         lvl_arr = zarr.open_array(str(out_path / ds["path"]), mode="r")
@@ -175,4 +184,8 @@ def write_ome_zarr(
 
 def _axis_type(name: str) -> str:
     """Return the OME-Zarr axis type string for a given axis name."""
-    return "channel" if name == "c" else "space"
+    if name == "c":
+        return "channel"
+    if name == "t":
+        return "time"
+    return "space"

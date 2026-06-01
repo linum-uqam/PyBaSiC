@@ -128,3 +128,27 @@ def test_n_levels_pyramid_volumetric(tmp_path):
     # Physical scale doubles in all dims at each level
     assert ms[1]["coordinateTransformations"][0]["scale"] == pytest.approx([4.0, 1.0, 1.0])
     assert ms[2]["coordinateTransformations"][0]["scale"] == pytest.approx([8.0, 2.0, 2.0])
+
+
+def test_axes_metadata_units(tmp_path):
+    """Per OME-NGFF 0.5: space axes get 'unit', channel and time axes must not."""
+    import zarr
+
+    from linum_basic.io.zarr import write_ome_zarr
+
+    arr = np.ones((2, 3, 8, 8), dtype=np.float32)
+    out = tmp_path / "tcyx.ome.zarr"
+    write_ome_zarr(out, arr, axes=["t", "c", "y", "x"], scale=[1.0, 1.0, 0.5, 0.5])
+
+    root = zarr.open_group(str(out), mode="r")
+    root_meta: dict = dict(root.attrs)  # type: ignore[arg-type]
+    axes = root_meta["ome"]["multiscales"][0]["axes"]
+    by_name = {a["name"]: a for a in axes}
+
+    # time and channel axes MUST NOT have a unit (not a valid space unit)
+    assert "unit" not in by_name["t"], "time axis must not carry a space unit"
+    assert "unit" not in by_name["c"], "channel axis must not carry a unit"
+
+    # space axes SHOULD have 'millimeter'
+    assert by_name["y"]["unit"] == "millimeter"
+    assert by_name["x"]["unit"] == "millimeter"

@@ -200,12 +200,11 @@ def _plot(
     im = ax_heat.imshow(profiles, aspect="auto", origin="upper", cmap="inferno", extent=extent)
     plt.colorbar(im, ax=ax_heat, label="Flatfield value")
 
-    # Overlay fitted Gaussians (one per z)
-    x_px = np.arange(profiles.shape[1], dtype=np.float64)
-    for zi, gp in enumerate(gauss_params):
+    # Overlay fitted-Gaussian centers: a vertical line at each fitted center
+    # position per z.  (The horizontal lines were redundant and removed.)
+    for _zi, gp in enumerate(gauss_params):
         if np.isnan(gp.sigma):
             continue
-        ax_heat.plot(x_px, [z_arr[zi]] * len(x_px), color="cyan", lw=0.3, alpha=0.15)
         ax_heat.axvline(gp.center, color="cyan", lw=0.4, alpha=0.2)
 
     # Scatter the center positions per z

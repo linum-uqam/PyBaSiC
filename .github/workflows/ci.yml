@@ -5,6 +5,11 @@ on:
     branches: ["master"]
   pull_request:
 
+# Cancel in-progress runs for the same ref when a new push arrives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: "Lint & format (ruff)"
@@ -101,14 +106,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Check out sbh_simulator (modernisation)
-        uses: actions/checkout@v6
-        with:
-          repository: linum-uqam/sbh_simulator
-          ref: master
-          token: ${{ secrets.LINUM_ACCESS_TOKEN }}
-          path: sbh_simulator
-
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
         with:
@@ -118,21 +115,21 @@ jobs:
       - name: Install linum-basic dev extras
         run: uv sync --extra dev
 
-      - name: Install sbh-simulator into the venv (core deps only, no training)
-        run: uv pip install "./sbh_simulator"
-
       - name: Run vignette validation tests
         run: |
           mkdir -p vignette-results
           LINUM_BASIC_VIGNETTE_ARTIFACT_DIR=${{ github.workspace }}/vignette-results \
-          uv run pytest tests/test_vignette_validation.py -v --tb=short -s
+          uv run pytest tests/test_vignette_validation.py tests/test_demo_fitting.py -v --tb=short -s
 
       - name: Upload vignette images (ZIP artifact)
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: vignette-correction-images
-          path: vignette-results/*.png
+          path: |
+            vignette-results/*.png
+            vignette-results/*.json
+            vignette-results/*.md
 
       - name: Push images to ci-artifacts branch
         if: always()
@@ -149,7 +146,7 @@ jobs:
             cd ci-artifacts-repo && git checkout --orphan ci-artifacts && git rm -rf . )
           cd ci-artifacts-repo
           mkdir -p "$DEST"
-          cp ../vignette-results/*.png "$DEST/"
+          find ../vignette-results -maxdepth 1 \( -name "*.png" -o -name "*.json" -o -name "*.md" \) -exec cp {} "$DEST/" \;
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
           git add "$DEST"
@@ -160,34 +157,65 @@ jobs:
         if: always()
         run: |
           BASE="https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts/runs/${{ github.run_id }}"
-          echo '## Linum BaSiC — Vignette Correction Visualisation' >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo "### Gaussian" >> "$GITHUB_STEP_SUMMARY"
-          echo "![Gaussian vignette correction]($BASE/vignette_correction_gaussian.png)" >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo "### Zernike" >> "$GITHUB_STEP_SUMMARY"
-          echo "![Zernike vignette correction]($BASE/vignette_correction_zernike.png)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '## Linum BaSiC — CI Visualisation'
+            echo ''
+            echo '### Demo Fit — Bundled Image'
+            echo "![Demo fitting]($BASE/demo_fitting.png)"
+            echo ''
+            echo '### Vignette Correction — Gaussian'
+            echo "![Gaussian vignette correction]($BASE/vignette_correction_gaussian.png)"
+            echo ''
+            echo '### Vignette Correction — Zernike'
+            echo "![Zernike vignette correction]($BASE/vignette_correction_zernike.png)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment vignette images on PR
         if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
+            const fs = require('fs');
             const base = `https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts/runs/${{ github.run_id }}`;
             const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
-            const body = [
-              '## Linum BaSiC — Vignette Correction Visualisation',
+            const sha = '${{ github.sha }}';
+            const shortSha = sha.substring(0, 7);
+            const commitUrl = `${{ github.server_url }}/${{ github.repository }}/commit/${sha}`;
+
+            let metricsTable = '';
+            try {
+              metricsTable = fs.readFileSync('vignette-results/metrics_table.md', 'utf8').trim();
+            } catch (e) { /* metrics file not available */ }
+
+            const sections = [
+              '## Linum BaSiC — CI Visualisation',
               '',
-              `_Run [#${{ github.run_id }}](${runUrl}) · commit ${{ github.sha }}_`,
+              `_Run [#${{ github.run_id }}](${runUrl}) · commit [${shortSha}](${commitUrl})_`,
               '',
-              'Each figure shows (top to bottom): flat-field recovery, dark-field recovery, and sample tile (clean → corrupted → BaSiC-corrected).',
+            ];
+            if (metricsTable) {
+              sections.push('### Validation Metrics', '', metricsTable, '', '---', '');
+            }
+            sections.push(
+              '### Demo Fit — Bundled Image',
               '',
-              '### Gaussian',
+              '_BaSiC applied to the bundled Landsat image (no synthetic vignette, no ground truth). Shows shading fields estimated from image statistics alone._',
+              '',
+              `![Demo fitting](${base}/demo_fitting.png)`,
+              '',
+              '---',
+              '',
+              '### Vignette Correction — Gaussian',
+              '',
+              '_Rows: flat-field (GT · estimated · error) · dark-field (GT · estimated · error) · sample tile (clean · corrupted · corrected)_',
+              '',
               `![Gaussian correction](${base}/vignette_correction_gaussian.png)`,
               '',
-              '### Zernike',
+              '### Vignette Correction — Zernike',
+              '',
               `![Zernike correction](${base}/vignette_correction_zernike.png)`,
-            ].join('\n');
+            );
+            const body = sections.join('\n');
 
             const marker = '<!-- vignette-validation-comment -->';
             const { data: comments } = await github.rest.issues.listComments({

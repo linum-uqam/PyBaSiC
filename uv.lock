@@ -1374,6 +1374,7 @@ dependencies = [
     { name = "ome-zarr" },
     { name = "opencv-python" },
     { name = "optuna" },
+    { name = "sbh-simulator" },
     { name = "scipy" },
     { name = "tqdm" },
     { name = "zarr" },
@@ -1401,7 +1402,6 @@ docs = [
     { name = "myst-parser" },
     { name = "nbsphinx" },
     { name = "pydata-sphinx-theme" },
-    { name = "sbh-simulator" },
     { name = "scienceplots" },
     { name = "sphinx" },
     { name = "sphinx-argparse" },
@@ -1422,7 +1422,6 @@ notebooks = [
     { name = "matplotlib" },
     { name = "matplotlib-scalebar" },
     { name = "notebook" },
-    { name = "sbh-simulator" },
     { name = "scienceplots" },
 ]
 viz = [
@@ -1461,8 +1460,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11" },
-    { name = "sbh-simulator", marker = "extra == 'docs'", git = "https://github.com/linum-uqam/sbh_simulator.git?branch=master" },
-    { name = "sbh-simulator", marker = "extra == 'notebooks'", git = "https://github.com/linum-uqam/sbh_simulator.git?branch=master" },
+    { name = "sbh-simulator", git = "https://github.com/linum-uqam/sbh_simulator.git?rev=master" },
     { name = "scienceplots", marker = "extra == 'dev'", specifier = ">=2.1" },
     { name = "scienceplots", marker = "extra == 'docs'", specifier = ">=2.1" },
     { name = "scienceplots", marker = "extra == 'notebooks'", specifier = ">=2.1" },
@@ -2716,7 +2714,7 @@ wheels = [
 [[package]]
 name = "sbh-simulator"
 version = "0.1.0"
-source = { git = "https://github.com/linum-uqam/sbh_simulator.git?branch=master#110a59d7b0c150eb096fd4b9c63cc7633f785cd3" }
+source = { git = "https://github.com/linum-uqam/sbh_simulator.git?rev=master#110a59d7b0c150eb096fd4b9c63cc7633f785cd3" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },

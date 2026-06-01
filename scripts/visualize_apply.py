@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 
 from linum_basic import viz
-from linum_basic.fit import MosaicFit, apply_fit, fit_mosaic
+from linum_basic.fit import MosaicFit, fit_mosaic
 from linum_basic.metrics import seam_l1
 from linum_basic.mosaic import MosaicGrid
 
@@ -58,7 +58,12 @@ def _build_figure(
     has_df = float(df.max()) > 1e-6
 
     raw_z = mosaic.array[z_inspect].astype(np.float32)
-    corrected_z = apply_fit(mosaic, fit, n_extra_rows=n_extra_rows)[z_inspect]
+    view = raw_z.reshape(nrows, th, ncols, tw)
+    corrected_view = (view - df[None, :, None, :]) / (ff[None, :, None, :] + 1e-6)
+    if n_extra_rows > 0:
+        first_valid = corrected_view[:, n_extra_rows : n_extra_rows + 1, :, :]
+        corrected_view[:, :n_extra_rows, :, :] = first_valid
+    corrected_z = corrected_view.reshape(nrows * th, ncols * tw)
 
     # Seam metric before / after.
     seam_pairs = mosaic.seam_pairs()

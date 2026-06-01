@@ -40,7 +40,7 @@ def synthetic_stack() -> tuple[np.ndarray, np.ndarray]:
 
     # Sparse additive noise (≈5% non-zero)
     noise = rng.normal(0, 0.05, (n, h, w)).astype(np.float32)
-    mask = rng.random((n, h, w)) > 0.05
+    mask = rng.random((n, h, w)) < 0.05
     noise *= mask
 
     stack = (flatfield[None, :, :] + noise).astype(np.float32)

@@ -70,8 +70,8 @@ nbsphinx_execute = "always"
 # Kernel used for notebook execution — matches the ipykernel installed via
 # the docs extra.  Override with NBSphinx_KERNEL_NAME env var if needed.
 nbsphinx_kernel_name = "python3"
-# Allow the build to continue even if a notebook raises an exception so the
-# doc build is not blocked by environment-dependent cells.
+# Fail the build if a notebook raises an exception so broken notebooks are
+# caught early. Set to True if environment-specific cells may fail on RTD.
 nbsphinx_allow_errors = False
 # Increase per-cell timeout for the ALM solver (seconds).
 nbsphinx_timeout = 120

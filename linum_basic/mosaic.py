@@ -117,7 +117,7 @@ class MosaicGrid:
     array: np.ndarray
     tile_shape: tuple[int, int]
     overlap_fraction: float = 0.2
-    _seam_pairs_cache: list[SeamPair] = field(default_factory=list, init=False, repr=False, compare=False)
+    _seam_pairs_cache: list[SeamPair] | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:  # noqa: D105
         _z, h, w = self.array.shape
@@ -215,7 +215,7 @@ class MosaicGrid:
             seams (top-bottom neighbours).  Total count:
             ``n_rows*(n_cols-1) + (n_rows-1)*n_cols``.
         """
-        if self._seam_pairs_cache:
+        if self._seam_pairs_cache is not None:
             return self._seam_pairs_cache
 
         th, tw = self.tile_shape
@@ -247,9 +247,9 @@ class MosaicGrid:
                 slice_b = (slice(0, overlap_y), slice(None))
                 pairs.append(SeamPair(idx_a, idx_b, slice_a, slice_b, "vertical"))
 
-        # Cache so repeated calls are O(1)
-        self._seam_pairs_cache[:] = pairs
-        return self._seam_pairs_cache
+        # Cache so repeated calls are O(1).
+        self._seam_pairs_cache = pairs
+        return pairs
 
     # ------------------------------------------------------------------
     # Convenience class methods

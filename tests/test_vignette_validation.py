@@ -20,6 +20,7 @@ Skipped when the ``sbh-simulator`` package cannot be imported.
 
 from __future__ import annotations
 
+import json
 import os
 import random
 from pathlib import Path
@@ -44,6 +45,7 @@ except ImportError:
 
 _TILE = 128
 _CORRELATION_THRESHOLD = 0.85
+_DRIFT_THRESHOLD = 0.80
 # Dark-field recovery uses the same optimisation pass as flat-field recovery.
 # We enforce a lower threshold because the algorithm's primary objective is
 # flat-field correction; dark-field magnitude and shape are secondary.
@@ -54,6 +56,45 @@ pytestmark = pytest.mark.skipif(
     not _SBH_SIMULATOR_AVAILABLE,
     reason="sbh-simulator not installed. Install with: uv pip install sbh-simulator",
 )
+
+# Accumulates Pearson-r metrics during a test session so that the session
+# fixture below can write a summary into the artifact directory.
+_METRICS: dict[str, dict[str, dict[str, object]]] = {}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _write_metrics_artifacts() -> object:
+    """Write metrics.json and metrics_table.md after all module tests run."""
+    yield
+    artifact_dir = os.environ.get(_ARTIFACT_DIR_ENV)
+    if not artifact_dir or not _METRICS:
+        return
+    out = Path(artifact_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "metrics.json").write_text(json.dumps(_METRICS, indent=2))
+
+    rows = [
+        "| Test | Kind | FF Pearson *r* | DF Pearson *r* | Pass |",
+        "|------|------|:---:|:---:|:---:|",
+    ]
+    label_map = {
+        "vignette_recovery": "Vignette recovery (with DF)",
+        "no_darkfield": "Vignette recovery (no DF)",
+        "brightness_drift": "Brightness drift robustness",
+    }
+    for test_key in ("vignette_recovery", "no_darkfield", "brightness_drift"):
+        if test_key not in _METRICS:
+            continue
+        label = label_map.get(test_key, test_key)
+        for kind in ("gaussian", "zernike"):
+            if kind not in _METRICS[test_key]:
+                continue
+            vals = _METRICS[test_key][kind]
+            ff_r = f"**{vals['ff_r']:.3f}**" if "ff_r" in vals else "\u2014"
+            df_r = f"{vals['df_r']:.3f}" if "df_r" in vals else "\u2014"
+            passed = "\u2705" if vals.get("passed", True) else "\u274c"
+            rows.append(f"| {label} | {kind.capitalize()} | {ff_r} | {df_r} | {passed} |")
+    (out / "metrics_table.md").write_text("\n".join(rows))
 
 
 def _generate_ground_truth(kind: str, *, order: int = 4) -> tuple[np.ndarray, np.ndarray]:
@@ -204,6 +245,12 @@ def test_vignette_recovery(kind: str) -> None:
     print(f"[{kind}] flat-field Pearson r = {ff_corr:.3f}")
     print(f"[{kind}] dark-field Pearson r = {df_corr:.3f}")
 
+    _METRICS.setdefault("vignette_recovery", {})[kind] = {
+        "ff_r": round(ff_corr, 3),
+        "df_r": round(df_corr, 3),
+        "passed": ff_corr > _CORRELATION_THRESHOLD and df_corr > _DF_CORRELATION_THRESHOLD,
+    }
+
     artifact_dir = os.environ.get(_ARTIFACT_DIR_ENV)
     if artifact_dir:
         _save_figure(kind, gt_flatfield, gt_darkfield, stack, model, ff_corr, df_corr, Path(artifact_dir))
@@ -233,6 +280,11 @@ def test_flatfield_without_darkfield(kind: str) -> None:
 
     ff_corr = _pearson(model.flatfield_fullsize, gt_flatfield)
     print(f"[{kind}/no-darkfield] flat-field Pearson r = {ff_corr:.3f}")
+
+    _METRICS.setdefault("no_darkfield", {})[kind] = {
+        "ff_r": round(ff_corr, 3),
+        "passed": ff_corr > _CORRELATION_THRESHOLD,
+    }
 
     assert ff_corr > _CORRELATION_THRESHOLD, (
         f"[{kind}/no-darkfield] flat-field correlation {ff_corr:.3f} <= {_CORRELATION_THRESHOLD}"
@@ -269,11 +321,15 @@ def test_flatfield_recovery_with_brightness_drift(kind: str) -> None:
     ff_corr = _pearson(model.flatfield_fullsize, gt_flatfield)
     print(f"[{kind}/b_t-drift] flat-field Pearson r = {ff_corr:.3f}")
 
+    _METRICS.setdefault("brightness_drift", {})[kind] = {
+        "ff_r": round(ff_corr, 3),
+        "passed": ff_corr > _DRIFT_THRESHOLD,
+    }
+
     # Drift makes recovery harder than the no-drift baseline; 0.80 is still a
     # very strong correlation and confirms the algorithm is not defeated by
     # per-tile brightness variation.
-    _drift_threshold = 0.80
-    assert ff_corr > _drift_threshold, (
-        f"[{kind}/b_t-drift] flat-field correlation {ff_corr:.3f} <= {_drift_threshold} "
+    assert ff_corr > _DRIFT_THRESHOLD, (
+        f"[{kind}/b_t-drift] flat-field correlation {ff_corr:.3f} <= {_DRIFT_THRESHOLD} "
         f"(brightness drift std=0.2 should not prevent recovery)"
     )
