@@ -146,6 +146,77 @@ save_corrected(
 
 ---
 
+## Flatfield Curvature (depth-aware metric)
+
+For 3-D acquisitions such as OCT where the focal plane moves with depth, the
+per-z flat-field has a depth-dependent Gaussian profile in the seam direction.
+The **seam curvature** metric quantifies how non-Gaussian this profile is — a
+perfectly focused correction produces a clean Gaussian (curvature near zero),
+while an over- or under-regularised field leaves residuals.
+
+### Computing the curvature metric
+
+```python
+from linum_basic.curvature import (
+    seam_curvature,
+    seam_curvature_per_z,
+    curvature_depth_profile,
+    fit_focal_gaussian,
+    focal_profile,
+)
+from linum_basic.metrics import evaluate_correction_volume
+from linum_basic.fit import fit_mosaic
+
+fit = fit_mosaic(mosaic, field_mode="per-z")
+pairs = mosaic.seam_pairs()
+
+# Scalar metric (average over z and orientation)
+print("Seam curvature:", seam_curvature(fit.flatfields, pairs))
+
+# Per-z vector
+curv_z = seam_curvature_per_z(fit.flatfields, pairs)  # shape (n_z,)
+
+# Full depth profile: Gaussian params at each z
+params = curvature_depth_profile(fit.flatfields, pairs)
+for z, p in enumerate(params):
+    print(f"z={z}  sigma={p.sigma:.1f}px  center={p.center:.1f}px  rms={p.rms_residual:.4f}")
+```
+
+`evaluate_correction_volume` combines both seam and curvature metrics in one
+call:
+
+```python
+result = evaluate_correction_volume(
+    mosaic, fit,
+    metrics=("seam", "curvature"),
+)
+# {'seam_l1': ..., 'seam_1minus_pearson': ..., 'seam_curvature': ...}
+```
+
+### Depth-profile visualisation
+
+`scripts/visualize_seam_curvature.py` produces a 4-panel figure from any
+OME-Zarr mosaic:
+
+```bash
+uv run python scripts/visualize_seam_curvature.py \
+    --input my_mosaic.ome.zarr \
+    --output seam_curvature.png \
+    --orientation horizontal \
+    --verbose
+```
+
+The four panels show:
+
+1. **Depth side-view heatmap** — z x profile in the seam direction, overlaid
+   with the Gaussian centre at each z.
+2. **Focal width sigma(z)** — how the Gaussian width changes with depth.
+3. **Amplitude and centre(z)** — peak intensity and focal-spot position vs depth.
+4. **Scalar curvature metric per z** — RMS residual of the Gaussian fit,
+   with the depth-averaged mean marked.
+
+---
+
 ## Hyperparameter Tuning with `tune`
 
 BaSiC has two primary regularisation weights, `l_s` and `l_d`, that control
@@ -153,7 +224,7 @@ the trade-off between spatial smoothness and data fidelity.  The auto-tuned
 defaults work well for typical microscopy data, but seam consistency can often
 be improved by searching the parameter space.
 
-`tune` uses **Optuna** (TPE sampler) to minimise `seam_l1` over a
+`tune` uses **Optuna** (TPE sampler) to minimise a chosen objective over a
 log-uniform search space of divisors:
 
 $$
@@ -191,6 +262,36 @@ print("Best seam L1:", result.best_value)
 print("Best params:", result.best_params)
 # e.g. {'working_size': 128, 'l_s': 0.41, 'l_d': 0.16,
 #       'epsilon': 0.1, 'estimate_darkfield': True}
+
+### Choosing the tuning objective
+
+For 3-D datasets where the focal-plane quality matters, use the
+`objective` parameter to switch to or blend the curvature metric:
+
+| Objective | Description |
+|---|---|
+| `"seam_l1"` (default) | Minimise seam-boundary mismatch |
+| `"curvature"` | Minimise flatfield Gaussian-fit residual in the seam region |
+| `"composite"` | Weighted average of both, controlled by `composite_weights` |
+
+```python
+# Tune purely on curvature (useful when the focal profile quality
+# matters more than raw intensity matching at seam boundaries)
+result = tune(
+    mosaic,
+    n_trials=50,
+    objective="curvature",
+)
+
+# Tune on a 1:2 blend of seam L1 and curvature
+result = tune(
+    mosaic,
+    n_trials=50,
+    objective="composite",
+    composite_weights=(1.0, 2.0),  # (seam_l1_weight, curvature_weight)
+)
+print(f"Objective: {result.objective}  Best: {result.best_value:.4f}")
+```
 ```
 
 `best_params` already holds resolved BaSiC hyperparameters (the searched
@@ -225,6 +326,8 @@ them directly on the model when needed (see {doc}`parameters`).
 | `n_workers` | `1` | Worker processes used to fit z-levels in parallel within each trial (see {doc}`parallelism`). |
 | `n_extra_rows` | `0` | Leading rows per tile to drop before fitting (galvo fly-back artefact). |
 | `run_full_fit` | `False` | After tuning, run a full-z fit with the best params into `result.best_fit`. |
+| `objective` | `"seam_l1"` | Metric to minimise: `"seam_l1"`, `"curvature"`, or `"composite"`. |
+| `composite_weights` | `(1.0, 1.0)` | `(seam_l1_weight, curvature_weight)` for the `"composite"` objective. |
 
 The `best_params` dict can be passed directly to `fit_mosaic`:
 
@@ -253,7 +356,7 @@ Multiple workers can attach to the same database and tune in parallel:
 
 ```bash
 # In four separate terminals
-basic_tune --input my_mosaic.ome.zarr \
+basic tune --input my_mosaic.ome.zarr \
            --n-trials 25 \
            --storage sqlite:///tune.db \
            --study-name my-mosaic-tuning
@@ -269,7 +372,14 @@ basic_tune --input my_mosaic.ome.zarr \
 | `SeamPair` | `linum_basic.mosaic` | Descriptor for one pair of adjacent tiles |
 | `seam_l1` | `linum_basic.metrics` | Mean per-seam relative mismatch (lower is better) |
 | `seam_pearson` | `linum_basic.metrics` | Mean seam Pearson correlation (higher is better) |
-| `evaluate_correction` | `linum_basic.metrics` | Combined metrics before and after correction |
+| `evaluate_correction` | `linum_basic.metrics` | Combined metrics before and after correction (single z) |
+| `evaluate_correction_volume` | `linum_basic.metrics` | Combined seam + curvature metrics over all z-levels |
+| `seam_curvature` | `linum_basic.curvature` | Scalar flatfield Gaussian-residual metric (lower is better) |
+| `seam_curvature_per_z` | `linum_basic.curvature` | Per-z curvature vector, shape `(Z,)` |
+| `curvature_depth_profile` | `linum_basic.curvature` | List of `GaussianParams` per z |
+| `fit_focal_gaussian` | `linum_basic.curvature` | Fit a 1-D Gaussian to a flatfield profile |
+| `focal_profile` | `linum_basic.curvature` | Extract the mean profile along the seam axis |
+| `GaussianParams` | `linum_basic.curvature` | Dataclass holding Gaussian fit results |
 | `MosaicFit` | `linum_basic.fit` | Container for estimated flat/dark-fields |
 | `fit_mosaic` | `linum_basic.fit` | Run BaSiC on every z-level of a mosaic |
 | `apply_fit` | `linum_basic.fit` | Apply a `MosaicFit` to produce a corrected array |

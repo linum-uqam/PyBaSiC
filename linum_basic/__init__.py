@@ -40,8 +40,17 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from linum_basic.algorithms import inexact_alm_l1, shrink
 from linum_basic.core import BaSiC
+from linum_basic.curvature import (
+    GaussianParams,
+    curvature_depth_profile,
+    fit_focal_gaussian,
+    focal_profile,
+    seam_curvature,
+    seam_curvature_per_z,
+)
 from linum_basic.data import load_sample_image
 from linum_basic.fit import MosaicFit, apply_fit, fit_mosaic
+from linum_basic.metrics import evaluate_correction, evaluate_correction_volume
 from linum_basic.mosaic import MosaicGrid, SeamPair
 from linum_basic.tuning import TuneResult, tune
 
@@ -119,6 +128,7 @@ def correct_images(
 __version__ = "0.2.0"
 __all__ = [
     "BaSiC",
+    "GaussianParams",
     "MosaicFit",
     "MosaicGrid",
     "SeamPair",
@@ -126,9 +136,16 @@ __all__ = [
     "__version__",
     "apply_fit",
     "correct_images",
+    "curvature_depth_profile",
+    "evaluate_correction",
+    "evaluate_correction_volume",
+    "fit_focal_gaussian",
     "fit_mosaic",
+    "focal_profile",
     "inexact_alm_l1",
     "load_sample_image",
+    "seam_curvature",
+    "seam_curvature_per_z",
     "shrink",
     "tune",
 ]

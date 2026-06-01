@@ -220,8 +220,8 @@ class MosaicGrid:
 
         th, tw = self.tile_shape
         nrows, ncols = self.n_rows, self.n_cols
-        overlap_y = round(self.overlap_fraction * th)
-        overlap_x = round(self.overlap_fraction * tw)
+        overlap_y = max(1, round(self.overlap_fraction * th))
+        overlap_x = max(1, round(self.overlap_fraction * tw))
 
         pairs: list[SeamPair] = []
 
@@ -288,7 +288,7 @@ class MosaicGrid:
 
         # Infer tile shape from chunk grid of level-0 array.
         # Resolve the level-0 sub-path via OME-NGFF metadata rather than
-        # hardcoding "s0" (which is Zarr v2 convention; Zarr v3 uses "0").
+        # hardcoding a particular dataset name (e.g. "s0").
         from pathlib import Path as _Path
 
         from ome_zarr.io import parse_url

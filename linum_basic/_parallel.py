@@ -1,8 +1,7 @@
 """Shared parallelism helpers for the BaSiC pipelines.
 
 The heavy compute in this library — the per-z-level ALM solves in
-:func:`linum_basic.fit.fit_mosaic` and the per-trial z-evaluations in
-:func:`linum_basic.tuning.tune` — is **GIL-bound** on the NumPy/SciPy
+:func:`linum_basic.fit.fit_mosaic` — is **GIL-bound** on the NumPy/SciPy
 backend (SciPy FFT and NumPy matrix ops hold the GIL).  Threads therefore
 give no speed-up; the work must be spread across **processes**.  These
 units (one z-level each) are fully independent and coarse-grained, which

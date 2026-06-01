@@ -28,12 +28,13 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
 from linum_basic._parallel import default_workers
 from linum_basic.core import dct_energy
+from linum_basic.curvature import seam_curvature
 from linum_basic.fit import MosaicFit, make_model
 from linum_basic.metrics import seam_l1
 from linum_basic.mosaic import MosaicGrid
@@ -92,7 +93,11 @@ class TuneResult:
     best_params : dict
         BaSiC hyperparameters that minimised the objective.
     best_value : float
-        Mean seam-L1 at *best_params*.
+        Value of the chosen objective (see :attr:`objective`) at
+        *best_params*.
+    objective : str
+        Name of the minimised objective (``"seam_l1"``,
+        ``"curvature"``, or ``"composite"``).
     trials_df : pandas.DataFrame or None
         Full trial history (``None`` if pandas is not installed).
     best_fit : MosaicFit or None
@@ -102,6 +107,7 @@ class TuneResult:
 
     best_params: dict[str, Any]
     best_value: float
+    objective: str
     trials_df: Any  # pandas.DataFrame when available, else None
     best_fit: MosaicFit | None
 
@@ -111,6 +117,7 @@ class TuneResult:
         best_value: float,
         trials_df: Any,
         best_fit: MosaicFit | None = None,
+        objective: str = "seam_l1",
     ) -> None:
         """Construct a :class:`TuneResult`.
 
@@ -119,15 +126,19 @@ class TuneResult:
         best_params : dict
             BaSiC hyperparameters that minimised the objective.
         best_value : float
-            Mean seam-L1 at *best_params*.
+            Value of the chosen objective at *best_params*.
         trials_df : pandas.DataFrame or None
             Full trial history (``None`` if pandas is not installed).
         best_fit : MosaicFit or None
             Full-z fit with *best_params*.  Set only when
             ``run_full_fit=True`` is passed to :func:`tune`.
+        objective : str
+            Name of the minimised objective (e.g. ``"seam_l1"``,
+            ``"curvature"``, ``"composite"``).
         """
         self.best_params = best_params
         self.best_value = best_value
+        self.objective = objective
         self.trials_df = trials_df
         self.best_fit = best_fit
 
@@ -147,6 +158,8 @@ def tune(
     run_full_fit: bool = False,
     max_tiles: int | None = 64,
     n_extra_rows: int = 0,
+    objective: Literal["seam_l1", "curvature", "composite"] = "seam_l1",
+    composite_weights: tuple[float, float] = (1.0, 1.0),
     verbose: bool = False,
 ) -> TuneResult:
     """Tune BaSiC hyperparameters using the seam-consistency L1 metric.
@@ -197,13 +210,35 @@ def tune(
         Number of leading rows per tile to drop before fitting (galvo
         fly-back artefact).  Propagated to the full fit when
         ``run_full_fit=True``.
+    objective : {"seam_l1", "curvature", "composite"}
+        Objective function to minimise.
+
+        ``"seam_l1"`` (default)
+            Mean per-seam relative absolute intensity difference in the
+            corrected tile overlaps.  Fast and reliable; the recommended
+            starting point.
+        ``"curvature"``
+            Gaussian focal-curvature consistency of the estimated flatfield
+            in the overlap regions (see
+            :func:`~linum_basic.curvature.seam_curvature`).  Measures
+            whether the per-z flatfield follows the expected Gaussian
+            optics model; useful when the illumination pattern is the
+            primary unknown.
+        ``"composite"``
+            Weighted sum of the two metrics, normalised by the sum of
+            weights: ``(w1 * seam_l1 + w2 * curvature) / (w1 + w2)``.
+            Use *composite_weights* to set ``(w1, w2)``.
+    composite_weights : tuple of float
+        Weights ``(w_seam, w_curvature)`` for the ``"composite"``
+        objective.  Default is ``(1.0, 1.0)`` (equal contribution).  Has
+        no effect unless ``objective="composite"``.
     verbose : bool
         Enable Optuna logging and tqdm progress bars.
 
     Returns
     -------
     TuneResult
-        Best parameters, best seam-L1 value, and (optionally) the full fit.
+        Best parameters, best objective value, and (optionally) the full fit.
     """
     try:
         import optuna
@@ -281,6 +316,12 @@ def tune(
                 ff = np.concatenate([np.repeat(ff[:1], n_extra_rows, axis=0), ff], axis=0)
                 df = np.concatenate([np.repeat(df[:1], n_extra_rows, axis=0), df], axis=0)
             corrected = (full_tiles.astype(np.float32) - df[np.newaxis]) / (ff[np.newaxis] + 1e-6)
+            if objective == "curvature":
+                return seam_curvature(ff[np.newaxis], seam_pairs)
+            if objective == "composite":
+                w1, w2 = composite_weights
+                denom = (w1 + w2) or 1.0
+                return (w1 * seam_l1(corrected, seam_pairs) + w2 * seam_curvature(ff[np.newaxis], seam_pairs)) / denom
             return seam_l1(corrected, seam_pairs)
 
         if n_workers > 1:
@@ -341,4 +382,5 @@ def tune(
         best_value=float(best_trial.value or 0.0),
         trials_df=trials_df,
         best_fit=best_fit,
+        objective=objective,
     )

@@ -6,7 +6,7 @@ overlapping pixels of two neighbours should be identical (they image
 the same tissue).  Measuring the disagreement at every seam gives a
 self-supervised quality metric that requires **no ground truth**.
 
-Two metrics are provided:
+Two intensity metrics are provided:
 
 ``seam_l1``
     Mean *per-seam relative* absolute intensity difference.  For every
@@ -26,15 +26,32 @@ Two metrics are provided:
 
 ``evaluate_correction`` applies ``(tile - darkfield) / flatfield`` then
 computes both metrics and returns them as a dict.
+
+For per-z (depth-resolved) evaluation of a full mosaic fitting run see
+:func:`evaluate_correction_volume`, which combines the intensity seam
+metrics with the flatfield focal-curvature metric from
+:mod:`linum_basic.curvature`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
 import numpy as np
 
-from linum_basic.mosaic import SeamPair
+from linum_basic.curvature import seam_curvature
+from linum_basic.mosaic import MosaicGrid, SeamPair
 
-__all__ = ["evaluate_correction", "seam_l1", "seam_pearson"]
+if TYPE_CHECKING:
+    from linum_basic.fit import MosaicFit
+
+__all__ = [
+    "evaluate_correction",
+    "evaluate_correction_volume",
+    "seam_l1",
+    "seam_pearson",
+]
 
 
 def seam_l1(tiles: np.ndarray, seam_pairs: list[SeamPair]) -> float:
@@ -127,3 +144,76 @@ def evaluate_correction(
         "seam_l1": seam_l1(corrected, seam_pairs),
         "seam_1minus_pearson": 1.0 - seam_pearson(corrected, seam_pairs),
     }
+
+
+def evaluate_correction_volume(
+    mosaic: MosaicGrid,
+    fit: MosaicFit,
+    *,
+    metrics: Sequence[str] = ("seam", "curvature"),
+    epsilon: float = 1e-6,
+) -> dict[str, float]:
+    """Evaluate shading-correction quality over all z-levels in a mosaic fit.
+
+    Combines the intensity seam metrics (``seam_l1``, ``seam_pearson``)
+    with the flatfield focal-curvature metric
+    (:func:`~linum_basic.curvature.seam_curvature`), selectable via the
+    *metrics* parameter.  All scalar results are averages over the fitted
+    z-levels.
+
+    Parameters
+    ----------
+    mosaic : MosaicGrid
+        The source mosaic volume; used to extract per-z tile stacks.
+    fit : MosaicFit
+        Fitted flat/dark-fields from :func:`~linum_basic.fit.fit_mosaic`.
+        Supports both ``field_mode="per-z"`` (recommended — one field per z)
+        and ``field_mode="global"`` (single shared field).
+    metrics : sequence of str
+        Subset of ``{"seam", "curvature"}`` to compute.  Default: both.
+    epsilon : float
+        Divisor stabilisation constant for the flat-field correction.
+
+    Returns
+    -------
+    dict
+        Subset of keys from
+        ``{"seam_l1", "seam_1minus_pearson", "seam_curvature"}``,
+        depending on *metrics*.
+
+    Examples
+    --------
+    >>> from linum_basic import MosaicGrid, fit_mosaic
+    >>> from linum_basic.metrics import evaluate_correction_volume
+    >>> mosaic = MosaicGrid.from_ome_zarr("mosaic.ome.zarr")
+    >>> fit = fit_mosaic(mosaic, field_mode="per-z")
+    >>> scores = evaluate_correction_volume(mosaic, fit)
+    >>> print(scores["seam_l1"], scores["seam_curvature"])
+    """
+    seam_pairs = mosaic.seam_pairs()
+    result: dict[str, float] = {}
+
+    # --- intensity seam metrics (averaged over fitted z-levels) ----------
+    if "seam" in metrics:
+        l1_vals: list[float] = []
+        pearson_vals: list[float] = []
+        for z_pos, z in enumerate(fit.z_indices):
+            tiles = mosaic.iter_tiles(z)
+            if fit.field_mode == "global":
+                ff: np.ndarray = fit.flatfields
+                df: np.ndarray = fit.darkfields
+            else:
+                ff = fit.flatfields[z_pos]
+                df = fit.darkfields[z_pos]
+            corrected = (tiles.astype(np.float32) - df[np.newaxis]) / (ff[np.newaxis] + epsilon)
+            l1_vals.append(seam_l1(corrected, seam_pairs))
+            pearson_vals.append(seam_pearson(corrected, seam_pairs))
+        result["seam_l1"] = float(np.mean(l1_vals)) if l1_vals else 0.0
+        result["seam_1minus_pearson"] = float(1.0 - np.mean(pearson_vals)) if pearson_vals else 0.0
+
+    # --- flatfield curvature metric --------------------------------------
+    if "curvature" in metrics:
+        ffs = fit.flatfields[np.newaxis] if fit.field_mode == "global" else fit.flatfields
+        result["seam_curvature"] = seam_curvature(ffs, seam_pairs)
+
+    return result

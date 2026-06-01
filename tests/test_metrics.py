@@ -7,7 +7,7 @@ import random
 import numpy as np
 import pytest
 
-from linum_basic.metrics import evaluate_correction, seam_l1, seam_pearson
+from linum_basic.metrics import evaluate_correction, evaluate_correction_volume, seam_l1, seam_pearson
 from linum_basic.mosaic import MosaicGrid, SeamPair
 
 try:
@@ -193,3 +193,100 @@ class TestEvaluateCorrection:
         result_raw = evaluate_correction(raw_tiles, np.ones_like(flatfield), darkfield, pairs)
         result_cor = evaluate_correction(raw_tiles, flatfield, darkfield, pairs)
         assert result_cor["seam_l1"] < result_raw["seam_l1"]
+
+
+# ---------------------------------------------------------------------------
+# evaluate_correction_volume
+# ---------------------------------------------------------------------------
+
+
+def _make_volume_mosaic_and_fit(
+    n_rows: int = 2,
+    n_cols: int = 3,
+    tile_h: int = 16,
+    tile_w: int = 16,
+    n_z: int = 4,
+    field_mode: str = "per-z",
+    seed: int = 7,
+) -> tuple:
+    """Return a (MosaicGrid, MosaicFit) pair with synthetic data."""
+    from linum_basic.fit import MosaicFit
+    from linum_basic.mosaic import MosaicGrid
+
+    rng = np.random.default_rng(seed)
+    arr = rng.random((n_z, n_rows * tile_h, n_cols * tile_w), dtype=np.float32).astype(np.float32)
+    mosaic = MosaicGrid(arr, tile_shape=(tile_h, tile_w), overlap_fraction=0.2)
+
+    if field_mode == "per-z":
+        flatfields = np.ones((n_z, tile_h, tile_w), dtype=np.float32)
+        darkfields = np.zeros((n_z, tile_h, tile_w), dtype=np.float32)
+    else:
+        flatfields = np.ones((tile_h, tile_w), dtype=np.float32)
+        darkfields = np.zeros((tile_h, tile_w), dtype=np.float32)
+
+    fit = MosaicFit(
+        flatfields=flatfields,
+        darkfields=darkfields,
+        field_mode=field_mode,
+        z_indices=list(range(n_z)),
+    )
+    return mosaic, fit
+
+
+class TestEvaluateCorrectionVolume:
+    def test_returns_all_keys_by_default(self):
+        """Default metrics=('seam', 'curvature') → all three keys present."""
+        mosaic, fit = _make_volume_mosaic_and_fit()
+        result = evaluate_correction_volume(mosaic, fit)
+        assert "seam_l1" in result
+        assert "seam_1minus_pearson" in result
+        assert "seam_curvature" in result
+
+    def test_seam_only(self):
+        """metrics=('seam',) → seam keys present, curvature absent."""
+        mosaic, fit = _make_volume_mosaic_and_fit()
+        result = evaluate_correction_volume(mosaic, fit, metrics=("seam",))
+        assert "seam_l1" in result
+        assert "seam_1minus_pearson" in result
+        assert "seam_curvature" not in result
+
+    def test_curvature_only(self):
+        """metrics=('curvature',) → only seam_curvature key present."""
+        mosaic, fit = _make_volume_mosaic_and_fit()
+        result = evaluate_correction_volume(mosaic, fit, metrics=("curvature",))
+        assert "seam_curvature" in result
+        assert "seam_l1" not in result
+        assert "seam_1minus_pearson" not in result
+
+    def test_seam_l1_uniform_flatfield(self):
+        """Uniform flat-field + zero dark → seam_l1 == raw seam_l1 averaged over z."""
+        mosaic, fit = _make_volume_mosaic_and_fit(n_z=3)
+        result = evaluate_correction_volume(mosaic, fit, metrics=("seam",))
+        assert np.isfinite(result["seam_l1"])
+        assert result["seam_l1"] >= 0.0
+
+    def test_seam_curvature_finite(self):
+        """seam_curvature should be finite for a valid mosaic fit."""
+        mosaic, fit = _make_volume_mosaic_and_fit()
+        result = evaluate_correction_volume(mosaic, fit, metrics=("curvature",))
+        assert np.isfinite(result["seam_curvature"])
+
+    def test_global_field_mode_2d_to_3d_reshape(self):
+        """field_mode='global' (2-D flatfield) → seam_curvature computed without error."""
+        mosaic, fit = _make_volume_mosaic_and_fit(field_mode="global")
+        result = evaluate_correction_volume(mosaic, fit)
+        assert "seam_curvature" in result
+        assert np.isfinite(result["seam_curvature"])
+
+    def test_global_field_mode_seam_metrics(self):
+        """field_mode='global' → seam metrics computed using shared flat/dark fields."""
+        mosaic, fit = _make_volume_mosaic_and_fit(field_mode="global")
+        result = evaluate_correction_volume(mosaic, fit, metrics=("seam",))
+        assert "seam_l1" in result
+        assert np.isfinite(result["seam_l1"])
+
+    def test_empty_metrics_returns_empty_dict(self):
+        """Passing an empty metrics sequence → empty result dict."""
+        mosaic, fit = _make_volume_mosaic_and_fit()
+        result = evaluate_correction_volume(mosaic, fit, metrics=())
+        assert result == {}

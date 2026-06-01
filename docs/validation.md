@@ -1,7 +1,7 @@
 (validation)=
 # Validation
 
-Linum BaSiC's test suite is divided into four layers: unit/parity tests for the
+Linum BaSiC's test suite is divided into three layers: unit/parity tests for the
 numerical core, docstring tests, and an integration test against a simulated
 vignette.
 
@@ -68,6 +68,21 @@ open /tmp/vignette_artefacts/*.png
 ```
 
 This is the same pipeline used by `scripts/visualize_vignette_correction.py`.
+
+---
+
+## Mosaic and curvature tests
+
+The `tests/test_mosaic.py`, `tests/test_metrics.py`, and `tests/test_curvature.py`
+suites cover the full mosaic pipeline:
+
+| File | What it tests |
+|---|---|
+| `test_mosaic.py` | `MosaicGrid` tile extraction, seam-pair enumeration, overlap geometry |
+| `test_metrics.py` | `seam_l1`, `seam_pearson`, `evaluate_correction`, `evaluate_correction_volume` |
+| `test_curvature.py` | `fit_focal_gaussian`, `focal_profile`, `seam_curvature`, `seam_curvature_per_z`, `curvature_depth_profile` |
+
+All three suites run without optional dependencies.
 
 ---
 

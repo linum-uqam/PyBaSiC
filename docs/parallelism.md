@@ -10,9 +10,8 @@ and what to expect on CUDA/MPS hardware.
 
 ## Why processes, not threads
 
-The core compute in {func}`~linum_basic.fit.fit_mosaic` and
-{func}`~linum_basic.tuning.tune` is the **ALM solver** — a sequence of DCT
-transforms and BLAS matrix operations provided by SciPy and NumPy.  On
+The core compute in {func}`~linum_basic.fit.fit_mosaic` is the **ALM solver** — a
+sequence of DCT transforms and BLAS matrix operations provided by SciPy and NumPy.  On
 CPython these operations hold the GIL, so a thread pool offers no
 parallelism benefit.
 
@@ -54,7 +53,7 @@ You can override this via:
 
 - the `n_workers` argument to {func}`~linum_basic.fit.fit_mosaic` and
   {func}`~linum_basic.tuning.tune`
-- the `--n-jobs` CLI flag on `basic_fit` and `basic_tune`
+- the `--n-jobs` CLI flag on `basic fit` and `basic tune`
 - setting `n_workers=1` to run sequentially (useful for debugging)
 
 ```python
