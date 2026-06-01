@@ -318,6 +318,21 @@ def _build_tune_parser() -> argparse.ArgumentParser:
         "--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1)."
     )
 
+    backend_group = parser.add_argument_group("Backend")
+    backend_group.add_argument(
+        "--backend",
+        metavar="NAME",
+        default="numpy",
+        choices=["numpy", "torch"],
+        help="Compute backend ('numpy' or 'torch').",
+    )
+    backend_group.add_argument(
+        "--device",
+        metavar="DEV",
+        default=None,
+        help="Torch device string, e.g. 'cuda:0'. Ignored when --backend=numpy.",
+    )
+
     parser.add_argument("--verbose", action="store_true", default=False, help="Enable Optuna logging and progress bars.")
     return parser
 
@@ -350,6 +365,8 @@ def tune_main(argv: list[str] | None = None) -> int:
         z_subsample=args.z_subsample,
         seed=args.seed,
         n_workers=args.n_jobs,
+        backend=args.backend,
+        device=args.device,
         max_tiles=args.max_tiles if args.max_tiles > 0 else None,
         n_extra_rows=args.n_extra_rows,
         storage=args.storage,

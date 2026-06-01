@@ -140,6 +140,8 @@ def tune(
     search_space: dict[str, list | tuple] | None = None,
     seed: int = 0,
     n_workers: int | None = None,
+    backend: str = "numpy",
+    device: str | None = None,
     storage: str | None = None,
     study_name: str = "basic-tune",
     run_full_fit: bool = False,
@@ -171,7 +173,13 @@ def tune(
         unpromising trials early); parallel evaluation trades pruning for
         within-trial z-level parallelism. Threads are used (not processes)
         because the per-trial tile caches are large and shared, and the ALM
-        kernels (DCT, SVD) release the GIL.
+        kernels (DCT, SVD) release the GIL.  When *backend* is ``"torch"``
+        the worker count is forced to 1 to avoid GPU memory contention.
+    backend : str
+        Compute backend for BaSiC.  ``"numpy"`` (default) or ``"torch"``.
+    device : str or None
+        Torch device string (e.g. ``"cuda:0"``).  Ignored when *backend* is
+        ``"numpy"``.
     storage : str or None
         Optuna storage URL (e.g. ``"sqlite:///tune.db"``).  ``None`` uses
         in-memory storage (not resumable).
@@ -204,6 +212,18 @@ def tune(
         raise ImportError(msg) from exc
 
     n_workers = default_workers() if n_workers is None else max(1, int(n_workers))
+
+    # Multiple threads competing for the same GPU causes contention and OOM;
+    # force sequential evaluation (which also enables pruning).
+    if backend == "torch" and n_workers > 1:
+        import warnings
+
+        warnings.warn(
+            "backend='torch': n_workers forced to 1 to avoid GPU memory contention.",
+            UserWarning,
+            stacklevel=2,
+        )
+        n_workers = 1
 
     if not verbose:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -246,7 +266,10 @@ def tune(
             fit_tiles = fit_tiles_cache[z]
             if n_extra_rows > 0:
                 fit_tiles = fit_tiles[:, n_extra_rows:, :]
-            model = make_model(fit_tiles, params)
+            extra_kw: dict[str, str] = {"backend": backend}
+            if device is not None:
+                extra_kw["device"] = device
+            model = make_model(fit_tiles, {**params, **extra_kw})
             model.prepare()
             model.run()
             ff = model.get_flatfield()
@@ -302,9 +325,12 @@ def tune(
     if run_full_fit:
         from linum_basic.fit import fit_mosaic
 
+        extra_kw: dict[str, str] = {"backend": backend}
+        if device is not None:
+            extra_kw["device"] = device
         best_fit = fit_mosaic(
             mosaic,
-            basic_kwargs=best_params,
+            basic_kwargs={**best_params, **extra_kw},
             n_extra_rows=n_extra_rows,
             n_workers=n_workers,
             verbose=verbose,
