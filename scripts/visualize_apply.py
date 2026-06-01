@@ -94,8 +94,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", default=_DEFAULT_ZARR, help="Path to the OME-Zarr mosaic.")
     parser.add_argument("--z-inspect", type=int, default=27, help="Z-level to fit and display.")
     parser.add_argument("--overlap", type=float, default=0.2, help="Physical tile-overlap fraction (0-1).")
-    parser.add_argument("--working-size", type=int, default=None, help="BaSiC working resolution.")
-    parser.add_argument("--epsilon", type=float, default=None, help="BaSiC reweighting stability constant.")
+    parser.add_argument("--params-json", default=None, help="JSON file with BaSiC hyperparameters (output of basic_tune).")
+    parser.add_argument("--working-size", type=int, default=None, help="BaSiC working resolution (overrides --params-json).")
+    parser.add_argument(
+        "--epsilon", type=float, default=None, help="BaSiC reweighting stability constant (overrides --params-json)."
+    )
     parser.add_argument("--estimate-darkfield", action="store_true", help="Estimate a dark-field.")
     parser.add_argument("--n-extra", type=int, default=2, help="Galvo fly-back rows to mask per tile.")
     parser.add_argument("--output", default=_DEFAULT_OUT, help="Output PNG path.")
@@ -106,7 +109,13 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
 
     mosaic = MosaicGrid.from_ome_zarr(args.input, overlap_fraction=args.overlap)
-    params: dict[str, Any] = {"estimate_darkfield": args.estimate_darkfield}
+    params: dict[str, Any] = {}
+    if args.params_json is not None:
+        import json
+
+        with Path(args.params_json).open() as fh:
+            params = json.load(fh)
+    params.setdefault("estimate_darkfield", args.estimate_darkfield)
     if args.working_size is not None:
         params["working_size"] = args.working_size
     if args.epsilon is not None:
