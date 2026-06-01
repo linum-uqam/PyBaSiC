@@ -1,7 +1,7 @@
 """OME-Zarr I/O for linum-basic (read / write single-scale volumes).
 
 Only the minimal surface needed by :mod:`linum_basic.fit` and the
-``basic_fit`` / ``basic_tune`` CLIs is exposed here.  No dependency on
+``basic fit`` / ``basic tune`` sub-commands is exposed here.  No dependency on
 linumpy is introduced; the implementation follows the same OME-Zarr v0.5
 patterns used by that library.
 """

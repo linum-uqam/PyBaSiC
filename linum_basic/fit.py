@@ -61,7 +61,7 @@ def make_model(tiles: np.ndarray, params: dict[str, Any]) -> BaSiC:
     """
     init_kw = {k: v for k, v in params.items() if k in _BASIC_INIT_PARAMS}
     post_kw = {k: v for k, v in params.items() if k not in _BASIC_INIT_PARAMS}
-    model = BaSiC.from_array(tiles, **init_kw)
+    model = BaSiC(tiles, **init_kw)
     for key, val in post_kw.items():
         setattr(model, key, val)
     return model

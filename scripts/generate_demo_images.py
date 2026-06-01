@@ -8,7 +8,7 @@ showing:
   - Right:  the same tile after BaSiC correction
 
 The synthetic vignette is a 2-D Gaussian centred on the tile — no external
-simulator required.  The bundled source image (``tests/data/source_image.jpg``)
+simulator required.  The bundled source image (``linum_basic/data/source_image.jpg``)
 is tiled into 128 x 128 patches to build the image stack.
 
 Run from the repository root::

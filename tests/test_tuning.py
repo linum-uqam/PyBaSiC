@@ -186,3 +186,81 @@ class TestDctEnergyParity:
         # ratio of divisors (independent of dct_sum) — sanity on the shared path.
         assert result.best_params["l_s"] > 0
         assert result.best_params["l_d"] > 0
+
+
+class TestTuneParallel:
+    """Cover the n_workers > 1 ThreadPoolExecutor path in tune()."""
+
+    def test_n_workers_gt1_returns_tuneresult(self, synthetic_mosaic):
+        """n_workers=2 exercises the parallel ThreadPoolExecutor branch."""
+        mosaic, _ = synthetic_mosaic
+        result = tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=2,
+            search_space=_TEST_SEARCH_SPACE,
+            seed=3,
+            n_workers=2,
+        )
+        assert isinstance(result, TuneResult)
+        assert result.best_value > 0
+
+
+class TestTuneTorchWarning:
+    """Cover the backend='torch' + n_workers>1 warning path."""
+
+    def test_torch_backend_warns_and_runs(self, synthetic_mosaic):
+        torch = pytest.importorskip("torch")  # noqa: F841
+        mosaic, _ = synthetic_mosaic
+        with pytest.warns(UserWarning, match="n_workers forced to 1"):
+            result = tune(
+                mosaic,
+                n_trials=2,
+                z_subsample=2,
+                search_space=_TEST_SEARCH_SPACE,
+                seed=5,
+                n_workers=2,
+                backend="torch",
+            )
+        assert isinstance(result, TuneResult)
+
+
+class TestTuneTrialsDfFallback:
+    """Cover the trials_df exception fallback path."""
+
+    def test_trials_df_none_when_dataframe_raises(self, synthetic_mosaic, monkeypatch):
+        """When study.trials_dataframe() raises, trials_df is set to None."""
+
+        class _FailingStudy:
+            """Thin wrapper that makes trials_dataframe() raise."""
+
+            def __init__(self, real_study):
+                self._study = real_study
+                self.best_trial = None  # set after optimize
+
+            def optimize(self, *a, **kw):
+                self._study.optimize(*a, **kw)
+                self.best_trial = self._study.best_trial
+
+            def trials_dataframe(self):
+                raise RuntimeError("pandas not available (simulated)")
+
+        import optuna as _optuna
+
+        _original_create_study = _optuna.create_study
+
+        def _patched_create_study(**kw):
+            real = _original_create_study(**kw)
+            return _FailingStudy(real)
+
+        monkeypatch.setattr(_optuna, "create_study", _patched_create_study)
+
+        mosaic, _ = synthetic_mosaic
+        result = tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=2,
+            search_space=_TEST_SEARCH_SPACE,
+            seed=0,
+        )
+        assert result.trials_df is None

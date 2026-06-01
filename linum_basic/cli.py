@@ -1,15 +1,16 @@
 r"""Command-line interface for BaSiC shading correction.
 
-Entry point registered as ``basic_shading_correction`` in *pyproject.toml*,
-replacing the legacy ``scripts/basic_shading_correction.py`` script.
+Entry point registered as ``basic`` in *pyproject.toml*.  All sub-tasks are
+exposed as sub-commands of the same executable:
 
 Usage
 -----
 ::
 
-    basic_shading_correction --input /path/to/tiles --output /path/to/output
-    basic_shading_correction --input /path/to/tiles --output /path/to/output \\
-        --estimate-darkfield --backend torch --device cuda
+    basic correct  --input /path/to/tiles --output /path/to/output
+    basic fit      --input mosaic.ome.zarr --output corrected.ome.zarr
+    basic tune     --input mosaic.ome.zarr
+    basic preview  --input volume.ome.zarr --output preview.png
 """
 
 from __future__ import annotations
@@ -18,125 +19,64 @@ import argparse
 import sys
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Shared argument helpers
+# ---------------------------------------------------------------------------
 
-def _build_arg_parser() -> argparse.ArgumentParser:
-    """Construct the argument parser for the BaSiC CLI.
 
-    Returns
-    -------
-    argparse.ArgumentParser
-        Fully configured parser with all BaSiC options.
+def _add_backend_args(parser: argparse.ArgumentParser) -> None:
+    """Add ``--backend`` and ``--device`` to *parser*."""
+    g = parser.add_argument_group("Compute")
+    g.add_argument(
+        "--backend",
+        choices=["numpy", "torch", "auto"],
+        default="numpy",
+        help="Array backend for the ALM optimisation loop.  'auto' selects Torch with CUDA/MPS when available.",
+    )
+    g.add_argument(
+        "--device",
+        metavar="DEVICE",
+        default=None,
+        help="PyTorch device string (e.g. 'cuda:0', 'mps', 'cpu').  Ignored when --backend=numpy.",
+    )
 
-    Notes
-    -----
-    The parser includes the following groups:
 
-    * **I/O** — ``--input``, ``--output``, ``--extension``.
-    * **Algorithm** — ``--estimate-darkfield``.
-    * **Compute** — ``--backend``, ``--device``.
-    * **Misc** — ``--verbose``.
-    """
-    parser = argparse.ArgumentParser(
-        prog="basic_shading_correction",
-        description="Estimate and apply BaSiC flat-field/dark-field shading correction.",
+# ---------------------------------------------------------------------------
+# Sub-command: correct
+# ---------------------------------------------------------------------------
+
+
+def _add_correct_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    p = subs.add_parser(
+        "correct",
+        help="Estimate and apply BaSiC flat-field/dark-field shading correction.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    # --- I/O ---
-    io_group = parser.add_argument_group("I/O")
-    io_group.add_argument(
-        "--input",
-        metavar="DIR",
-        required=True,
-        type=Path,
-        help="Directory containing the input image stack.",
-    )
-    io_group.add_argument(
-        "--output",
-        metavar="DIR",
-        required=True,
-        type=Path,
-        help="Directory to write corrected images.",
-    )
-    io_group.add_argument(
-        "--extension",
-        metavar="EXT",
-        default=".tif",
-        help="File extension filter (e.g. '.tif', '.png').",
-    )
+    io = p.add_argument_group("I/O")
+    io.add_argument("--input", metavar="DIR", required=True, type=Path, help="Directory containing the input image stack.")
+    io.add_argument("--output", metavar="DIR", required=True, type=Path, help="Directory to write corrected images.")
+    io.add_argument("--extension", metavar="EXT", default=".tif", help="File extension filter (e.g. '.tif', '.png').")
 
-    # --- Algorithm ---
-    alg_group = parser.add_argument_group("Algorithm")
-    alg_group.add_argument(
+    alg = p.add_argument_group("Algorithm")
+    alg.add_argument(
         "--estimate-darkfield",
         action="store_true",
         default=False,
         help="Estimate the dark-field in addition to the flat-field.",
     )
 
-    # --- Compute ---
-    compute_group = parser.add_argument_group("Compute")
-    compute_group.add_argument(
-        "--backend",
-        choices=["numpy", "torch", "auto"],
-        default="numpy",
-        help=("Array backend for the ALM optimisation loop.  'auto' selects Torch with CUDA/MPS when available."),
-    )
-    compute_group.add_argument(
-        "--device",
-        metavar="DEVICE",
-        default=None,
-        help=("PyTorch device string (e.g. 'cuda:0', 'mps', 'cpu').  Ignored when --backend=numpy."),
-    )
-
-    # --- Misc ---
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        default=False,
-        help="Print progress bars and iteration statistics.",
-    )
-
-    return parser
+    _add_backend_args(p)
+    p.add_argument("--verbose", action="store_true", default=False, help="Print progress bars and iteration statistics.")
 
 
-def main(argv: list[str] | None = None) -> int:
-    r"""
-    Entry point for the ``basic_shading_correction`` command.
-
-    Parses command-line arguments, runs the BaSiC estimator on the input
-    image stack, then saves the shading-corrected images to the output
-    directory.
-
-    Parameters
-    ----------
-    argv : list of str or None
-        Argument list.  ``None`` uses ``sys.argv[1:]``.
-
-    Returns
-    -------
-    int
-        Exit code (0 on success, non-zero on error).
-
-    Examples
-    --------
-    Run from the shell::
-
-        basic_shading_correction \\
-            --input /data/tiles \\
-            --output /data/corrected \\
-            --estimate-darkfield \\
-            --backend auto \\
-            --verbose
-    """
-    parser = _build_arg_parser()
-    args = parser.parse_args(argv)
-
+def _run_correct(args: argparse.Namespace) -> int:
     input_dir: Path = args.input
     output_dir: Path = args.output
 
     if not input_dir.is_dir():
-        parser.error(f"--input '{input_dir}' is not an existing directory.")
+        print(f"error: --input '{input_dir}' is not an existing directory.", file=sys.stderr)
+        return 1
 
     from linum_basic.core import BaSiC
 
@@ -148,8 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         backend=args.backend,
         device=args.device,
     )
-    model.prepare()
-    model.run()
+    model.run()  # auto-calls prepare()
     model.write_images(output_dir)
 
     if args.verbose:
@@ -159,85 +98,61 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# basic_fit entry point
+# Sub-command: fit
 # ---------------------------------------------------------------------------
 
 
-def _build_fit_parser() -> argparse.ArgumentParser:
-    """Argument parser for ``basic_fit``."""
-    parser = argparse.ArgumentParser(
-        prog="basic_fit",
-        description="Fit BaSiC flat/dark-fields on an OME-Zarr mosaic grid.",
+def _add_fit_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    p = subs.add_parser(
+        "fit",
+        help="Fit BaSiC flat/dark-fields on an OME-Zarr mosaic grid.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    io_group = parser.add_argument_group("I/O")
-    io_group.add_argument("--input", metavar="ZARR", required=True, type=Path, help="Path to the input .ome.zarr mosaic.")
-    io_group.add_argument(
-        "--output", metavar="ZARR", required=True, type=Path, help="Path to write the corrected .ome.zarr mosaic."
-    )
-    io_group.add_argument(
+
+    io = p.add_argument_group("I/O")
+    io.add_argument("--input", metavar="ZARR", required=True, type=Path, help="Path to the input .ome.zarr mosaic.")
+    io.add_argument("--output", metavar="ZARR", required=True, type=Path, help="Path to write the corrected .ome.zarr mosaic.")
+    io.add_argument(
         "--save-fields", metavar="DIR", default=None, type=Path, help="Directory to save flat/dark-field arrays as .npy files."
     )
 
-    alg_group = parser.add_argument_group("Algorithm")
-    alg_group.add_argument("--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1).")
-    alg_group.add_argument(
+    alg = p.add_argument_group("Algorithm")
+    alg.add_argument("--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1).")
+    alg.add_argument(
         "--estimate-darkfield",
         action="store_true",
         default=False,
         help="Estimate the dark-field in addition to the flat-field.",
     )
-    alg_group.add_argument(
+    alg.add_argument(
         "--field-mode",
         choices=["per-z", "global"],
         default="per-z",
-        help=("'per-z': fit one field per z-level (recommended for OCT). 'global': average all per-z fields."),
+        help="'per-z': fit one field per z-level. 'global': average all per-z fields.",
     )
-    alg_group.add_argument(
-        "--z-indices", metavar="Z", nargs="+", type=int, default=None, help="Z-levels to fit (default: all)."
-    )
+    alg.add_argument("--z-indices", metavar="Z", nargs="+", type=int, default=None, help="Z-levels to fit (default: all).")
 
-    compute_group = parser.add_argument_group("Compute")
-    compute_group.add_argument(
-        "--backend", choices=["numpy", "torch", "auto"], default="numpy", help="Array backend for the ALM loop."
-    )
-    compute_group.add_argument(
-        "--device", metavar="DEVICE", default=None, help="PyTorch device string (ignored for --backend=numpy)."
-    )
-    compute_group.add_argument(
+    _add_backend_args(p)
+    p.add_argument(
         "--n-jobs",
         metavar="N",
         type=int,
         default=None,
-        help="Worker processes for parallel z-level fitting (default: CPU count - 2; forced to 1 on GPU).",
+        help="Worker processes for parallel z-level fitting (default: CPU count - 2).",
     )
-
-    parser.add_argument("--verbose", action="store_true", default=False, help="Show progress bars.")
-    return parser
+    p.add_argument("--verbose", action="store_true", default=False, help="Show progress bars.")
 
 
-def fit_main(argv: list[str] | None = None) -> int:
-    """Entry point for the ``basic_fit`` command.
-
-    Parameters
-    ----------
-    argv : list of str or None
-        Command-line arguments.  ``None`` reads from ``sys.argv``.
-
-    Returns
-    -------
-    int
-        Exit code (0 on success).
-    """
-    parser = _build_fit_parser()
-    args = parser.parse_args(argv)
-
+def _run_fit(args: argparse.Namespace) -> int:
     from linum_basic.fit import fit_mosaic, save_corrected
     from linum_basic.mosaic import MosaicGrid
 
     mosaic = MosaicGrid.from_ome_zarr(str(args.input), overlap_fraction=args.overlap)
-
-    basic_kwargs: dict = {"estimate_darkfield": args.estimate_darkfield, "backend": args.backend, "device": args.device}
+    basic_kwargs: dict = {
+        "estimate_darkfield": args.estimate_darkfield,
+        "backend": args.backend,
+        "device": args.device,
+    }
     fit = fit_mosaic(
         mosaic,
         z_indices=args.z_indices,
@@ -265,94 +180,65 @@ def fit_main(argv: list[str] | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# basic_tune entry point
+# Sub-command: tune
 # ---------------------------------------------------------------------------
 
 
-def _build_tune_parser() -> argparse.ArgumentParser:
-    """Argument parser for ``basic_tune``."""
-    parser = argparse.ArgumentParser(
-        prog="basic_tune",
-        description="Tune BaSiC hyperparameters on an OME-Zarr mosaic using Optuna.",
+def _add_tune_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    p = subs.add_parser(
+        "tune",
+        help="Tune BaSiC hyperparameters on an OME-Zarr mosaic using Optuna.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    io_group = parser.add_argument_group("I/O")
-    io_group.add_argument("--input", metavar="ZARR", required=True, type=Path, help="Path to the input .ome.zarr mosaic.")
-    io_group.add_argument(
+
+    io = p.add_argument_group("I/O")
+    io.add_argument("--input", metavar="ZARR", required=True, type=Path, help="Path to the input .ome.zarr mosaic.")
+    io.add_argument(
         "--out-json", metavar="FILE", default=None, type=Path, help="Write best hyperparameters as JSON to this file."
     )
-    io_group.add_argument(
+    io.add_argument(
         "--apply", metavar="ZARR", default=None, type=Path, help="If set, run a full-z fit with the best params and save here."
     )
 
-    tuning_group = parser.add_argument_group("Tuning")
-    tuning_group.add_argument("--n-trials", metavar="N", type=int, default=50, help="Number of Optuna trials.")
-    tuning_group.add_argument("--z-subsample", metavar="N", type=int, default=4, help="Z-levels evaluated per trial.")
-    tuning_group.add_argument("--storage", metavar="URL", default=None, help="Optuna storage URL, e.g. sqlite:///tune.db.")
-    tuning_group.add_argument(
+    tuning = p.add_argument_group("Tuning")
+    tuning.add_argument("--n-trials", metavar="N", type=int, default=50, help="Number of Optuna trials.")
+    tuning.add_argument("--z-subsample", metavar="N", type=int, default=4, help="Z-levels evaluated per trial.")
+    tuning.add_argument("--storage", metavar="URL", default=None, help="Optuna storage URL, e.g. sqlite:///tune.db.")
+    tuning.add_argument(
         "--study-name", metavar="NAME", default="basic-tune", help="Optuna study name (for persistent storage)."
     )
-    tuning_group.add_argument("--seed", metavar="N", type=int, default=0, help="Random seed for reproducibility.")
-    tuning_group.add_argument(
-        "--n-jobs",
-        metavar="N",
-        type=int,
-        default=None,
-        help="Worker threads for z-level evaluation within each trial (default: CPU count - 2; 1 enables pruning).",
+    tuning.add_argument("--seed", metavar="N", type=int, default=0, help="Random seed for reproducibility.")
+    tuning.add_argument(
+        "--n-jobs", metavar="N", type=int, default=None, help="Worker threads for z-level evaluation within each trial."
     )
-    tuning_group.add_argument(
+    tuning.add_argument(
         "--max-tiles",
         metavar="N",
         type=int,
         default=64,
         help="Tiles (evenly spaced) used for the seam metric per trial. Use 0 for all tiles.",
     )
-    tuning_group.add_argument(
+    tuning.add_argument(
         "--n-extra-rows",
         metavar="N",
         type=int,
         default=0,
         help="Leading rows per tile to drop before fitting (galvo fly-back artefact).",
     )
-    tuning_group.add_argument(
-        "--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1)."
+    tuning.add_argument("--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1).")
+
+    backend = p.add_argument_group("Backend")
+    backend.add_argument(
+        "--backend", metavar="NAME", default="numpy", choices=["numpy", "torch"], help="Compute backend ('numpy' or 'torch')."
+    )
+    backend.add_argument(
+        "--device", metavar="DEV", default=None, help="Torch device string, e.g. 'cuda:0'. Ignored when --backend=numpy."
     )
 
-    backend_group = parser.add_argument_group("Backend")
-    backend_group.add_argument(
-        "--backend",
-        metavar="NAME",
-        default="numpy",
-        choices=["numpy", "torch"],
-        help="Compute backend ('numpy' or 'torch').",
-    )
-    backend_group.add_argument(
-        "--device",
-        metavar="DEV",
-        default=None,
-        help="Torch device string, e.g. 'cuda:0'. Ignored when --backend=numpy.",
-    )
-
-    parser.add_argument("--verbose", action="store_true", default=False, help="Enable Optuna logging and progress bars.")
-    return parser
+    p.add_argument("--verbose", action="store_true", default=False, help="Enable Optuna logging and progress bars.")
 
 
-def tune_main(argv: list[str] | None = None) -> int:
-    """Entry point for the ``basic_tune`` command.
-
-    Parameters
-    ----------
-    argv : list of str or None
-        Command-line arguments.  ``None`` reads from ``sys.argv``.
-
-    Returns
-    -------
-    int
-        Exit code (0 on success).
-    """
-    parser = _build_tune_parser()
-    args = parser.parse_args(argv)
-
+def _run_tune(args: argparse.Namespace) -> int:
     from linum_basic.mosaic import MosaicGrid
     from linum_basic.tuning import tune
 
@@ -401,59 +287,39 @@ def tune_main(argv: list[str] | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# basic_preview entry point
+# Sub-command: preview
 # ---------------------------------------------------------------------------
 
 
-def _build_preview_parser() -> argparse.ArgumentParser:
-    """Argument parser for ``basic_preview``."""
-    parser = argparse.ArgumentParser(
-        prog="basic_preview",
-        description="Render an average-intensity-projection PNG preview of an OME-Zarr volume.",
+def _add_preview_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    p = subs.add_parser(
+        "preview",
+        help="Render an average-intensity-projection PNG preview of an OME-Zarr volume.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    io_group = parser.add_argument_group("I/O")
-    io_group.add_argument("--input", metavar="ZARR", required=True, type=Path, help="Path to the input .ome.zarr volume.")
-    io_group.add_argument("--output", metavar="PNG", required=True, type=Path, help="Path to write the preview PNG.")
 
-    proj_group = parser.add_argument_group("Projection")
-    proj_group.add_argument("--axis", metavar="N", type=int, default=0, help="Axis to average over (0 = depth/z).")
-    proj_group.add_argument(
+    io = p.add_argument_group("I/O")
+    io.add_argument("--input", metavar="ZARR", required=True, type=Path, help="Path to the input .ome.zarr volume.")
+    io.add_argument("--output", metavar="PNG", required=True, type=Path, help="Path to write the preview PNG.")
+
+    proj = p.add_argument_group("Projection")
+    proj.add_argument("--axis", metavar="N", type=int, default=0, help="Axis to average over (0 = depth/z).")
+    proj.add_argument(
         "--percentile", metavar="P", type=float, default=99.5, help="Upper display percentile for contrast (0-100)."
     )
-    proj_group.add_argument("--cmap", metavar="NAME", default="viridis", help="Matplotlib colormap name.")
-    proj_group.add_argument("--title", metavar="TEXT", default=None, help="Optional figure title.")
-    proj_group.add_argument("--dpi", metavar="N", type=int, default=200, help="Output resolution in dots per inch.")
+    proj.add_argument("--cmap", metavar="NAME", default="viridis", help="Matplotlib colormap name.")
+    proj.add_argument("--title", metavar="TEXT", default=None, help="Optional figure title.")
+    proj.add_argument("--dpi", metavar="N", type=int, default=200, help="Output resolution in dots per inch.")
 
-    parser.add_argument("--verbose", action="store_true", default=False, help="Print progress information.")
-    return parser
+    p.add_argument("--verbose", action="store_true", default=False, help="Print progress information.")
 
 
-def preview_main(argv: list[str] | None = None) -> int:
-    """Entry point for the ``basic_preview`` command.
-
-    Renders a 2-D average-intensity projection of an OME-Zarr volume as a PNG,
-    suitable for a quick visual check of processed data.
-
-    Parameters
-    ----------
-    argv : list of str or None
-        Command-line arguments.  ``None`` reads from ``sys.argv``.
-
-    Returns
-    -------
-    int
-        Exit code (0 on success).
-    """
-    parser = _build_preview_parser()
-    args = parser.parse_args(argv)
-
+def _run_preview(args: argparse.Namespace) -> int:
     from linum_basic import viz
     from linum_basic.io.zarr import load_ome_zarr
 
     volume, axes, scale = load_ome_zarr(args.input)
 
-    # In-plane pixel size (mm) from the non-projected spatial axes.
     pixel_size_mm: float | None = None
     in_plane = [s for i, s in enumerate(scale) if i != args.axis]
     if in_plane:
@@ -473,6 +339,62 @@ def preview_main(argv: list[str] | None = None) -> int:
         print(f"Saved preview to '{args.output}' (axes={axes}, scale={scale}).")
 
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for the ``basic`` command.
+
+    Dispatches to one of four sub-commands: ``correct``, ``fit``, ``tune``,
+    or ``preview``.
+
+    Parameters
+    ----------
+    argv : list of str or None
+        Argument list.  ``None`` reads from ``sys.argv[1:]``.
+
+    Returns
+    -------
+    int
+        Exit code (0 on success, non-zero on error).
+
+    Examples
+    --------
+    Run from the shell::
+
+        basic correct \\
+            --input /data/tiles \\
+            --output /data/corrected \\
+            --estimate-darkfield \\
+            --backend auto \\
+            --verbose
+    """
+    parser = argparse.ArgumentParser(
+        prog="basic",
+        description="Linum BaSiC shading correction toolkit.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    subs = parser.add_subparsers(dest="subcommand", metavar="COMMAND")
+    subs.required = True
+
+    _add_correct_subcommand(subs)
+    _add_fit_subcommand(subs)
+    _add_tune_subcommand(subs)
+    _add_preview_subcommand(subs)
+
+    args = parser.parse_args(argv)
+
+    dispatch = {
+        "correct": _run_correct,
+        "fit": _run_fit,
+        "tune": _run_tune,
+        "preview": _run_preview,
+    }
+    return dispatch[args.subcommand](args)
 
 
 if __name__ == "__main__":

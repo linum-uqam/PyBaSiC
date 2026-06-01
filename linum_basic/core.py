@@ -13,9 +13,11 @@ References
 
 from __future__ import annotations
 
+import warnings
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import cv2
 import numpy as np
@@ -130,22 +132,19 @@ class BaSiC:
     Estimate flat-field from a directory of TIFF tiles:
 
     >>> model = BaSiC("/path/to/tiles", estimate_darkfield=True)
-    >>> model.prepare()
-    >>> model.run()
+    >>> model.run()  # prepare() is called automatically
     >>> flatfield = model.get_flatfield()
 
-    Use an existing NumPy stack:
+    One-liner chaining with a NumPy stack:
 
     >>> import numpy as np
     >>> stack = np.random.rand(50, 512, 512).astype(np.float32)
-    >>> model = BaSiC(stack)
-    >>> model.prepare()
-    >>> model.run()
+    >>> flatfield = BaSiC(stack).run().get_flatfield()
     """
 
     def __init__(
         self,
-        input: str | Path | list[str | Path] | list[NDArray] | NDArray,
+        input: str | Path | Sequence[str | Path] | list[NDArray] | NDArray,
         *,
         estimate_darkfield: bool = False,
         extension: str = ".tif",
@@ -196,49 +195,7 @@ class BaSiC:
         self.flatfield_fullsize: NDArray = np.ones((1, 1), dtype=np.float32)
         self.darkfield_fullsize: NDArray = np.zeros((1, 1), dtype=np.float32)
         self._alm_state: dict | None = None  # warm-start state for outer reweighting
-
-    # ------------------------------------------------------------------
-    # Factory classmethods
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def from_array(cls, stack: NDArray, **kwargs: Any) -> BaSiC:
-        """Construct a :class:`BaSiC` instance directly from an image array.
-
-        Parameters
-        ----------
-        stack : numpy.ndarray, shape (N, H, W)
-            Pre-loaded image stack.
-        **kwargs
-            Forwarded to :class:`BaSiC.__init__`.
-        """
-        return cls(stack, **kwargs)
-
-    @classmethod
-    def from_directory(cls, path: str | Path, **kwargs: Any) -> BaSiC:
-        """Construct a :class:`BaSiC` instance from a directory of images.
-
-        Parameters
-        ----------
-        path : str or Path
-            Directory containing image files.
-        **kwargs
-            Forwarded to :class:`BaSiC.__init__`.
-        """
-        return cls(path, **kwargs)
-
-    @classmethod
-    def from_files(cls, file_list: list[str | Path], **kwargs: Any) -> BaSiC:
-        """Construct a :class:`BaSiC` instance from an explicit file list.
-
-        Parameters
-        ----------
-        file_list : list of str or Path
-            Ordered list of image file paths.
-        **kwargs
-            Forwarded to :class:`BaSiC.__init__`.
-        """
-        return cls(file_list, **kwargs)
+        self._prepared: bool = False
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -289,11 +246,14 @@ class BaSiC:
                 return cv2.imread(str(path), cv2.IMREAD_ANYDEPTH)
 
             with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                raw_iter = pool.map(_read_one, self.files)
+                raw_list: list[NDArray | None] = list(pool.map(_read_one, self.files))
+            failed = [str(p) for p, img in zip(self.files, raw_list, strict=False) if img is None]
+            if failed:
+                msg = f"Failed to read {len(failed)} image file(s):\n" + "\n".join(failed)
+                raise RuntimeError(msg)
             if self.verbose:
-                raw_iter = tqdm(raw_iter, desc="Loading images", total=len(self.files), leave=False)
-            raw: list[NDArray] = [img for img in raw_iter if img is not None]
-            self.img_stack = np.array(raw)
+                raw_list = list(tqdm(raw_list, desc="Loading images", total=len(self.files), leave=False))
+            self.img_stack = np.array(raw_list)
 
         self.n_images = self.img_stack.shape[0]
         self.image_shape = self.img_stack.shape[1:]
@@ -363,6 +323,7 @@ class BaSiC:
         self._flag_reweighting = True
         self.reweighting_iteration = 0
         self._alm_state: dict | None = None  # reset warm-start state
+        self._prepared = True
 
     def update_weights(self) -> None:
         """Update the reweighting matrix for the next ALM iteration.
@@ -438,24 +399,28 @@ class BaSiC:
         ):
             self._flag_reweighting = False
 
-    def run(self) -> None:
+    def run(self) -> BaSiC:
         """Run the full BaSiC optimisation loop.
 
-        Calls :meth:`update` iteratively (reweighted ALM) until the
-        convergence criterion is met or :attr:`max_reweighting_iterations`
-        is reached.  After convergence the flat-field and dark-field are
-        up-sampled back to the original image resolution.
+        If :meth:`prepare` has not been called yet it is called automatically
+        before the optimisation begins.  After convergence the flat-field and
+        dark-field are up-sampled back to the original image resolution.
+
+        Returns
+        -------
+        BaSiC
+            *self*, enabling method chaining::
+
+                flatfield = BaSiC(stack).run().get_flatfield()
 
         See Also
         --------
         linum_basic.algorithms.inexact_alm_l1 : Inner ALM solver.
         linum_basic.core.BaSiC.normalize : Apply the estimated correction.
         linum_basic.core.BaSiC.write_images : Write corrected images to disk.
-
-        Notes
-        -----
-        :meth:`prepare` must be called before this method.
         """
+        if not self._prepared:
+            self.prepare()
         if self.verbose:
             pbar: tqdm | None = tqdm(desc="Reweighting", total=self.max_reweighting_iterations, leave=False)
         else:
@@ -472,6 +437,50 @@ class BaSiC:
         self.flatfield_fullsize = cv2.resize(self.flatfield, (w, h), interpolation=cv2.INTER_LINEAR)
         self.flatfield_fullsize = self.flatfield_fullsize / (self.flatfield_fullsize.mean() + 1e-9)
         self.darkfield_fullsize = cv2.resize(self.darkfield, (w, h), interpolation=cv2.INTER_LINEAR)
+
+        self.validate_fields()
+        return self
+
+    @staticmethod
+    def _apply_correction(
+        img_f32: NDArray,
+        flatfield: NDArray,
+        darkfield: NDArray,
+        epsilon: float,
+        original_dtype: np.dtype,
+        *,
+        clip: bool = True,
+    ) -> NDArray:
+        """Apply ``(img - darkfield) / (flatfield + ε)`` with optional clipping.
+
+        Works on a single image or a stack; numpy broadcasting handles both.
+
+        Parameters
+        ----------
+        img_f32 : numpy.ndarray, float32
+            Image or stack already cast to ``float32``.
+        flatfield : numpy.ndarray
+            Flat-field with spatial shape matching *img_f32*.
+        darkfield : numpy.ndarray
+            Dark-field with spatial shape matching *img_f32*.
+        epsilon : float
+            Stability constant.
+        original_dtype : numpy.dtype
+            Original image dtype; used for integer clipping and final cast.
+        clip : bool
+            Clip result to the valid range of *original_dtype* when it is an
+            integer type.
+
+        Returns
+        -------
+        numpy.ndarray
+            Corrected image (or stack) with dtype matching *original_dtype*.
+        """
+        corrected = (img_f32 - darkfield) / (flatfield + epsilon)
+        if clip and original_dtype not in (np.float32, np.float64):
+            info = np.iinfo(original_dtype)
+            corrected = np.clip(corrected, info.min, info.max)
+        return corrected.astype(original_dtype)
 
     def normalize(self, img: NDArray, *, clip: bool = True, epsilon: float = 1e-6) -> NDArray:
         """Apply the estimated shading correction to a single image.
@@ -496,11 +505,43 @@ class BaSiC:
         numpy.ndarray
             Corrected image with the same shape and dtype as *img*.
         """
-        corrected = (img.astype(np.float32) - self.darkfield_fullsize) / (self.flatfield_fullsize + epsilon)
-        if clip and img.dtype not in (np.float32, np.float64):
-            info = np.iinfo(img.dtype)
-            corrected = np.clip(corrected, info.min, info.max)
-        return corrected.astype(img.dtype)
+        return self._apply_correction(
+            img.astype(np.float32),
+            self.flatfield_fullsize,
+            self.darkfield_fullsize,
+            epsilon,
+            img.dtype,
+            clip=clip,
+        )
+
+    def validate_fields(self) -> None:
+        """Check that estimated fields are physically plausible.
+
+        Issues a :class:`UserWarning` (does not raise) when:
+
+        * The flat-field contains non-finite values (NaN or Inf).
+        * The flat-field contains non-positive values (would cause invalid
+          pixel values after correction).
+        * The dark-field contains non-finite values.
+        """
+        if not np.all(np.isfinite(self.flatfield_fullsize)):
+            warnings.warn(
+                "Estimated flat-field contains non-finite values (NaN/Inf).",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif np.any(self.flatfield_fullsize <= 0):
+            warnings.warn(
+                "Estimated flat-field contains non-positive values; correction may produce invalid pixels.",
+                UserWarning,
+                stacklevel=2,
+            )
+        if not np.all(np.isfinite(self.darkfield_fullsize)):
+            warnings.warn(
+                "Estimated dark-field contains non-finite values (NaN/Inf).",
+                UserWarning,
+                stacklevel=2,
+            )
 
     def write_images(self, directory: str | Path, epsilon: float = 1e-6) -> None:
         """Save shading-corrected images to *directory*.
@@ -521,17 +562,30 @@ class BaSiC:
         is inferred from the output filename extension (inherited from the
         input filenames).
         """
+        if not hasattr(self, "files"):
+            msg = (
+                "write_images() is only available when BaSiC was constructed from a directory or file list "
+                "so that output filenames can be inferred from the input names."
+            )
+            raise RuntimeError(msg)
+        if len(self.files) != self.n_images:
+            msg = (
+                f"Number of input files ({len(self.files)}) does not match the loaded image count "
+                f"({self.n_images}).  Some images may have failed to load."
+            )
+            raise RuntimeError(msg)
+
         out_dir = Path(directory)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Vectorised normalisation over the whole stack at once, then
-        # parallel write (cv2.imwrite releases the GIL).
-        stack_f32 = self.img_stack.astype(np.float32)
-        corrected_stack = (stack_f32 - self.darkfield_fullsize) / (self.flatfield_fullsize + epsilon)
-        if self.img_stack.dtype not in (np.float32, np.float64):
-            info = np.iinfo(self.img_stack.dtype)
-            corrected_stack = np.clip(corrected_stack, info.min, info.max)
-        corrected_stack = corrected_stack.astype(self.img_stack.dtype)
+        # Vectorised correction over the whole stack, then parallel write.
+        corrected_stack = self._apply_correction(
+            self.img_stack.astype(np.float32),
+            self.flatfield_fullsize,
+            self.darkfield_fullsize,
+            epsilon,
+            self.img_stack.dtype,
+        )
 
         def _write_one(i: int) -> None:
             cv2.imwrite(str(out_dir / self.files[i].name), corrected_stack[i])
@@ -542,41 +596,32 @@ class BaSiC:
     def set_flatfield(self, flatfield: NDArray) -> None:
         """Override the estimated flat-field with a pre-computed one.
 
-        The supplied array is resized to match the loaded image dimensions.
+        The supplied array is resized to match the loaded image dimensions
+        using OpenCV's ``(width, height)`` convention — the same convention
+        used internally by :meth:`run` when up-sampling the estimated field.
 
         Parameters
         ----------
         flatfield : numpy.ndarray
             2-D flat-field image.
-
-        Notes
-        -----
-        The array is transposed (``flatfield.T``) before resizing to match
-        OpenCV's column-major coordinate convention, then transposed back.
-        The net effect on a symmetric flat-field is invisible; for
-        asymmetric profiles this convention must be kept consistent with
-        :meth:`get_flatfield`.
         """
         h, w = self.image_shape
-        self.flatfield_fullsize = cv2.resize(flatfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
+        self.flatfield_fullsize = cv2.resize(flatfield, (w, h), interpolation=cv2.INTER_LINEAR)
 
     def set_darkfield(self, darkfield: NDArray) -> None:
         """Override the estimated dark-field with a pre-computed one.
 
-        The supplied array is resized to match the loaded image dimensions.
+        The supplied array is resized to match the loaded image dimensions
+        using OpenCV's ``(width, height)`` convention — the same convention
+        used internally by :meth:`run`.
 
         Parameters
         ----------
         darkfield : numpy.ndarray
             2-D dark-field image.
-
-        Notes
-        -----
-        The array is transposed (``darkfield.T``) before resizing, matching
-        the convention of :meth:`set_flatfield`.
         """
         h, w = self.image_shape
-        self.darkfield_fullsize = cv2.resize(darkfield.T, (w, h), interpolation=cv2.INTER_LINEAR).T
+        self.darkfield_fullsize = cv2.resize(darkfield, (w, h), interpolation=cv2.INTER_LINEAR)
 
     def get_flatfield(self) -> NDArray:
         """Return a copy of the full-resolution estimated flat-field.

@@ -180,7 +180,7 @@ html_theme_options["secondary_sidebar_items"] = {
 
 html_context = {
     "github_user": "linum-uqam",
-    "github_repo": "linum-basic",
+    "github_repo": "Linum-BaSiC",
     "github_version": "dev",
     "doc_path": "docs",
 }

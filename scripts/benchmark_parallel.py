@@ -43,8 +43,6 @@ if TYPE_CHECKING:
 # Helpers
 # ---------------------------------------------------------------------------
 
-_DEFAULT_ZARR = "/Users/Frans/Downloads/sub-22/mosaic_grid_z27_focal_fix.ome.zarr"
-_REMOTE_ZARR = "/scratch/workspace/work/39/54980bc5b27aafd392f2135aabcd94/mosaic_grid_z27_focal_fix.ome.zarr"
 _WORKER_COUNTS = [1, 2, 4, 6, 10]
 
 
@@ -189,17 +187,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         path = args.input
         if path is None:
-            # Auto-detect
-            for candidate in [_DEFAULT_ZARR, _REMOTE_ZARR]:
-                if Path(candidate).exists():
-                    path = candidate
-                    break
-            if path is None:
-                print(
-                    "No zarr file found. Pass --input PATH or --synthetic.",
-                    file=sys.stderr,
-                )
-                return 1
+            print(
+                "No zarr file specified. Pass --input PATH or use --synthetic.",
+                file=sys.stderr,
+            )
+            return 1
         print(f"Loading mosaic from {path} …")
         mosaic = _load_real_mosaic(path)
         data_source = path

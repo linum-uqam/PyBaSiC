@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
 """Run the vignette validation tests and save their diagnostic figures.
 
 This script does not duplicate the test pipeline.  It simply invokes pytest
 on ``tests/test_vignette_validation.py`` with ``LINUM_BASIC_VIGNETTE_ARTIFACT_DIR``
-set, which causes each test to write a 6-panel PNG into the output directory.
+set, which causes each test to write a 9-panel PNG into the output directory.
 
 The exit code matches pytest's: 0 on success, non-zero on test failure (so the
 figures reflect whatever the algorithm is actually doing today, including

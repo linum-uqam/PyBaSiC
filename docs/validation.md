@@ -28,7 +28,7 @@ primary end-to-end validation of the BaSiC algorithm:
    [sbh-simulator](https://github.com/linum-uqam/sbh_simulator)'s
    `sbh-vignette` CLI (Gaussian or Zernike radial profile on a 128 × 128
    grid).
-2. **Tile a source image** (`tests/data/source_image.jpg`) into 128 × 128
+2. **Tile a source image** (`linum_basic/data/source_image.jpg`) into 128 × 128
    non-overlapping patches.
 3. **Corrupt each patch** by multiplying with the vignette to simulate
    non-uniform illumination.
@@ -43,11 +43,8 @@ The test is automatically **skipped** when `sbh-vignette` cannot be found.
 To run it:
 
 ```bash
-# Option A: install sbh_simulator into the same environment
+# Install sbh_simulator into the same environment
 pip install git+https://github.com/linum-uqam/sbh_simulator.git
-
-# Option B: set SBH_SIMULATOR_HOME to its install directory
-export SBH_SIMULATOR_HOME=/path/to/sbh_simulator
 ```
 
 Then:

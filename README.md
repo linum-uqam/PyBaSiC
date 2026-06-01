@@ -6,7 +6,7 @@
 [![codecov](https://codecov.io/gh/linum-uqam/Linum-BaSiC/branch/master/graph/badge.svg)](https://codecov.io/gh/linum-uqam/Linum-BaSiC)
 [![Documentation](https://readthedocs.org/projects/linum-basic/badge/?version=latest)](https://linum-basic.readthedocs.io/en/latest/)
 [![Python](https://img.shields.io/badge/python-3.14%2B-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: GPLv3+](https://img.shields.io/badge/License-GPLv3%2B-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 [![DOI](https://zenodo.org/badge/219489337.svg)](https://zenodo.org/badge/latestdoi/219489337)
 
 * **Documentation**: https://linum-basic.readthedocs.io
@@ -42,7 +42,7 @@ This creates an isolated virtual environment and installs all required dependenc
 ### 3. Run on your data
 
 ```bash
-basic_shading_correction --input /path/to/tiles --output /path/to/corrected
+basic correct --input /path/to/tiles --output /path/to/corrected
 ```
 
 Or from Python:
@@ -102,7 +102,7 @@ uv run pre-commit install         # install git hooks
 ### Command-line
 
 ```bash
-basic_shading_correction \
+basic correct \
     --input  /path/to/tiles \
     --output /path/to/corrected \
     --extension .tif \
@@ -114,12 +114,12 @@ basic_shading_correction \
 Full argument reference:
 
 ```
-usage: basic_shading_correction [-h] --input DIR --output DIR
-                                 [--extension EXT]
-                                 [--estimate-darkfield]
-                                 [--backend {numpy,torch,auto}]
-                                 [--device DEVICE]
-                                 [--verbose]
+usage: basic correct [-h] --input DIR --output DIR
+                     [--extension EXT]
+                     [--estimate-darkfield]
+                     [--backend {numpy,torch,auto}]
+                     [--device DEVICE]
+                     [--verbose]
 
 options:
   --input DIR           Directory containing the input image stack.

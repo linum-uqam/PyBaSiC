@@ -124,13 +124,13 @@ Bottom row: BaSiC-corrected tile, estimated flat-field, estimated dark-field.
 
 ## Command-line interface
 
-linum-basic ships a `basic_shading_correction` command installed into the
+linum-basic ships a `basic` command installed into the
 Python environment's `bin/`:
 
 ```bash
-basic_shading_correction --input /path/to/tiles \
-                         --output /path/to/corrected \
-                         --estimate-darkfield
+basic correct --input /path/to/tiles \
+              --output /path/to/corrected \
+              --estimate-darkfield
 ```
 
 See the [CLI reference](cli.rst) for a full list of flags.

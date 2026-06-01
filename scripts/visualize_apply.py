@@ -28,7 +28,7 @@ from linum_basic.fit import MosaicFit, apply_fit, fit_mosaic
 from linum_basic.metrics import seam_l1
 from linum_basic.mosaic import MosaicGrid
 
-_DEFAULT_ZARR = "/Users/Frans/Downloads/sub-22/mosaic_grid_z27_focal_fix.ome.zarr"
+_DEFAULT_ZARR = None
 _DEFAULT_OUT = "apply_correction.png"
 
 
@@ -91,10 +91,10 @@ def _build_figure(
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--input", default=_DEFAULT_ZARR, help="Path to the OME-Zarr mosaic.")
+    parser.add_argument("--input", required=True, help="Path to the OME-Zarr mosaic.")
     parser.add_argument("--z-inspect", type=int, default=27, help="Z-level to fit and display.")
     parser.add_argument("--overlap", type=float, default=0.2, help="Physical tile-overlap fraction (0-1).")
-    parser.add_argument("--params-json", default=None, help="JSON file with BaSiC hyperparameters (output of basic_tune).")
+    parser.add_argument("--params-json", default=None, help="JSON file with BaSiC hyperparameters (output of `basic tune`)")
     parser.add_argument("--working-size", type=int, default=None, help="BaSiC working resolution (overrides --params-json).")
     parser.add_argument(
         "--epsilon", type=float, default=None, help="BaSiC reweighting stability constant (overrides --params-json)."

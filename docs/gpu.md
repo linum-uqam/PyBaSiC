@@ -57,7 +57,7 @@ can be backend-agnostic:
 
 | Operation | NumPy | Torch |
 |---|---|---|
-| DCT / IDCT | `scipy.fft.dctn` | custom `_torch_dctn` (Walsh-Hadamard) |
+| DCT / IDCT | `scipy.fft.dctn` | custom `_torch_dctn` (FFT-based DCT-II/III) |
 | Sign | `numpy.sign` | `torch.sign` |
 | Absolute value | `numpy.abs` | `torch.abs` |
 | Maximum | `numpy.maximum` | `torch.maximum` |
