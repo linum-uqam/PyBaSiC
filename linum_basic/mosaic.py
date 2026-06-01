@@ -286,11 +286,25 @@ class MosaicGrid:
         # Load array into memory
         array, _axes, _scale = load_ome_zarr(path)
 
-        # Infer tile shape from chunk grid of level-0 array
+        # Infer tile shape from chunk grid of level-0 array.
+        # Resolve the level-0 sub-path via OME-NGFF metadata rather than
+        # hardcoding "s0" (which is Zarr v2 convention; Zarr v3 uses "0").
         from pathlib import Path as _Path
 
-        s0_path = _Path(path) / "s0"
-        arr_meta = zarr.open_array(str(s0_path), mode="r")
+        from ome_zarr.io import parse_url
+        from ome_zarr.reader import Multiscales, Reader
+
+        node = parse_url(str(path))
+        if node is None:
+            raise FileNotFoundError(f"Not a valid OME-Zarr store: {path}")
+        reader = Reader(node)
+        image_node = next(iter(reader()))
+        level0_subpath = "s0"  # fallback
+        for spec in image_node.specs:
+            if isinstance(spec, Multiscales):
+                level0_subpath = spec.datasets[0]
+                break
+        arr_meta = zarr.open_array(str(_Path(path) / level0_subpath), mode="r")
         chunk_shape = arr_meta.chunks  # tuple, e.g. (55, 75, 75)
         tile_shape: tuple[int, int] = (int(chunk_shape[-2]), int(chunk_shape[-1]))
 
