@@ -33,14 +33,6 @@ from pathlib import Path
 
 import numpy as np
 
-_DEFAULT_ZARR = "/Users/Frans/Downloads/sub-22/mosaic_grid_z27_focal_fix.ome.zarr"
-_DEFAULT_OUT = str(Path(_DEFAULT_ZARR).parent / "seam_curvature.png")
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -49,13 +41,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--input",
-        default=_DEFAULT_ZARR,
+        required=True,
         metavar="ZARR",
-        help="Path to the OME-Zarr mosaic (default: %(default)s).",
+        help="Path to the OME-Zarr mosaic.",
     )
     p.add_argument(
         "--output",
-        default=_DEFAULT_OUT,
+        default="seam_curvature.png",
         metavar="PNG",
         help="Output PNG path (default: %(default)s).",
     )

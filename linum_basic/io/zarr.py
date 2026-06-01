@@ -1,9 +1,9 @@
-"""OME-Zarr I/O for linum-basic (read / write single-scale volumes).
+"""OME-Zarr I/O for linum-basic.
 
+Read and write OME-Zarr v0.5 image pyramids via the ``ome-zarr`` library.
+The write path supports multi-resolution pyramids via the *n_levels* parameter.
 Only the minimal surface needed by :mod:`linum_basic.fit` and the
-``basic fit`` / ``basic tune`` sub-commands is exposed here.  No dependency on
-linumpy is introduced; the implementation follows the same OME-Zarr v0.5
-patterns used by that library.
+``basic fit`` / ``basic tune`` sub-commands is exposed here.
 """
 
 from __future__ import annotations
@@ -14,6 +14,9 @@ from pathlib import Path
 import numpy as np
 import zarr
 import zarr.storage
+from ome_zarr.io import parse_url
+from ome_zarr.reader import Multiscales, Reader
+from ome_zarr.writer import write_image
 
 __all__ = ["load_ome_zarr", "write_ome_zarr"]
 
@@ -29,12 +32,12 @@ def load_ome_zarr(path: str | Path) -> tuple[np.ndarray, list[str], list[float]]
     Returns
     -------
     array : numpy.ndarray
-        The full-resolution volume loaded into memory.
+        The full-resolution volume (level 0) loaded into memory.
     axes : list of str
         Axis names extracted from the multiscale metadata
         (e.g. ``["z", "y", "x"]``).
     scale : list of float
-        Voxel size for each axis at level 0.
+        Physical voxel size for each axis at level 0.
 
     Raises
     ------
@@ -43,43 +46,31 @@ def load_ome_zarr(path: str | Path) -> tuple[np.ndarray, list[str], list[float]]
     ValueError
         If no Multiscales specification is found in the metadata.
     """
-    from ome_zarr.io import parse_url
-    from ome_zarr.reader import Multiscales, Reader
-
     node = parse_url(str(path))
     if node is None:
         raise FileNotFoundError(f"Not a valid OME-Zarr store: {path}")
 
-    reader = Reader(node)
-    nodes = list(reader())
-    image_node = nodes[0]
-
-    multiscale: Multiscales | None = None
-    for spec in image_node.specs:
-        if isinstance(spec, Multiscales):
-            multiscale = spec
-            break
+    image_node = next(iter(Reader(node)()))
+    multiscale: Multiscales | None = next((s for s in image_node.specs if isinstance(s, Multiscales)), None)
     if multiscale is None:
         raise ValueError(f"No Multiscales spec found in: {path}")
 
-    # Axis names
-    axes: list[str] = [ax["name"] for ax in image_node.metadata.get("axes", [])]
-    if not axes:
-        axes = ["z", "y", "x"]  # safe fallback for 3-D volumes
-
     # Level-0 array
-    level0_path = Path(path) / multiscale.datasets[0]
-    arr = zarr.open_array(str(level0_path), mode="r")
+    arr = zarr.open_array(str(Path(path) / multiscale.datasets[0]), mode="r")
     array = np.asarray(arr[:])
 
-    # Voxel scale at level 0
+    # Axes and scale from the OME-Zarr attrs (root.attrs["ome"]["multiscales"][0])
+    root_attrs: dict = dict(zarr.open_group(str(path), mode="r").attrs)  # type: ignore[arg-type]
+    ms_meta: dict = root_attrs.get("ome", {}).get("multiscales", [{}])[0]
+
+    axes_meta = ms_meta.get("axes", [])
+    axes: list[str] = [ax["name"] for ax in axes_meta] if axes_meta else ["z", "y", "x"]
+
     scale: list[float] = [1.0] * array.ndim
-    coord_transforms = image_node.metadata.get("coordinateTransformations", [])
-    if coord_transforms:
-        for tr in coord_transforms[0]:
-            if tr.get("type") == "scale":
-                scale = list(tr["scale"])
-                break
+    for tr in (ms_meta.get("datasets", [{}])[0]).get("coordinateTransformations", []):
+        if tr.get("type") == "scale":
+            scale = list(tr["scale"])
+            break
 
     return array, axes, scale
 
@@ -90,20 +81,34 @@ def write_ome_zarr(
     *,
     axes: list[str],
     scale: list[float],
+    n_levels: int = 1,
+    volumetric: bool = False,
     overwrite: bool = False,
 ) -> None:
-    """Write an array as a single-scale OME-Zarr v0.5 file (zarr format 3).
+    """Write an array as a multi-resolution OME-Zarr v0.5 file.
+
+    Uses :func:`ome_zarr.writer.write_image` to build the image pyramid.
+    Each successive level downsamples by a factor of 2 using the ``resize``
+    method.
 
     Parameters
     ----------
     path : str or Path
         Output path (e.g. ``corrected.ome.zarr``).
     array : numpy.ndarray
-        Volume to write.  Cast to ``float32`` before writing.
+        Volume to write.  Stored as ``float32``.
     axes : list of str
         Axis names, e.g. ``["z", "y", "x"]``.
     scale : list of float
-        Voxel size for each axis.
+        Physical voxel size for each axis at level 0.
+    n_levels : int
+        Number of resolution levels to write (including the full-resolution
+        level 0).  Must be >= 1.  When *n_levels* is 1 (default) a
+        single-scale store is written with no pyramid.
+    volumetric : bool
+        When ``True`` all spatial axes (including ``z``) are downsampled 2x
+        at each pyramid level.  When ``False`` (default) only the in-plane
+        axes (``y``/``x``) are downsampled, keeping the z-stack intact.
     overwrite : bool
         Remove *path* if it already exists.
 
@@ -112,12 +117,15 @@ def write_ome_zarr(
     FileExistsError
         If *path* exists and *overwrite* is ``False``.
     ValueError
-        If *axes* and *scale* lengths do not match *array.ndim*.
+        If *axes* / *scale* lengths do not match *array.ndim*, or
+        *n_levels* < 1.
     """
     if len(axes) != array.ndim or len(scale) != array.ndim:
         raise ValueError(
             f"axes ({len(axes)}) and scale ({len(scale)}) must each have length equal to array.ndim ({array.ndim})."
         )
+    if n_levels < 1:
+        raise ValueError(f"n_levels must be >= 1, got {n_levels}.")
 
     out_path = Path(path)
     if out_path.exists():
@@ -128,23 +136,41 @@ def write_ome_zarr(
 
     store = zarr.storage.LocalStore(str(out_path))
     root = zarr.open_group(store, mode="w", zarr_format=3)
-    root.create_array("s0", data=array.astype(np.float32))
 
     axes_dicts = [{"name": ax, "type": _axis_type(ax), "unit": "millimeter"} for ax in axes]
-    root.attrs["ome"] = {
-        "version": "0.5",
-        "multiscales": [
-            {
-                "datasets": [
-                    {
-                        "path": "s0",
-                        "coordinateTransformations": [{"type": "scale", "scale": list(scale)}],
-                    }
-                ],
-                "axes": axes_dicts,
-            }
-        ],
-    }
+
+    # Build scale_factors for write_image.
+    # volumetric=True: all spatial axes downsampled 2x per level (cumulative dict format).
+    # volumetric=False: integer format -> write_image only downsamples y/x.
+    if n_levels == 1:
+        extra_sf: tuple[()] | list[dict[str, int]] = ()
+    elif volumetric:
+        spatial_axes = [ax for ax in axes if ax not in ("c", "t")]
+        extra_sf = [dict.fromkeys(spatial_axes, 2**i) for i in range(1, n_levels)]
+    else:
+        extra_sf = tuple(2**i for i in range(1, n_levels))  # type: ignore[assignment]
+
+    # write_image auto-generates coordinate_transformations based on shape
+    # ratios; we then patch them to reflect the real physical scale.
+    write_image(
+        array.astype(np.float32),
+        root,
+        scale_factors=extra_sf,
+        axes=axes_dicts,
+    )
+
+    # Patch coordinate_transformations so every level carries the correct
+    # physical voxel size (scale_i = scale_0 * shape_0[d] / shape_i[d]).
+    root_attrs_w: dict = dict(root.attrs)  # type: ignore[arg-type]
+    ms_meta: dict = root_attrs_w.get("ome", {}).get("multiscales", [{}])[0]
+    s0_shape = np.array(array.shape, dtype=float)
+    for ds in ms_meta.get("datasets", []):
+        lvl_arr = zarr.open_array(str(out_path / ds["path"]), mode="r")
+        lvl_shape = np.array(lvl_arr.shape, dtype=float)
+        phys_scale = [float(scale[d] * s0_shape[d] / lvl_shape[d]) for d in range(array.ndim)]
+        ds["coordinateTransformations"] = [{"type": "scale", "scale": phys_scale}]
+
+    root.attrs["ome"] = {"version": "0.5", "multiscales": [ms_meta]}
 
 
 def _axis_type(name: str) -> str:

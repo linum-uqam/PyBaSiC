@@ -14,7 +14,7 @@ vignette.
 | `tests/test_alm_parity.py` | NumPy ↔ Torch parity for the ALM solver |
 | `tests/test_backend_parity.py` | NumPy ↔ Torch DCT/IDCT parity |
 | `tests/test_cli.py` | CLI smoke tests |
-| `tests/test_docstrings.py` | Doctest extraction from all public modules |
+| `tests/test_docstrings.py` | NumPy-style docstring quality checks via `numpydoc.validate` |
 | `tests/test_vignette_validation.py` | Integration test: vignette recovery |
 
 ---
@@ -24,10 +24,10 @@ vignette.
 The integration test in `tests/test_vignette_validation.py` provides the
 primary end-to-end validation of the BaSiC algorithm:
 
-1. **Generate a ground-truth vignette** using
-   [sbh-simulator](https://github.com/linum-uqam/sbh_simulator)'s
-   `sbh-vignette` CLI (Gaussian or Zernike radial profile on a 128 × 128
-   grid).
+1. **Generate a ground-truth vignette** using the
+   [sbh-simulator](https://github.com/linum-uqam/sbh_simulator) Python API
+   (`sbh_simulator.simulator`) — Gaussian or Zernike radial profile on a
+   128 × 128 grid.
 2. **Tile a source image** (`linum_basic/data/source_image.jpg`) into 128 × 128
    non-overlapping patches.
 3. **Corrupt each patch** by multiplying with the vignette to simulate
@@ -39,8 +39,8 @@ The test passes when the correlation exceeds **0.85**.
 
 ### Prerequisites
 
-The test is automatically **skipped** when `sbh-vignette` cannot be found.
-To run it:
+The test is automatically **skipped** when the `sbh-simulator` package
+cannot be imported. To run it:
 
 ```bash
 # Install sbh_simulator into the same environment
@@ -56,9 +56,7 @@ uv run pytest tests/test_vignette_validation.py -v
 ### Visualisation artefacts
 
 When the environment variable `LINUM_BASIC_VIGNETTE_ARTIFACT_DIR` is set, each
-test sub-case renders a 6-panel PNG (input tiles, ground-truth vignette,
-recovered flat-field, residual map, correlation scatter, and correction
-result) into that directory:
+test sub-case renders a 9-panel PNG into that directory:
 
 ```bash
 mkdir -p /tmp/vignette_artefacts
