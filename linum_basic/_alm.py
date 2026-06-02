@@ -269,7 +269,7 @@ def inexact_alm_l1(
     ent2: float = 10.0
     converged = False
     iteration = 0
-    B1: float = 0.0  # ensure B1 is always defined
+    B1: Any = xp.zeros((), dtype=np.float32)  # scalar device tensor; 0 is safe default
 
     pbar: tqdm | None = tqdm(desc="ALM Iteration", total=max_iter, leave=False) if verbose else None
     # Ib initialised to zeros as a safe default if the loop body never executes.
@@ -297,76 +297,65 @@ def inexact_alm_l1(
             # Steps 1-4: Ir / Sf / S_spatial / Ib / B update (compiled when on GPU).
             Sf, S_spatial, Ib, Ir, DminusIr, B, R_mean_all, dY = _alm_core_step(D, S_spatial, B, D_field, Y, W, mu)
 
-            # 5. Dark-field estimation (all operations on the active backend device).
+            # 5. Dark-field estimation — branchless, all ops stay on device.
+            # When k_cnt == 0 (no valid rows), the masked sums are naturally
+            # zero so the formulas produce well-defined zero results without
+            # any Python branching on device values.
             if estimate_darkfield:
-                # S_mean stays on device; avoid float() round-trip.
-                S_mean = xp.mean(S_spatial)
-                # mask_valid_b: shape (N,) float32 weight (0 or 1) — replaces
-                # boolean fancy indexing so shapes stay static for CUDA graphs.
+                S_mean = xp.mean(S_spatial)  # scalar f32 tensor, no sync
                 mask_valid_b_f = xp.astype((B < 1.0)[:, 0], np.float32)  # (N,)
                 mask_high_s_f = xp.astype(S_spatial[0] > (S_mean - 1e-6), np.float32)  # (P*Q,)
                 mask_low_s_f = xp.astype(S_spatial[0] < (S_mean + 1e-6), np.float32)  # (P*Q,)
 
-                # Number of valid rows; single sync point.
-                k_cnt = float(mask_valid_b_f.sum())
-                any_valid = k_cnt > 0.0
+                # k_cnt: number of valid rows — scalar f32 tensor, stays on device.
+                k_cnt = xp.sum(mask_valid_b_f)
 
-                # Masked row-mean: sum(DminusIr * mask_valid_b_f[:, None], axis=0) / k_cnt
-                # Then dot with high/low-S masks to get R_high / R_low.
-                R_mean_all_f = float(R_mean_all)
-                if any_valid:
-                    # DminusIr_valid: (N, P*Q) weighted, reduces to row-mean of valid rows.
-                    DminusIr_valid_rowsum = xp.sum(DminusIr * mask_valid_b_f[:, None], axis=0, keepdims=True)  # (1, P*Q)
-                    n_high = float(mask_high_s_f.sum())
-                    n_low = float(mask_low_s_f.sum())
-                    R_high = float(xp.sum(DminusIr_valid_rowsum * mask_high_s_f[None, :]) / (k_cnt * n_high + 1e-9))
-                    R_low = float(xp.sum(DminusIr_valid_rowsum * mask_low_s_f[None, :]) / (k_cnt * n_low + 1e-9))
-                else:
-                    R_high = 0.0
-                    R_low = 0.0
-                    DminusIr_valid_rowsum = xp.zeros((1, p * q), dtype=np.float32)
-                S_mean_f = float(S_mean)
-                b1_cand = (R_high - R_low) / (R_mean_all_f + 1e-9)
+                # Masked row-sum of DminusIr; zero when k_cnt == 0.
+                DminusIr_valid_rowsum = xp.sum(DminusIr * mask_valid_b_f[:, None], axis=0, keepdims=True)  # (1, P*Q)
 
-                # b_valid statistics using mask; b_flat shape (N,) float32.
+                n_high = xp.sum(mask_high_s_f)  # scalar f32
+                n_low = xp.sum(mask_low_s_f)  # scalar f32
+                R_high = xp.sum(DminusIr_valid_rowsum * mask_high_s_f[None, :]) / (k_cnt * n_high + 1e-9)
+                R_low = xp.sum(DminusIr_valid_rowsum * mask_low_s_f[None, :]) / (k_cnt * n_low + 1e-9)
+
+                b1_cand = (R_high - R_low) / (R_mean_all + 1e-9)
+
                 b_flat = xp.astype(B[:, 0], np.float32)  # (N,)
-                sum_b = 0.0  # initialise so the second `if any_valid` block sees it
-                if any_valid:
-                    # Weighted sums (static shape, no dynamic indexing).
-                    sum_b2 = float(xp.sum(b_flat**2 * mask_valid_b_f))
-                    sum_b = float(xp.sum(b_flat * mask_valid_b_f))
-                    temp1 = sum_b2
-                    temp2 = sum_b
-                    temp3 = b1_cand * k_cnt
-                    temp4 = float(xp.sum(b_flat * b1_cand * mask_valid_b_f))
-                    denom = temp2 * temp3 - k_cnt * temp4
-                    B1_new = (temp1 * temp3 - temp2 * temp4) / denom if denom != 0.0 else B1
-                    B1_new = min(B1_new, B1_uplimit / (S_mean_f + 1e-9))
-                    if B1_new > 0.0:
-                        B1 = B1_new
-                    # else: keep the previous positive B1 estimate
+                sum_b2 = xp.sum(b_flat**2 * mask_valid_b_f)
+                sum_b = xp.sum(b_flat * mask_valid_b_f)
+                temp1 = sum_b2
+                temp2 = sum_b
+                temp3 = b1_cand * k_cnt
+                temp4 = xp.sum(b_flat * b1_cand * mask_valid_b_f)
+                denom = temp2 * temp3 - k_cnt * temp4
 
-                Z = B1 * (S_mean - S_spatial)  # shape (1, P*Q), float32 on device
+                # Guard against zero denominator; keep current B1 when denom ≈ 0.
+                B1_new_raw = (temp1 * temp3 - temp2 * temp4) / (denom + 1e-30)
+                B1_new_guarded = xp.where(xp.abs(denom) > 1e-30, B1_new_raw, B1)
+                B1_new = xp.minimum(B1_new_guarded, B1_uplimit / (S_mean + 1e-9))
+                # Monotonicity guard (see AGENTS.md): only accept positive B1.
+                B1 = xp.where(B1_new > 0.0, B1_new, B1)
 
-                # Compute A1_offset in float64 to avoid catastrophic cancellation.
+                Z = B1 * (S_mean - S_spatial)  # (1, P*Q) f32, on device
+
+                # A1_offset in float64 to avoid catastrophic cancellation.
+                k_cnt_f64 = xp.astype(k_cnt, np.float64)
+                sum_b_f64 = xp.astype(sum_b, np.float64)
                 S64 = xp.astype(S_spatial, np.float64)
-                if any_valid:
-                    D_valid_rowsum_f64 = xp.astype(DminusIr_valid_rowsum, np.float64)  # (1, P*Q)
-                    b_valid_mean = sum_b / k_cnt
-                    A1_offset = D_valid_rowsum_f64 / k_cnt - b_valid_mean * S64
-                else:
-                    A1_offset = xp.zeros((1, p * q), dtype=np.float64)
-                A_offset = A1_offset - xp.astype(Z, np.float64)  # (1, P*Q) float64
+                D_valid_rowsum_f64 = xp.astype(DminusIr_valid_rowsum, np.float64)
+                b_valid_mean = sum_b_f64 / (k_cnt_f64 + 1e-30)
+                A1_offset = D_valid_rowsum_f64 / (k_cnt_f64 + 1e-30) - b_valid_mean * S64  # (1, P*Q) f64
+                A_offset = A1_offset - xp.astype(Z, np.float64)  # (1, P*Q) f64
 
-                # Zero-mean A_offset before the proximal step (matches MATLAB reference).
-                A_offset_mean = float(xp.mean(A_offset))
+                # Zero-mean centering before the proximal step.
+                A_offset_mean = xp.mean(A_offset)  # scalar f64 tensor, no sync
                 A_offset_centered = xp.astype(A_offset - A_offset_mean, np.float32)
 
                 Dr_f = xp.astype(xp.dctn(A_offset_centered.reshape(p, q), norm="ortho"), np.float32)
                 Dr_f_shrunk = shrink(xp, Dr_f, l_d / (ent2 * mu))
                 Dr = xp.astype(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho"), np.float32).reshape(1, p * q)
                 Dr = shrink(xp, Dr, l_d / (mu * ent2))
-                D_field = xp.astype(Dr + A_offset_mean + Z, np.float32)
+                D_field = xp.astype(Dr + xp.astype(A_offset_mean, np.float32) + Z, np.float32)
 
             # 6. Update Lagrange multiplier Y (primal residual: D - Ib - Ir).
             # dY was returned by _alm_core_step; it equals D - Ib - Ir using the

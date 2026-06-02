@@ -292,6 +292,27 @@ class ArrayNamespace:
             return self._torch.clamp_max(x, y)
         return self._torch.minimum(x, y)
 
+    def where(self, condition: Any, x: Any, y: Any) -> Any:
+        """Element-wise selection from *x* or *y* depending on *condition*.
+
+        Parameters
+        ----------
+        condition : Any
+            Boolean array or scalar.
+        x : Any
+            Values used where *condition* is ``True``.
+        y : Any
+            Values used where *condition* is ``False``.
+
+        Returns
+        -------
+        Any
+            Array of selected values on the same device as the inputs.
+        """
+        if self._backend is Backend.NUMPY:
+            return np.where(condition, x, y)
+        return self._torch.where(condition, x, y)
+
     def copysign(self, magnitude: Any, sign_source: Any) -> Any:
         """Element-wise copysign: return *magnitude* with the sign of *sign_source*.
 

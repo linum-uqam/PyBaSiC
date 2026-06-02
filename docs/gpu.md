@@ -39,7 +39,7 @@ Pass `backend=` to {class}`~linum_basic.core.BaSiC`:
 ```python
 from linum_basic import BaSiC
 
-# Auto-select: Torch+CUDA if available, otherwise NumPy (never MPS)
+# Auto-select: Torch+CUDA if available, otherwise NumPy
 model = BaSiC(stack, backend="auto")
 
 # Explicit CUDA device
@@ -50,7 +50,24 @@ model = BaSiC(stack, backend="numpy")
 ```
 
 The `"auto"` mode selects CUDA if `torch.cuda.is_available()` returns
-`True`, and falls back to NumPy otherwise.  MPS is intentionally excluded.
+`True`, and falls back to NumPy otherwise.
+
+When `"auto"` selects CUDA, it also applies a **size threshold**: if the
+total number of image elements (`N × working_size²`) is below
+{data}`~linum_basic.core.GPU_MIN_ELEMENTS` (default 1 000 000), the job is
+routed back to NumPy because JIT compilation and kernel-launch overhead
+outweigh the arithmetic gain on small stacks.  You can override this per
+instance:
+
+```python
+# Always use the GPU, regardless of stack size
+model = BaSiC(stack, backend="auto", gpu_min_elements=0)
+
+# Raise the threshold (force NumPy for anything under 10 M elements)
+model = BaSiC(stack, backend="auto", gpu_min_elements=10_000_000)
+```
+
+Explicit `backend="torch"` always uses the GPU regardless of stack size.
 
 ---
 
@@ -81,11 +98,17 @@ can be backend-agnostic:
   backend.
 - When a CUDA device is selected, the per-iteration tensor work (steps 1–4
   of the ALM loop) is compiled with {func}`torch.compile` on the first call.
-  This incurs a one-time JIT warmup of several seconds, after which
-  subsequent reweighting iterations run significantly faster.  The warmup
-  cost is amortised over the full solver run.
+  The compiled function is **cached** at module scope, keyed by
+  `(backend, device, image_size, l_s)`.  Subsequent calls with the same
+  problem shape pay no compile cost — the same artifact is reused across all
+  reweighting iterations and across different {class}`~linum_basic.core.BaSiC`
+  instances.  The one-time warmup is amortised over the entire process
+  lifetime.
+- The darkfield estimation step (when `estimate_darkfield=True`) runs
+  **entirely on-device** with no host-device synchronisation points during
+  the iteration.  The only sync per iteration is the convergence check.
 - Use `backend="auto"` for a transparent performance check — if CUDA is
-  available it will be used.
+  available and the stack is large enough it will be used.
 
 Use `scripts/benchmark_gpu.py` to measure throughput on your hardware:
 
