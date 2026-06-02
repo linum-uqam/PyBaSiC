@@ -173,11 +173,11 @@ class MosaicGrid:
         """
         th, tw = self.tile_shape
         nrows, ncols = self.n_rows, self.n_cols
-        out = np.empty((nrows * ncols, th, tw), dtype=self.array.dtype)
-        for r in range(nrows):
-            for c in range(ncols):
-                out[r * ncols + c] = self.array[z, r * th : (r + 1) * th, c * tw : (c + 1) * tw]
-        return out
+        # Reshape-transpose is equivalent to the nested loop but avoids Python
+        # iteration over all nrows*ncols tiles. The transpose creates a
+        # non-contiguous view; the final reshape forces a contiguous copy.
+        plane = self.array[z]  # (nrows*th, ncols*tw)
+        return plane.reshape(nrows, th, ncols, tw).transpose(0, 2, 1, 3).reshape(nrows * ncols, th, tw)
 
     def get_tile(self, z: int, row: int, col: int) -> np.ndarray:
         """Return the (th, tw) tile at grid position ``(row, col)``.
