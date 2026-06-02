@@ -52,7 +52,7 @@ def _extract_tiles_at_z(mosaic: Any, z: int) -> np.ndarray:
     """Extract all tiles at a given z-level into a (n_tiles, th, tw) stack."""
     n_rows, n_cols = mosaic.n_rows, mosaic.n_cols
     tiles = np.stack(
-        [mosaic.tile_at(z, r, c) for r in range(n_rows) for c in range(n_cols)],
+        [mosaic.get_tile(z, r, c) for r in range(n_rows) for c in range(n_cols)],
         axis=0,
     )
     return tiles.astype(np.float32)
