@@ -3,8 +3,16 @@
 
 linum-basic ships a backend abstraction layer
 ({mod}`linum_basic.backend`) that lets the ALM solver run on any device
-supported by PyTorch: NVIDIA CUDA, Apple MPS (Metal), or CPU via the
-Torch compute graph.
+supported by PyTorch: NVIDIA CUDA or CPU via the Torch compute graph.
+
+```{note}
+**Apple MPS is not supported.**  The ALM solver requires float64 for the
+Lagrange multiplier and uses `torch.linalg.svdvals`, neither of which is
+implemented on Apple Metal (MPS).  Passing `device="mps"` raises a
+{exc}`NotImplementedError` with a clear explanation.  Use `backend="auto"`
+(selects CUDA if available, otherwise NumPy) or `backend="numpy"` on
+Apple Silicon.
+```
 
 ---
 
@@ -31,21 +39,18 @@ Pass `backend=` to {class}`~linum_basic.core.BaSiC`:
 ```python
 from linum_basic import BaSiC
 
-# Auto-select: Torch+CUDA if available, otherwise NumPy
+# Auto-select: Torch+CUDA if available, otherwise NumPy (never MPS)
 model = BaSiC(stack, backend="auto")
 
 # Explicit CUDA device
 model = BaSiC(stack, backend="torch", device="cuda:0")
 
-# Apple Silicon MPS
-model = BaSiC(stack, backend="torch", device="mps")
-
 # Explicit NumPy (default)
 model = BaSiC(stack, backend="numpy")
 ```
 
-The `"auto"` mode probes for CUDA first, then MPS, then falls back to
-NumPy.
+The `"auto"` mode selects CUDA if `torch.cuda.is_available()` returns
+`True`, and falls back to NumPy otherwise.  MPS is intentionally excluded.
 
 ---
 
@@ -74,8 +79,19 @@ can be backend-agnostic:
   the GPU overhead of data transfer can outweigh the kernel benefit.
 - Image loading and resizing (OpenCV) always run on CPU regardless of
   backend.
-- Use `backend="auto"` for a transparent performance check — if GPU is
+- When a CUDA device is selected, the per-iteration tensor work (steps 1–4
+  of the ALM loop) is compiled with {func}`torch.compile` on the first call.
+  This incurs a one-time JIT warmup of several seconds, after which
+  subsequent reweighting iterations run significantly faster.  The warmup
+  cost is amortised over the full solver run.
+- Use `backend="auto"` for a transparent performance check — if CUDA is
   available it will be used.
+
+Use `scripts/benchmark_gpu.py` to measure throughput on your hardware:
+
+```bash
+uv run python scripts/benchmark_gpu.py --n 8 32 128 --size 64 128 --iters 50
+```
 
 ---
 
@@ -93,20 +109,14 @@ Check that your PyTorch build includes CUDA support:
 ```python
 import torch
 print(torch.cuda.is_available())  # should be True for CUDA
-print(torch.backends.mps.is_available())  # should be True on M-series Mac
 ```
 
 If `False`, reinstall `torch` with the appropriate CUDA index URL from
 <https://pytorch.org/get-started/locally/>.
 
-### MPS and float64 twiddle factors
+### MPS (Apple Metal) not supported
 
-The custom DCT kernel used on GPU backends (including Apple MPS) computes
-twiddle factors at the same floating-point precision as the input data
-(float32 by default).  Earlier versions inadvertently requested float64
-twiddle factors, which MPS does not support and which caused a
-`RuntimeError` at runtime.  This is fixed — MPS is fully supported with
-float32 inputs.
-
-If you still see numerical issues on MPS, confirm that your input stack
-has dtype `float32` (not `float64`) before passing it to `BaSiC`.
+`device="mps"` raises a {exc}`NotImplementedError` because Apple Metal
+does not implement float64 arithmetic or `svdvals`, both of which the ALM
+solver requires.  On Apple Silicon, use `backend="numpy"` or
+`backend="auto"` (falls back to NumPy when no CUDA device is present).

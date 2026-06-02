@@ -268,3 +268,30 @@ class TestAlmParity:
         Ib_th, _, _, _ = inexact_alm_l1(rand3d, xp=xp_th, l_s=0.3, l_d=0.1, max_iter=5, estimate_darkfield=False)
 
         np.testing.assert_allclose(Ib_np, Ib_th, atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# MPS rejection
+# ---------------------------------------------------------------------------
+
+
+class TestMPSRejection:
+    """MPS device must raise NotImplementedError (float64 + svdvals unsupported)."""
+
+    def test_mps_device_raises(self) -> None:
+        """Passing device='mps' to get_xp raises NotImplementedError."""
+        with pytest.raises(NotImplementedError, match="MPS"):
+            get_xp(Backend.TORCH, device="mps")
+
+    def test_mps_device_string_raises(self) -> None:
+        """Passing backend='torch', device='mps' via string path raises NotImplementedError."""
+        with pytest.raises(NotImplementedError, match="MPS"):
+            get_xp("torch", device="mps")
+
+    def test_auto_never_returns_mps(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """get_xp('auto') must never return an MPS namespace, even when MPS is available."""
+        # Patch torch.backends.mps.is_available and torch.cuda.is_available so
+        # 'auto' sees MPS-available but no CUDA — it should fall back to NumPy.
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        xp = get_xp("auto")
+        assert xp._backend is not Backend.TORCH or xp._device != "mps", "get_xp('auto') must not select the MPS device"
