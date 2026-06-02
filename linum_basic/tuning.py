@@ -317,12 +317,15 @@ def tune(
                 df = np.concatenate([np.repeat(df[:1], n_extra_rows, axis=0), df], axis=0)
             corrected = (full_tiles.astype(np.float32) - df[np.newaxis]) / (ff[np.newaxis] + 1e-6)
             if objective == "curvature":
-                return seam_curvature(ff[np.newaxis], seam_pairs)
+                val = seam_curvature(ff[np.newaxis], seam_pairs)
+                return val if np.isfinite(val) else 1e6
             if objective == "composite":
                 w1, w2 = composite_weights
                 denom = (w1 + w2) or 1.0
-                return (w1 * seam_l1(corrected, seam_pairs) + w2 * seam_curvature(ff[np.newaxis], seam_pairs)) / denom
-            return seam_l1(corrected, seam_pairs)
+                val = (w1 * seam_l1(corrected, seam_pairs) + w2 * seam_curvature(ff[np.newaxis], seam_pairs)) / denom
+                return val if np.isfinite(val) else 1e6
+            val = seam_l1(corrected, seam_pairs)
+            return val if np.isfinite(val) else 1e6
 
         if n_workers > 1:
             with ThreadPoolExecutor(max_workers=n_workers) as pool:

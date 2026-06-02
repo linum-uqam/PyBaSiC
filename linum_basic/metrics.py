@@ -69,18 +69,32 @@ def seam_l1(tiles: np.ndarray, seam_pairs: list[SeamPair]) -> float:
     float
         Mean over seams of ``mean(|a - b|) / (mean((|a| + |b|) / 2) + epsilon)``.
         Scale-invariant and physical; 0 = perfect agreement.
+        Returns ``nan`` when *seam_pairs* is empty.
     """
     if not seam_pairs:
-        return 0.0
+        return float("nan")
 
-    rels: list[float] = []
-    for sp in seam_pairs:
-        a = tiles[sp.idx_a][sp.slice_a].ravel()
-        b = tiles[sp.idx_b][sp.slice_b].ravel()
-        local = float((np.abs(a) + np.abs(b)).mean()) / 2.0
-        rels.append(float(np.abs(a - b).mean()) / (local + 1e-9))
+    # Group by orientation; within each orientation all seams share the same
+    # slice shape, enabling batch extraction into (n_seams, k) arrays.
+    h_pairs = [sp for sp in seam_pairs if sp.orientation == "horizontal"]
+    v_pairs = [sp for sp in seam_pairs if sp.orientation == "vertical"]
 
-    return float(np.mean(rels))
+    rels: list[np.ndarray] = []
+    for group in (h_pairs, v_pairs):
+        if not group:
+            continue
+        idx_a = np.array([sp.idx_a for sp in group])
+        idx_b = np.array([sp.idx_b for sp in group])
+        sl_a = group[0].slice_a  # all seams in the group share identical slices
+        sl_b = group[0].slice_b
+        a = tiles[idx_a][:, sl_a[0], sl_a[1]].reshape(len(group), -1)
+        b = tiles[idx_b][:, sl_b[0], sl_b[1]].reshape(len(group), -1)
+        local = (np.abs(a) + np.abs(b)).mean(axis=1) / 2.0
+        rels.append(np.abs(a - b).mean(axis=1) / (local + 1e-9))
+
+    if not rels:
+        return float("nan")
+    return float(np.concatenate(rels).mean())
 
 
 def seam_pearson(tiles: np.ndarray, seam_pairs: list[SeamPair]) -> float:
@@ -97,22 +111,42 @@ def seam_pearson(tiles: np.ndarray, seam_pairs: list[SeamPair]) -> float:
     -------
     float
         Mean Pearson r in ``[-1, 1]``.  Pairs where either side has zero
-        variance are skipped.  Returns 1.0 if no valid pair exists.
+        variance are skipped.  Returns ``nan`` when *seam_pairs* is empty
+        or all pairs are degenerate.
     """
     if not seam_pairs:
-        return 1.0
+        return float("nan")
 
-    corrs: list[float] = []
-    for sp in seam_pairs:
-        a = tiles[sp.idx_a][sp.slice_a].ravel().astype(np.float64)
-        b = tiles[sp.idx_b][sp.slice_b].ravel().astype(np.float64)
-        if a.std() < 1e-9 or b.std() < 1e-9:
+    # Group by orientation; same orientation → same overlap shape → batch ops.
+    h_pairs = [sp for sp in seam_pairs if sp.orientation == "horizontal"]
+    v_pairs = [sp for sp in seam_pairs if sp.orientation == "vertical"]
+
+    corrs: list[np.ndarray] = []
+    for group in (h_pairs, v_pairs):
+        if not group:
             continue
-        r = float(np.corrcoef(a, b)[0, 1])
-        if np.isfinite(r):
-            corrs.append(r)
+        idx_a = np.array([sp.idx_a for sp in group])
+        idx_b = np.array([sp.idx_b for sp in group])
+        sl_a = group[0].slice_a
+        sl_b = group[0].slice_b
+        a = tiles[idx_a][:, sl_a[0], sl_a[1]].astype(np.float64).reshape(len(group), -1)
+        b = tiles[idx_b][:, sl_b[0], sl_b[1]].astype(np.float64).reshape(len(group), -1)
+        # Per-seam Pearson via manual formula (avoids calling corrcoef in a loop)
+        a_c = a - a.mean(axis=1, keepdims=True)
+        b_c = b - b.mean(axis=1, keepdims=True)
+        std_a = np.sqrt((a_c**2).mean(axis=1))
+        std_b = np.sqrt((b_c**2).mean(axis=1))
+        valid = (std_a >= 1e-9) & (std_b >= 1e-9)
+        if not valid.any():
+            continue
+        r = (a_c[valid] * b_c[valid]).mean(axis=1) / (std_a[valid] * std_b[valid])
+        finite_r = r[np.isfinite(r)]
+        if finite_r.size > 0:
+            corrs.append(finite_r)
 
-    return float(np.mean(corrs)) if corrs else 1.0
+    if not corrs:
+        return float("nan")
+    return float(np.concatenate(corrs).mean())
 
 
 def evaluate_correction(
@@ -120,6 +154,8 @@ def evaluate_correction(
     flatfield: np.ndarray,
     darkfield: np.ndarray,
     seam_pairs: list[SeamPair],
+    *,
+    epsilon: float = 1e-6,
 ) -> dict[str, float]:
     """Apply shading correction and return both seam metrics.
 
@@ -133,13 +169,15 @@ def evaluate_correction(
         Dark-field estimate.
     seam_pairs : list of SeamPair
         Seam descriptors.
+    epsilon : float
+        Divisor stabilisation constant.  Default ``1e-6``.
 
     Returns
     -------
     dict
         ``{"seam_l1": float, "seam_1minus_pearson": float}``.
     """
-    corrected = (tiles.astype(np.float32) - darkfield[np.newaxis]) / (flatfield[np.newaxis] + 1e-6)
+    corrected = (tiles.astype(np.float32) - darkfield[np.newaxis]) / (flatfield[np.newaxis] + epsilon)
     return {
         "seam_l1": seam_l1(corrected, seam_pairs),
         "seam_1minus_pearson": 1.0 - seam_pearson(corrected, seam_pairs),
@@ -208,8 +246,8 @@ def evaluate_correction_volume(
             corrected = (tiles.astype(np.float32) - df[np.newaxis]) / (ff[np.newaxis] + epsilon)
             l1_vals.append(seam_l1(corrected, seam_pairs))
             pearson_vals.append(seam_pearson(corrected, seam_pairs))
-        result["seam_l1"] = float(np.mean(l1_vals)) if l1_vals else 0.0
-        result["seam_1minus_pearson"] = float(1.0 - np.mean(pearson_vals)) if pearson_vals else 0.0
+        result["seam_l1"] = float(np.nanmean(l1_vals)) if l1_vals else float("nan")
+        result["seam_1minus_pearson"] = float(1.0 - np.nanmean(pearson_vals)) if pearson_vals else float("nan")
 
     # --- flatfield curvature metric --------------------------------------
     if "curvature" in metrics:
