@@ -11,6 +11,9 @@ Usage
         --input /path/to/mosaic.ome.zarr --z-inspect 27 \
         --working-size 160 --output /path/to/apply_correction.png
 
+Pass ``--n-z N`` to fit and evaluate N evenly-spaced z-levels (default 10) and
+print a per-z seam-metric table.  Use ``--all-z`` to fit every z-level.
+
 The fitted hyperparameters default to BaSiC auto-tuning; pass the values found
 by :func:`linum_basic.tuning.tune` to reproduce a tuned correction.
 """
@@ -18,6 +21,7 @@ by :func:`linum_basic.tuning.tune` to reproduce a tuned correction.
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +29,7 @@ import numpy as np
 
 from linum_basic import viz
 from linum_basic.fit import MosaicFit, fit_mosaic
-from linum_basic.metrics import seam_l1
+from linum_basic.metrics import seam_l1, seam_pearson
 from linum_basic.mosaic import MosaicGrid
 
 _DEFAULT_ZARR = None
@@ -34,11 +38,7 @@ _DEFAULT_OUT = "apply_correction.png"
 
 def _tiles_from_image(image: np.ndarray, th: int, tw: int, nrows: int, ncols: int) -> np.ndarray:
     """Split a single mosaic image into its (nrows*ncols, th, tw) tile stack."""
-    out = np.empty((nrows * ncols, th, tw), dtype=image.dtype)
-    for r in range(nrows):
-        for c in range(ncols):
-            out[r * ncols + c] = image[r * th : (r + 1) * th, c * tw : (c + 1) * tw]
-    return out
+    return image.reshape(nrows, th, ncols, tw).transpose(0, 2, 1, 3).reshape(nrows * ncols, th, tw)
 
 
 def _build_figure(
@@ -94,6 +94,83 @@ def _build_figure(
     print(f"Saved to {path}  (seam L1 {seam_raw:.3f} -> {seam_corr:.3f}, {improvement:+.1f}%)")
 
 
+def _print_validation_table(
+    mosaic: MosaicGrid,
+    fit: MosaicFit,
+    n_extra_rows: int,
+) -> None:
+    """Print a per-z before/after seam-metric table for all fitted z-levels."""
+    th, tw = mosaic.tile_shape
+    nrows, ncols = mosaic.n_rows, mosaic.n_cols
+    seam_pairs = mosaic.seam_pairs()
+
+    print()
+    print(f"{'z':>4}  {'raw L1':>8}  {'cor L1':>8}  {'ΔL1%':>7}  {'raw 1-r':>8}  {'cor 1-r':>8}")
+    print("-" * 58)
+
+    raw_l1_vals: list[float] = []
+    cor_l1_vals: list[float] = []
+    raw_1mr_vals: list[float] = []
+    cor_1mr_vals: list[float] = []
+
+    for z_pos, z in enumerate(fit.z_indices):
+        raw_z = mosaic.array[z].astype(np.float32)
+
+        if fit.field_mode == "per-z":
+            ff = fit.flatfields[z_pos]
+            df = fit.darkfields[z_pos]
+        else:
+            ff = fit.flatfields
+            df = fit.darkfields
+
+        view = raw_z.reshape(nrows, th, ncols, tw)
+        corrected_view = (view - df[None, :, None, :]) / (ff[None, :, None, :] + 1e-6)
+        if n_extra_rows > 0:
+            first_valid = corrected_view[:, n_extra_rows : n_extra_rows + 1, :, :]
+            corrected_view[:, :n_extra_rows, :, :] = first_valid
+        corrected_z = corrected_view.reshape(nrows * th, ncols * tw)
+
+        raw_tiles = mosaic.iter_tiles(z)
+        cor_tiles = _tiles_from_image(corrected_z, th, tw, nrows, ncols)
+
+        rl1 = seam_l1(raw_tiles, seam_pairs)
+        cl1 = seam_l1(cor_tiles, seam_pairs)
+        rp = 1.0 - seam_pearson(raw_tiles, seam_pairs)
+        cp = 1.0 - seam_pearson(cor_tiles, seam_pairs)
+
+        def _fmt(v: float) -> str:
+            return "  nan   " if math.isnan(v) else f"{v:8.4f}"
+
+        if not math.isnan(rl1) and not math.isnan(cl1):
+            delta = 100.0 * (rl1 - cl1) / (rl1 + 1e-12)
+            delta_s = f"{delta:+6.1f}%"
+        else:
+            delta_s = "    n/a"
+
+        print(f"{z:>4}  {_fmt(rl1)}  {_fmt(cl1)}  {delta_s}  {_fmt(rp)}  {_fmt(cp)}")
+
+        if not math.isnan(rl1):
+            raw_l1_vals.append(rl1)
+        if not math.isnan(cl1):
+            cor_l1_vals.append(cl1)
+        if not math.isnan(rp):
+            raw_1mr_vals.append(rp)
+        if not math.isnan(cp):
+            cor_1mr_vals.append(cp)
+
+    print("-" * 58)
+    if raw_l1_vals and cor_l1_vals:
+        mean_rl1 = float(np.mean(raw_l1_vals))
+        mean_cl1 = float(np.mean(cor_l1_vals))
+        delta_mean = 100.0 * (mean_rl1 - mean_cl1) / (mean_rl1 + 1e-12)
+        print(f"{'mean':>4}  {mean_rl1:8.4f}  {mean_cl1:8.4f}  {delta_mean:+6.1f}%", end="")
+        if raw_1mr_vals and cor_1mr_vals:
+            print(f"  {float(np.mean(raw_1mr_vals)):8.4f}  {float(np.mean(cor_1mr_vals)):8.4f}")
+        else:
+            print()
+    print()
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", required=True, help="Path to the OME-Zarr mosaic.")
@@ -107,6 +184,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--estimate-darkfield", action="store_true", help="Estimate a dark-field.")
     parser.add_argument("--n-extra", type=int, default=2, help="Galvo fly-back rows to mask per tile.")
     parser.add_argument("--output", default=_DEFAULT_OUT, help="Output PNG path.")
+    parser.add_argument(
+        "--n-z",
+        type=int,
+        default=10,
+        help="Number of evenly-spaced z-levels to fit and evaluate (default 10). Ignored when --all-z is set.",
+    )
+    parser.add_argument("--all-z", action="store_true", help="Fit every z-level (overrides --n-z).")
     return parser
 
 
@@ -126,14 +210,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.epsilon is not None:
         params["epsilon"] = args.epsilon
 
+    # Determine which z-levels to fit
+    n_z = mosaic.n_z
+    if args.all_z:
+        z_indices = list(range(n_z))
+    else:
+        count = min(args.n_z, n_z)
+        z_indices = list(np.unique(np.linspace(0, n_z - 1, count).round().astype(int)))
+    # Always include the display z-level
+    if args.z_inspect not in z_indices:
+        z_indices = sorted({args.z_inspect, *z_indices})
+
     fit = fit_mosaic(
         mosaic,
-        z_indices=[args.z_inspect],
+        z_indices=z_indices,
         basic_kwargs=params,
         n_extra_rows=args.n_extra,
         verbose=True,
     )
     _build_figure(mosaic, fit, args.z_inspect, Path(args.output), args.input, args.n_extra)
+    _print_validation_table(mosaic, fit, args.n_extra)
     return 0
 
 
