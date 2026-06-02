@@ -57,15 +57,15 @@ def shrink[ArrayT](xp: ArrayNamespace, theta: ArrayT, epsilon: float = 1e-3) -> 
     return xp.copysign(xp.maximum(xp.abs(theta) - epsilon, 0.0), theta)
 
 
-def _build_alm_step(xp: ArrayNamespace, p: int, q: int, l_s: float) -> Any:
+def _build_alm_step(xp: ArrayNamespace, n: int, p: int, q: int, l_s: float) -> Any:
     """Return a (possibly compiled) per-iteration ALM step function.
 
-    The returned callable is cached by ``(backend, device, p, q, l_s)`` so
+    The returned callable is cached by ``(backend, device, n, p, q, l_s)`` so
     the same compiled artifact is reused across all reweighting passes and
     across different :class:`~linum_basic.core.BaSiC` instances that share
     the same problem shape and regularisation weight.
     """
-    cache_key = (xp._backend.value, getattr(xp, "device", ""), p, q, l_s)
+    cache_key = (xp._backend.value, getattr(xp, "device", ""), n, p, q, l_s)
     if cache_key in _ALM_STEP_CACHE:
         return _ALM_STEP_CACHE[cache_key]
 
@@ -246,17 +246,19 @@ def inexact_alm_l1(
     )
 
     d_norm = xp.norm_fro(D)
-    B1_uplimit = xp.min(D)
+    B1_uplimit: float = xp.min(D)
 
-    # Initialise variables — use warm-start values when provided.
-    sigma1 = xp.svd_leading_singular(D)
-    mu: float = 12.5 / sigma1
+    # Scalars and per-call configuration — computed before entering
+    # inference_mode so they remain plain Python floats / constant device
+    # tensors that are never mutated and never fed back into _alm_core_step.
+    sigma1 = xp.svd_leading_singular(D)  # returns Python float
+    mu_scalar: float = 12.5 / sigma1
     if warm_start is not None:
         Sf = xp.asarray(warm_start["Sf"].reshape(p, q).astype(np.float32))
         Ir = xp.asarray(warm_start["Ir"].reshape(n, p * q).astype(np.float32))
         B = xp.asarray(warm_start["B"].reshape(n, 1).astype(np.float32))
         D_field = xp.asarray(warm_start["D_field"].reshape(1, p * q).astype(np.float32))
-        # Reset Y and mu so changed weights don't cause divergence
+        # Reset Y so changed weights don't cause divergence
         Y = xp.zeros((n, p * q), dtype=np.float64)
     else:
         # Initialise variables
@@ -265,10 +267,14 @@ def inexact_alm_l1(
         B = xp.ones((n, 1), dtype=np.float32)  # per-image baseline
         D_field = xp.zeros((1, p * q), dtype=np.float32)  # dark-field (spatial)
         Y = xp.zeros((n, p * q), dtype=np.float64)
-    mu_bar: float = mu * 1e7
+    mu_bar_scalar: float = mu_scalar * 1e7
     ent2: float = 10.0
     converged = False
     iteration = 0
+    # On GPU backends xp.norm_fro forces a GPU→CPU synchronisation via float().
+    # Check convergence every N iterations to amortise this cost.
+    # On CPU backends every iteration is essentially free.
+    convergence_check_every = 10 if xp._backend is not Backend.NUMPY else 1
     B1: Any = xp.zeros((), dtype=np.float32)  # scalar device tensor; 0 is safe default
 
     pbar: tqdm | None = tqdm(desc="ALM Iteration", total=max_iter, leave=False) if verbose else None
@@ -285,19 +291,33 @@ def inexact_alm_l1(
     # ------------------------------------------------------------------
     # Retrieve (or build and compile) the per-iteration core step.
     # Steps 1-4 are a pure-tensor function compiled once per unique
-    # (backend, device, p, q, l_s) combination and cached at module scope.
+    # (backend, device, n, p, q, l_s) combination and cached at module scope.
     # ------------------------------------------------------------------
-    _alm_core_step = _build_alm_step(xp, p, q, l_s)
+    _alm_core_step = _build_alm_step(xp, n, p, q, l_s)
 
     # ------------------------------------------------------------------
     # Main loop  (gradient tracking disabled for torch backends)
     # ------------------------------------------------------------------
     with xp.inference_mode():
+        # mu grows by rho=1.5 each iteration; keeping it as a 0-dim
+        # InferenceMode tensor ensures torch.compile guards on the stable
+        # dispatch key, not the changing float value, preventing per-iteration
+        # recompiles that exhaust recompile_limit=8 after 9 steps.
+        mu: Any = xp.asarray(np.array(mu_scalar, dtype=np.float32))
+        mu_bar: Any = xp.asarray(np.array(mu_bar_scalar, dtype=np.float32))
         while not converged and iteration < max_iter:
             # Steps 1-4: Ir / Sf / S_spatial / Ib / B update (compiled when on GPU).
             Sf, S_spatial, Ib, Ir, DminusIr, B, R_mean_all, dY = _alm_core_step(D, S_spatial, B, D_field, Y, W, mu)
-
-            # 5. Dark-field estimation — branchless, all ops stay on device.
+            # On the first iteration the fed-back tensors (B, S_spatial,
+            # D_field, Y) carry the plain {CUDA, BackendSelect} dispatch key
+            # (created outside inference_mode).  From iteration 2 they are
+            # updated inside inference_mode and carry InferenceMode.  This
+            # one-time key change triggers a single torch._dynamo guard failure
+            # and recompile.  Cloning B and S_spatial (the two tensors returned
+            # from the compiled step) strips any residual view keys and keeps
+            # them consistent; xp.clone() is a no-op on NumPy.
+            B = xp.clone(B)
+            S_spatial = xp.clone(S_spatial)
             # When k_cnt == 0 (no valid rows), the masked sums are naturally
             # zero so the formulas produce well-defined zero results without
             # any Python branching on device values.
@@ -333,7 +353,7 @@ def inexact_alm_l1(
                 B1_new_raw = (temp1 * temp3 - temp2 * temp4) / (denom + 1e-30)
                 B1_new_guarded = xp.where(xp.abs(denom) > 1e-30, B1_new_raw, B1)
                 B1_new = xp.minimum(B1_new_guarded, B1_uplimit / (S_mean + 1e-9))
-                # Monotonicity guard (see AGENTS.md): only accept positive B1.
+                # Monotonicity guard: only accept positive B1.
                 B1 = xp.where(B1_new > 0.0, B1_new, B1)
 
                 Z = B1 * (S_mean - S_spatial)  # (1, P*Q) f32, on device
@@ -363,15 +383,16 @@ def inexact_alm_l1(
             # Accumulate the Lagrange multiplier in float64 on the active device
             # so that large mu values (mu grows as rho^iter) don't erode precision.
             # xp.astype keeps the cast on GPU for torch backends — no device transfer.
-            Y = Y + mu * xp.astype(dY, np.float64)
-            mu = min(mu * rho, mu_bar)
+            Y = Y + xp.astype(mu, np.float64) * xp.astype(dY, np.float64)
+            mu = xp.minimum(mu * rho, mu_bar)
             iteration += 1
 
-            stop_crit = xp.norm_fro(dY) / (d_norm + 1e-9)
+            if iteration % convergence_check_every == 0:
+                stop_crit = xp.norm_fro(dY) / (d_norm + 1e-9)
+                if stop_crit < tol:
+                    converged = True
             if pbar is not None:
                 pbar.update()
-            if stop_crit < tol:
-                converged = True
 
     if iteration == max_iter:
         print("Maximum ALM iterations reached without full convergence.")

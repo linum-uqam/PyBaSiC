@@ -313,6 +313,30 @@ class ArrayNamespace:
             return np.where(condition, x, y)
         return self._torch.where(condition, x, y)
 
+    def clone(self, x: Any) -> Any:
+        """Return an independent copy of *x*, stripping view metadata.
+
+        For the NumPy backend this is a no-op since arithmetic operations
+        already produce new arrays.  For the Torch backend, ``x.clone()``
+        strips the ``ADInplaceOrView`` dispatch key that ``reshape`` and
+        same-dtype ``.to()`` calls attach to their outputs, preventing
+        spurious ``torch._dynamo`` guard failures when the tensor is fed back
+        as a compiled-step input on the next iteration.
+
+        Parameters
+        ----------
+        x : Any
+            Array or tensor to clone.
+
+        Returns
+        -------
+        Any
+            An independent tensor with the same values and device as *x*.
+        """
+        if self._backend is Backend.NUMPY:
+            return x
+        return x.clone()
+
     def copysign(self, magnitude: Any, sign_source: Any) -> Any:
         """Element-wise copysign: return *magnitude* with the sign of *sign_source*.
 
