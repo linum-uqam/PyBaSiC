@@ -36,7 +36,7 @@ metrics with the flatfield focal-curvature metric from
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -73,6 +73,10 @@ def seam_l1(tiles: np.ndarray, seam_pairs: list[SeamPair]) -> float:
     """
     if not seam_pairs:
         return float("nan")
+
+    # Allow duck-typed GPU arrays (e.g. torch CUDA tensors): move to CPU once.
+    if hasattr(tiles, "cpu"):
+        tiles = cast(Any, tiles).cpu().numpy()
 
     # Group by orientation; within each orientation all seams share the same
     # slice shape, enabling batch extraction into (n_seams, k) arrays.
@@ -116,6 +120,10 @@ def seam_pearson(tiles: np.ndarray, seam_pairs: list[SeamPair]) -> float:
     """
     if not seam_pairs:
         return float("nan")
+
+    # Allow duck-typed GPU arrays (e.g. torch CUDA tensors): move to CPU once.
+    if hasattr(tiles, "cpu"):
+        tiles = cast(Any, tiles).cpu().numpy()
 
     # Group by orientation; same orientation → same overlap shape → batch ops.
     h_pairs = [sp for sp in seam_pairs if sp.orientation == "horizontal"]

@@ -177,7 +177,10 @@ class MosaicGrid:
         # iteration over all nrows*ncols tiles. The transpose creates a
         # non-contiguous view; the final reshape forces a contiguous copy.
         plane = self.array[z]  # (nrows*th, ncols*tw)
-        return plane.reshape(nrows, th, ncols, tw).transpose(0, 2, 1, 3).reshape(nrows * ncols, th, tw)
+        reshaped = plane.reshape(nrows, th, ncols, tw)
+        # torch.Tensor.transpose only swaps two dims; use permute when available
+        transposed = reshaped.permute(0, 2, 1, 3) if hasattr(reshaped, "permute") else reshaped.transpose(0, 2, 1, 3)
+        return transposed.reshape(nrows * ncols, th, tw)
 
     def get_tile(self, z: int, row: int, col: int) -> np.ndarray:
         """Return the (th, tw) tile at grid position ``(row, col)``.
