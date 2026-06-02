@@ -8,6 +8,8 @@ so the same code can run on CPU (NumPy) or GPU (PyTorch).
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from tqdm.auto import tqdm
 
@@ -215,129 +217,149 @@ def inexact_alm_l1(
     S_spatial = xp.astype(xp.idctn(Sf, norm="ortho"), np.float32).reshape(1, p * q)
 
     # ------------------------------------------------------------------
-    # Main loop
+    # Build (optionally compiled) per-iteration core step.
+    # Steps 1-4: Ir, Sf, S_spatial, Ib, B update — pure-tensor ops with no
+    # Python control-flow branches on tensor values, so torch.compile can
+    # trace through them cleanly.  The darkfield update (step 5) and the
+    # Y/mu update (step 6) remain in the caller because they require Python
+    # branches on host values.
+    #
+    # S_spatial is passed as a pre-computed parameter (it is produced at the
+    # end of each iteration) to avoid a redundant iDCT on every call.
     # ------------------------------------------------------------------
-    while not converged and iteration < max_iter:
-        # Pre-compute Y / mu once per iteration: the quotient is reused in
-        # both the Ir update (step 1) and the Sf mean update (step 2),
-        # avoiding a second O(N * P*Q) division.
-        # Cast Y (float64 accumulator) to float32 at the use site to avoid
-        # accumulating rounding errors in the Lagrange multiplier over ~500
-        # iterations while keeping all backend tensor ops in float32.
-        Y_over_mu = xp.astype(Y / mu, np.float32)
+    def _alm_core_step(
+        d: Any,
+        s_spatial: Any,
+        b: Any,
+        d_field: Any,
+        y: Any,
+        w: Any,
+        cur_mu: float,
+    ) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
+        y_f32 = xp.astype(y / cur_mu, np.float32)
+        # Step 1: update Ir using S_spatial from the previous iteration.
+        ib_old = s_spatial * b + d_field
+        new_ir = shrink(xp, d - ib_old + y_f32, w / cur_mu)
+        d_minus_ir = d - new_ir
+        # Step 2: update flat-field DCT coefficients.
+        r_dev = d_minus_ir - d_field + y_f32
+        r_for_sf_mean = xp.mean(r_dev.reshape(-1, p, q), axis=0)
+        d_sf = xp.astype(xp.dctn(r_for_sf_mean, norm="ortho"), np.float32)
+        new_sf = shrink(xp, d_sf, l_s / cur_mu)
+        # Step 3: reconstruct Ib from updated Sf.
+        new_s_spatial = xp.astype(xp.idctn(new_sf, norm="ortho"), np.float32).reshape(1, p * q)
+        new_ib = new_s_spatial * b + d_field
+        # Step 4: update baseline B.
+        r_mean_row = xp.mean(d_minus_ir, axis=1, keepdims=True)
+        new_r_mean_all = xp.mean(d_minus_ir)
+        new_b = xp.astype(xp.maximum(r_mean_row / (new_r_mean_all + 1e-9), 0.0), np.float32)
+        # dY for Lagrange update (caller only needs it after darkfield step).
+        d_y = d - new_ib - new_ir
+        return new_sf, new_s_spatial, new_ib, new_ir, d_minus_ir, new_b, new_r_mean_all, d_y
 
-        # 1. Update sparse residual Ir.
-        # S_spatial was computed at the end of the previous iteration (or
-        # pre-computed above), so no extra iDCT is needed here.
-        Ib = S_spatial * B + D_field  # (N, P*Q)
-        Ir = shrink(xp, D - Ib + Y_over_mu, W / mu)
+    if xp._backend is not Backend.NUMPY:
+        try:
+            import torch as _torch
 
-        # Cache D - Ir: the same subtraction is needed in the flat-field
-        # update (step 2), the baseline update (step 4), and the Lagrange
-        # step (step 6).  Computing it once avoids two redundant N x (P*Q)
-        # allocations per iteration.
-        DminusIr = D - Ir
+            if hasattr(_torch, "compile"):
+                _alm_core_step = _torch.compile(_alm_core_step, mode="reduce-overhead", fullgraph=False)
+        except Exception:
+            pass
 
-        # 2. Update flat-field DCT coefficients Sf.
-        # The mean reduction stays on the active backend (GPU-friendly):
-        # only a (P, Q) slice is transferred to CPU, not the full (N, P*Q)
-        # matrix.
-        # Subtract D_field (dark-field) before taking the mean so that its
-        # DC/low-frequency energy does not bleed into the flat-field estimate.
-        # This matches the MATLAB reference: temp_W = D - A1_hat - E + Y/mu,
-        # where A1_hat = S*B + D_field. When estimate_darkfield=False,
-        # D_field is identically zero so this subtraction is a no-op.
-        R_dev = DminusIr - D_field + Y_over_mu  # reuse cached Y/mu
-        R_for_sf_mean = xp.mean(R_dev.reshape(n, p, q), axis=0)  # stays on device, shape (p, q)
-        dSf = xp.astype(xp.dctn(R_for_sf_mean, norm="ortho"), np.float32)
-        Sf = shrink(xp, dSf, l_s / mu)
+    # ------------------------------------------------------------------
+    # Main loop  (gradient tracking disabled for torch backends)
+    # ------------------------------------------------------------------
+    with xp.inference_mode():
+        while not converged and iteration < max_iter:
+            # Steps 1-4: Ir / Sf / S_spatial / Ib / B update (compiled when on GPU).
+            Sf, S_spatial, Ib, Ir, DminusIr, B, R_mean_all, dY = _alm_core_step(D, S_spatial, B, D_field, Y, W, mu)
 
-        # 3. Reconstruct Ib from the updated Sf.
-        # S_spatial is stored for reuse at the START of the next iteration.
-        S_spatial = xp.astype(xp.idctn(Sf, norm="ortho"), np.float32).reshape(1, p * q)
-        Ib = S_spatial * B + D_field
+            # 5. Dark-field estimation (all operations on the active backend device).
+            if estimate_darkfield:
+                # S_mean stays on device; avoid float() round-trip.
+                S_mean = xp.mean(S_spatial)
+                # mask_valid_b: shape (N,) float32 weight (0 or 1) — replaces
+                # boolean fancy indexing so shapes stay static for CUDA graphs.
+                mask_valid_b_f = xp.astype((B < 1.0)[:, 0], np.float32)  # (N,)
+                mask_high_s_f = xp.astype(S_spatial[0] > (S_mean - 1e-6), np.float32)  # (P*Q,)
+                mask_low_s_f = xp.astype(S_spatial[0] < (S_mean + 1e-6), np.float32)  # (P*Q,)
 
-        # 4. Update baseline B (stays on the active backend device).
-        # Per-row and global means computed on device; no CPU transfer needed.
-        R_mean_row = xp.mean(DminusIr, axis=1, keepdims=True)  # (N, 1), on device
-        R_mean_all = float(xp.mean(DminusIr))
-        B = xp.astype(xp.maximum(R_mean_row / (R_mean_all + 1e-9), 0.0), np.float32)
+                # Number of valid rows; single sync point.
+                k_cnt = float(mask_valid_b_f.sum())
+                any_valid = k_cnt > 0.0
 
-        # 5. Dark-field estimation (all operations on the active backend device).
-        # PyTorch supports boolean fancy indexing and masked reductions — no
-        # CPU round-trip is needed.
-        if estimate_darkfield:
-            S_mean = float(xp.mean(S_spatial))
-            mask_valid_b = (B < 1.0)[:, 0]  # shape (N,) bool, on device
-            mask_high_s = S_spatial[0] > (S_mean - 1e-6)  # shape (P*Q,)
-            mask_low_s = S_spatial[0] < (S_mean + 1e-6)
+                # Masked row-mean: sum(DminusIr * mask_valid_b_f[:, None], axis=0) / k_cnt
+                # Then dot with high/low-S masks to get R_high / R_low.
+                R_mean_all_f = float(R_mean_all)
+                if any_valid:
+                    # DminusIr_valid: (N, P*Q) weighted, reduces to row-mean of valid rows.
+                    DminusIr_valid_rowsum = xp.sum(DminusIr * mask_valid_b_f[:, None], axis=0, keepdims=True)  # (1, P*Q)
+                    n_high = float(mask_high_s_f.sum())
+                    n_low = float(mask_low_s_f.sum())
+                    R_high = float(xp.sum(DminusIr_valid_rowsum * mask_high_s_f[None, :]) / (k_cnt * n_high + 1e-9))
+                    R_low = float(xp.sum(DminusIr_valid_rowsum * mask_low_s_f[None, :]) / (k_cnt * n_low + 1e-9))
+                else:
+                    R_high = 0.0
+                    R_low = 0.0
+                    DminusIr_valid_rowsum = xp.zeros((1, p * q), dtype=np.float32)
+                S_mean_f = float(S_mean)
+                b1_cand = (R_high - R_low) / (R_mean_all_f + 1e-9)
 
-            any_valid = bool(mask_valid_b.any())
-            R_high = float(xp.mean(DminusIr[mask_valid_b][:, mask_high_s])) if any_valid else 0.0
-            R_low = float(xp.mean(DminusIr[mask_valid_b][:, mask_low_s])) if any_valid else 0.0
-            b1_cand = (R_high - R_low) / (R_mean_all + 1e-9)
+                # b_valid statistics using mask; b_flat shape (N,) float32.
+                b_flat = xp.astype(B[:, 0], np.float32)  # (N,)
+                sum_b = 0.0  # initialise so the second `if any_valid` block sees it
+                if any_valid:
+                    # Weighted sums (static shape, no dynamic indexing).
+                    sum_b2 = float(xp.sum(b_flat**2 * mask_valid_b_f))
+                    sum_b = float(xp.sum(b_flat * mask_valid_b_f))
+                    temp1 = sum_b2
+                    temp2 = sum_b
+                    temp3 = b1_cand * k_cnt
+                    temp4 = float(xp.sum(b_flat * b1_cand * mask_valid_b_f))
+                    denom = temp2 * temp3 - k_cnt * temp4
+                    B1_new = (temp1 * temp3 - temp2 * temp4) / denom if denom != 0.0 else B1
+                    B1_new = min(B1_new, B1_uplimit / (S_mean_f + 1e-9))
+                    if B1_new > 0.0:
+                        B1 = B1_new
+                    # else: keep the previous positive B1 estimate
 
-            k_cnt = int(mask_valid_b.sum())
-            b_valid = B[mask_valid_b][:, 0]  # shape (k_cnt,), on device
-            if k_cnt > 0:
-                temp1 = float((b_valid**2).sum())
-                temp2 = float(b_valid.sum())
-                temp3 = b1_cand * k_cnt
-                temp4 = float((b_valid * b1_cand).sum())
-                denom = temp2 * temp3 - k_cnt * temp4
-                B1_new = (temp1 * temp3 - temp2 * temp4) / denom if denom != 0.0 else B1
-                B1_new = min(B1_new, B1_uplimit / (S_mean + 1e-9))
-                if B1_new > 0.0:
-                    B1 = B1_new
-                # else: keep the previous positive B1 estimate
+                Z = B1 * (S_mean - S_spatial)  # shape (1, P*Q), float32 on device
 
-            Z = B1 * (S_mean - S_spatial)  # shape (1, P*Q), float32 on device
+                # Compute A1_offset in float64 to avoid catastrophic cancellation.
+                S64 = xp.astype(S_spatial, np.float64)
+                if any_valid:
+                    D_valid_rowsum_f64 = xp.astype(DminusIr_valid_rowsum, np.float64)  # (1, P*Q)
+                    b_valid_mean = sum_b / k_cnt
+                    A1_offset = D_valid_rowsum_f64 / k_cnt - b_valid_mean * S64
+                else:
+                    A1_offset = xp.zeros((1, p * q), dtype=np.float64)
+                A_offset = A1_offset - xp.astype(Z, np.float64)  # (1, P*Q) float64
 
-            # Compute A1_offset in float64.  Both mean(R_rows) and b_mean*S are
-            # O(1), their difference is O(dark-field) — float32 loses all
-            # significant digits (catastrophic cancellation).  numpy's default
-            # mean upcast (float32→float64) gave this precision for free before;
-            # we replicate it explicitly here.
-            S64 = xp.astype(S_spatial, np.float64)
-            if any_valid:
-                D_rows_f64 = xp.astype(DminusIr[mask_valid_b], np.float64)
-                A1_offset = xp.mean(D_rows_f64, axis=0, keepdims=True) - float(b_valid.mean()) * S64
-            else:
-                A1_offset = xp.zeros((1, p * q), dtype=np.float64)
-            A_offset = A1_offset - xp.astype(Z, np.float64)  # (1, P*Q) float64
+                # Zero-mean A_offset before the proximal step (matches MATLAB reference).
+                A_offset_mean = float(xp.mean(A_offset))
+                A_offset_centered = xp.astype(A_offset - A_offset_mean, np.float32)
 
-            # Zero-mean A_offset before the proximal (DCT-shrink) step so that
-            # the DC component of the dark-field is not killed by the shrinkage
-            # thresholds.  This matches the MATLAB reference which explicitly
-            # subtracts mean(A1_offset) before the DCT step.  In the degenerate
-            # case (B1=0, Z=0) we add the mean back after shrinkage so the DC is
-            # preserved.  The second spatial shrink below is kept intact (paper
-            # Eq. 6 dual penalty |F(D_R)|_1 + |D_R|_1).
-            A_offset_mean = float(xp.mean(A_offset))
-            A_offset_centered = xp.astype(A_offset - A_offset_mean, np.float32)
+                Dr_f = xp.astype(xp.dctn(A_offset_centered.reshape(p, q), norm="ortho"), np.float32)
+                Dr_f_shrunk = shrink(xp, Dr_f, l_d / (ent2 * mu))
+                Dr = xp.astype(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho"), np.float32).reshape(1, p * q)
+                Dr = shrink(xp, Dr, l_d / (mu * ent2))
+                D_field = xp.astype(Dr + A_offset_mean + Z, np.float32)
 
-            Dr_f = xp.astype(xp.dctn(A_offset_centered.reshape(p, q), norm="ortho"), np.float32)
-            Dr_f_shrunk = shrink(xp, Dr_f, l_d / (ent2 * mu))
-            Dr = xp.astype(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho"), np.float32).reshape(1, p * q)
-            Dr = shrink(xp, Dr, l_d / (mu * ent2))
-            D_field = xp.astype(Dr + A_offset_mean + Z, np.float32)
+            # 6. Update Lagrange multiplier Y (primal residual: D - Ib - Ir).
+            # dY was returned by _alm_core_step; it equals D - Ib - Ir using the
+            # new S_spatial/B and the current D_field (before the darkfield update).
+            # Accumulate the Lagrange multiplier in float64 on the active device
+            # so that large mu values (mu grows as rho^iter) don't erode precision.
+            # xp.astype keeps the cast on GPU for torch backends — no device transfer.
+            Y = Y + mu * xp.astype(dY, np.float64)
+            mu = min(mu * rho, mu_bar)
+            iteration += 1
 
-        # 6. Update Lagrange multiplier Y (primal residual: D - Ib - Ir).
-        # Evaluation order matches the original (D - Ib) - Ir, not (D - Ir) - Ib,
-        # to preserve float32 accumulation identical to the pre-optimisation code.
-        dY = D - Ib - Ir
-        # Accumulate the Lagrange multiplier in float64 on the active device
-        # so that large mu values (mu grows as rho^iter) don't erode precision.
-        # xp.astype keeps the cast on GPU for torch backends — no device transfer.
-        Y = Y + mu * xp.astype(dY, np.float64)
-        mu = min(mu * rho, mu_bar)
-        iteration += 1
-
-        stop_crit = xp.norm_fro(dY) / (d_norm + 1e-9)
-        if pbar is not None:
-            pbar.update()
-        if stop_crit < tol:
-            converged = True
+            stop_crit = xp.norm_fro(dY) / (d_norm + 1e-9)
+            if pbar is not None:
+                pbar.update()
+            if stop_crit < tol:
+                converged = True
 
     if iteration == max_iter:
         print("Maximum ALM iterations reached without full convergence.")

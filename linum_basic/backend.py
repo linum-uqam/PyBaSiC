@@ -334,6 +334,29 @@ class ArrayNamespace:
             return self._torch.mean(x)
         return self._torch.mean(x, dim=axis, keepdim=keepdims)
 
+    def sum(self, x: Any, axis: int | None = None, keepdims: bool = False) -> Any:
+        """Compute the sum of array elements along an optional axis.
+
+        Parameters
+        ----------
+        x : object
+            Backend-native array.
+        axis : int or None
+            Axis along which to reduce.  If ``None``, reduces over all elements.
+        keepdims : bool
+            If ``True``, the reduced axis is kept as a size-1 dimension.
+
+        Returns
+        -------
+        object
+            Reduced array (or scalar when *axis* is ``None``).
+        """
+        if self._backend is Backend.NUMPY:
+            return np.sum(x, axis=axis, keepdims=keepdims)
+        if axis is None:
+            return self._torch.sum(x)
+        return self._torch.sum(x, dim=axis, keepdim=keepdims)
+
     # ------------------------------------------------------------------
     # Linear algebra
     # ------------------------------------------------------------------
@@ -393,6 +416,25 @@ class ArrayNamespace:
         if self._backend is Backend.NUMPY:
             return float(np.linalg.svd(x, compute_uv=False)[0])
         return float(self._torch.linalg.svdvals(x)[0])
+
+    def inference_mode(self) -> Any:
+        """Return a context manager that disables gradient tracking.
+
+        On the Torch backend this returns ``torch.inference_mode()``.
+        On the NumPy backend it returns a no-op context manager so the
+        ALM loop can unconditionally use ``with xp.inference_mode()``.
+
+        Returns
+        -------
+        contextlib.AbstractContextManager
+            Context manager that disables gradient computation (Torch) or
+            is a no-op (NumPy).
+        """
+        if self._backend is Backend.TORCH:
+            return self._torch.inference_mode()
+        import contextlib
+
+        return contextlib.nullcontext()
 
     # ------------------------------------------------------------------
     # DCT
@@ -598,6 +640,9 @@ def _torch_idct1d(x: Any, norm: str = "ortho") -> Any:
 def _torch_dctn(x: Any, norm: str = "ortho") -> Any:
     """N-dimensional orthonormal DCT-II (applied to each axis sequentially).
 
+    For the common 2-D case the two passes are fused into a single
+    transpose-free contiguous batch to reduce kernel launch overhead.
+
     Parameters
     ----------
     x : torch.Tensor
@@ -610,14 +655,22 @@ def _torch_dctn(x: Any, norm: str = "ortho") -> Any:
     torch.Tensor
         DCT-II coefficients, same shape as *x*.
     """
+    if x.ndim == 2:
+        # Axis 1 (last): DCT along rows.
+        y = _torch_dct1d(x, norm=norm)
+        # Axis 0: transpose so axis 0 becomes the last axis, apply DCT, transpose back.
+        return _torch_dct1d(y.t().contiguous(), norm=norm).t().contiguous()
     y = x
     for i in range(y.ndim):
-        y = _torch_dct1d(y.transpose(-1, i), norm=norm).transpose(-1, i)
+        y = _torch_dct1d(y.transpose(-1, i).contiguous(), norm=norm).transpose(-1, i)
     return y
 
 
 def _torch_idctn(x: Any, norm: str = "ortho") -> Any:
     """N-dimensional orthonormal inverse DCT-II (DCT-III).
+
+    For the common 2-D case the two passes are fused into a single
+    transpose-free contiguous batch.
 
     Parameters
     ----------
@@ -631,9 +684,12 @@ def _torch_idctn(x: Any, norm: str = "ortho") -> Any:
     torch.Tensor
         Reconstructed tensor, same shape as *x*.
     """
+    if x.ndim == 2:
+        y = _torch_idct1d(x, norm=norm)
+        return _torch_idct1d(y.t().contiguous(), norm=norm).t().contiguous()
     y = x
     for i in range(y.ndim):
-        y = _torch_idct1d(y.transpose(-1, i), norm=norm).transpose(-1, i)
+        y = _torch_idct1d(y.transpose(-1, i).contiguous(), norm=norm).transpose(-1, i)
     return y
 
 
@@ -667,11 +723,19 @@ def get_xp(backend: str | Backend, device: str | None = None) -> ArrayNamespace:
 
             if torch.cuda.is_available():
                 return ArrayNamespace(Backend.TORCH, device or "cuda")
-            if torch.backends.mps.is_available():
-                return ArrayNamespace(Backend.TORCH, device or "mps")
+            # MPS is intentionally excluded: svdvals and float64 are not supported.
         except ImportError:
             pass
         return ArrayNamespace(Backend.NUMPY)
 
     b = Backend(backend) if isinstance(backend, str) else backend
+    if b is Backend.TORCH:
+        resolved_device = device or "cpu"
+        if resolved_device.startswith("mps"):
+            msg = (
+                "MPS is not supported as a backend for linum-basic: PyTorch MPS lacks "
+                "float64 and svdvals, both required by the ALM solver. "
+                "Use backend='torch' with device='cuda' or backend='numpy' instead."
+            )
+            raise NotImplementedError(msg)
     return ArrayNamespace(b, device)

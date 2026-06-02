@@ -62,7 +62,19 @@ def is_gpu_backend(backend: str | None, device: str | None) -> bool:
     """
     if backend not in {"torch", "auto"}:
         return False
-    return (device or "").lower().startswith(("cuda", "mps"))
+    # Explicit device string wins
+    if (device or "").lower().startswith(("cuda", "mps")):
+        return True
+    # "auto" with no explicit device: inspect the runtime to decide
+    if backend == "auto":
+        try:
+            import torch
+
+            if torch.cuda.is_available() or torch.backends.mps.is_available():
+                return True
+        except ImportError:
+            pass
+    return False
 
 
 def resolve_workers(n_workers: int | None, backend: str | None = None, device: str | None = None) -> int:
