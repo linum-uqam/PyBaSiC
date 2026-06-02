@@ -581,6 +581,43 @@ class ArrayNamespace:
 _DCT_TWIDDLE_CACHE: dict[tuple, tuple] = {}
 _IDCT_TWIDDLE_CACHE: dict[tuple, tuple] = {}
 
+# Per-(length, device) cache of orthonormal DCT-II matrices for matmul-based
+# DCT.  Used by _build_alm_step to replace FFT-based DCT inside torch.compile
+# regions (Torchinductor cannot generate Triton code for complex ops).
+_DCT_MATRIX_CACHE: dict[tuple, Any] = {}
+
+
+def _get_dct_matrix(n: int, device: Any) -> Any:
+    """Return a cached (n, n) orthonormal DCT-II matrix on *device*.
+
+    The matrix ``A`` satisfies ``y = A @ x`` for the length-*n* DCT-II
+    with ``norm="ortho"``.  It is built in float64 for accuracy and cached
+    per ``(n, device)``.  Callers cast to float32 via ``.float()`` as needed.
+
+    Parameters
+    ----------
+    n : int
+        Length of the DCT.
+    device : torch.device or str
+        Target device.
+
+    Returns
+    -------
+    torch.Tensor, shape (n, n), dtype float64
+        Orthonormal DCT-II matrix on *device*.
+    """
+    import torch
+
+    key = (n, str(device))
+    if key not in _DCT_MATRIX_CACHE:
+        k = torch.arange(n, dtype=torch.float64, device=device)
+        i = torch.arange(n, dtype=torch.float64, device=device)
+        A = torch.cos(math.pi * (i[None, :] + 0.5) * k[:, None] / n)
+        A[0] *= 1.0 / math.sqrt(n)
+        A[1:] *= math.sqrt(2.0 / n)
+        _DCT_MATRIX_CACHE[key] = A
+    return _DCT_MATRIX_CACHE[key]
+
 
 def _get_dct_twiddles(n: int, dtype: Any, device: Any) -> tuple:
     """Return cached (cos_k, sin_k, ortho_scale) for a forward DCT of length *n*."""

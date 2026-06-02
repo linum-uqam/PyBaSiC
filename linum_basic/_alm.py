@@ -69,6 +69,36 @@ def _build_alm_step(xp: ArrayNamespace, n: int, p: int, q: int, l_s: float) -> A
     if cache_key in _ALM_STEP_CACHE:
         return _ALM_STEP_CACHE[cache_key]
 
+    # On GPU backends, replace FFT-based DCT with real matrix-multiply DCT.
+    # torch.fft.fft produces complex intermediate tensors that Torchinductor
+    # cannot compile to Triton kernels, forcing those ops into eager mode.
+    # Precomputing the orthonormal DCT-II matrices A_p, A_q and expressing
+    # the 2-D DCT as  Y = A_p @ X @ A_q.T  uses only real matmuls that
+    # Triton compiles efficiently.  We use float32 for A to stay in the
+    # same dtype as the inputs; the matrices are built once and captured.
+    if xp._backend is not Backend.NUMPY:
+        from linum_basic.backend import _get_dct_matrix as _gcm
+
+        _device = getattr(xp, "_device", "cpu")
+        _Ap = _gcm(p, _device).float()  # (p, p) f32, orthonormal DCT-II
+        _Aq = _gcm(q, _device).float()  # (q, q) f32, orthonormal DCT-II
+
+        def _dctn2(x: Any) -> Any:
+            # 2-D DCT-II: Y = A_p @ X @ A_q.T
+            return _Ap @ x @ _Aq.T
+
+        def _idctn2(x: Any) -> Any:
+            # 2-D DCT-III (inverse DCT-II): X = A_p.T @ Y @ A_q
+            return _Ap.T @ x @ _Aq
+
+    else:
+        # NumPy path: delegate to scipy via ArrayNamespace
+        def _dctn2(x: Any) -> Any:
+            return xp.dctn(x, norm="ortho")
+
+        def _idctn2(x: Any) -> Any:
+            return xp.idctn(x, norm="ortho")
+
     def _alm_core_step(
         d: Any,
         s_spatial: Any,
@@ -86,10 +116,10 @@ def _build_alm_step(xp: ArrayNamespace, n: int, p: int, q: int, l_s: float) -> A
         # Step 2: update flat-field DCT coefficients.
         r_dev = d_minus_ir - d_field + y_f32
         r_for_sf_mean = xp.mean(r_dev.reshape(-1, p, q), axis=0)
-        d_sf = xp.astype(xp.dctn(r_for_sf_mean, norm="ortho"), np.float32)
+        d_sf = xp.astype(_dctn2(r_for_sf_mean), np.float32)
         new_sf = shrink(xp, d_sf, l_s / cur_mu)
         # Step 3: reconstruct Ib from updated Sf.
-        new_s_spatial = xp.astype(xp.idctn(new_sf, norm="ortho"), np.float32).reshape(1, p * q)
+        new_s_spatial = xp.astype(_idctn2(new_sf), np.float32).reshape(1, p * q)
         new_ib = new_s_spatial * b + d_field
         # Step 4: update baseline B.
         r_mean_row = xp.mean(d_minus_ir, axis=1, keepdims=True)
@@ -105,6 +135,9 @@ def _build_alm_step(xp: ArrayNamespace, n: int, p: int, q: int, l_s: float) -> A
             import torch as _torch
 
             if hasattr(_torch, "compile"):
+                # Enable TF32 for float32 matmul: faster on Ampere+ GPUs with
+                # negligible precision loss for the iterative ALM solver.
+                _torch.set_float32_matmul_precision("high")
                 fn = _torch.compile(_alm_core_step, mode="default", fullgraph=False)
         except Exception:
             pass
