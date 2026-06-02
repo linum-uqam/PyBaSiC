@@ -21,7 +21,7 @@ from typing import Any
 
 import numpy as np
 
-_WARMUP_ITERS = 3  # BaSiC reweighting iterations counted as warmup
+_WARMUP_ITERS = 3  # ALM iterations used for torch.compile warmup (triggers compilation)
 
 
 def _make_stack(n: int, size: int, rng: np.random.Generator) -> np.ndarray:
@@ -164,6 +164,17 @@ def main() -> None:
 
         cuda_stats: dict[str, Any] | None = None
         if cuda_ok:
+            # Warmup: force torch.compile to trace and compile kernels before
+            # the timed run.  Without this, the first call pays the ~2-3 s
+            # TorchDynamo trace + Triton compilation overhead, masking the
+            # actual GPU execution speed.
+            _run_once(
+                imgs,
+                estimate_darkfield=args.darkfield,
+                backend="torch",
+                device=args.device,
+                max_iter=_WARMUP_ITERS,
+            )
             cuda_stats = _run_once(
                 imgs,
                 estimate_darkfield=args.darkfield,
