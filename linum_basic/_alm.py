@@ -17,6 +17,16 @@ from linum_basic.backend import ArrayNamespace, Backend, get_xp
 
 __all__ = ["inexact_alm_l1", "shrink"]
 
+# ---------------------------------------------------------------------------
+# Module-level cache for compiled per-iteration step functions.
+# Key: (backend_value, device_str, p, q, l_s)  →  compiled callable.
+# Caching here avoids re-compiling on every call to inexact_alm_l1 (which is
+# invoked once per reweighting pass, up to max_reweighting_iterations times
+# per BaSiC.run()).  The JIT cost is paid at most once per unique problem shape
+# and regularisation weight across the entire process lifetime.
+# ---------------------------------------------------------------------------
+_ALM_STEP_CACHE: dict[tuple, Any] = {}
+
 
 def shrink[ArrayT](xp: ArrayNamespace, theta: ArrayT, epsilon: float = 1e-3) -> ArrayT:
     """Scalar shrink (soft-threshold) operator.
@@ -45,6 +55,62 @@ def shrink[ArrayT](xp: ArrayNamespace, theta: ArrayT, epsilon: float = 1e-3) -> 
        Analysis?" *J. ACM* 58, 1-37 (2011).
     """
     return xp.copysign(xp.maximum(xp.abs(theta) - epsilon, 0.0), theta)
+
+
+def _build_alm_step(xp: ArrayNamespace, p: int, q: int, l_s: float) -> Any:
+    """Return a (possibly compiled) per-iteration ALM step function.
+
+    The returned callable is cached by ``(backend, device, p, q, l_s)`` so
+    the same compiled artifact is reused across all reweighting passes and
+    across different :class:`~linum_basic.core.BaSiC` instances that share
+    the same problem shape and regularisation weight.
+    """
+    cache_key = (xp._backend.value, getattr(xp, "device", ""), p, q, l_s)
+    if cache_key in _ALM_STEP_CACHE:
+        return _ALM_STEP_CACHE[cache_key]
+
+    def _alm_core_step(
+        d: Any,
+        s_spatial: Any,
+        b: Any,
+        d_field: Any,
+        y: Any,
+        w: Any,
+        cur_mu: float,
+    ) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
+        y_f32 = xp.astype(y / cur_mu, np.float32)
+        # Step 1: update Ir using S_spatial from the previous iteration.
+        ib_old = s_spatial * b + d_field
+        new_ir = shrink(xp, d - ib_old + y_f32, w / cur_mu)
+        d_minus_ir = d - new_ir
+        # Step 2: update flat-field DCT coefficients.
+        r_dev = d_minus_ir - d_field + y_f32
+        r_for_sf_mean = xp.mean(r_dev.reshape(-1, p, q), axis=0)
+        d_sf = xp.astype(xp.dctn(r_for_sf_mean, norm="ortho"), np.float32)
+        new_sf = shrink(xp, d_sf, l_s / cur_mu)
+        # Step 3: reconstruct Ib from updated Sf.
+        new_s_spatial = xp.astype(xp.idctn(new_sf, norm="ortho"), np.float32).reshape(1, p * q)
+        new_ib = new_s_spatial * b + d_field
+        # Step 4: update baseline B.
+        r_mean_row = xp.mean(d_minus_ir, axis=1, keepdims=True)
+        new_r_mean_all = xp.mean(d_minus_ir)
+        new_b = xp.astype(xp.maximum(r_mean_row / (new_r_mean_all + 1e-9), 0.0), np.float32)
+        # dY for Lagrange update (caller only needs it after darkfield step).
+        d_y = d - new_ib - new_ir
+        return new_sf, new_s_spatial, new_ib, new_ir, d_minus_ir, new_b, new_r_mean_all, d_y
+
+    fn: Any = _alm_core_step
+    if xp._backend is not Backend.NUMPY:
+        try:
+            import torch as _torch
+
+            if hasattr(_torch, "compile"):
+                fn = _torch.compile(_alm_core_step, mode="default", fullgraph=False)
+        except Exception:
+            pass
+
+    _ALM_STEP_CACHE[cache_key] = fn
+    return fn
 
 
 def inexact_alm_l1(
@@ -217,54 +283,11 @@ def inexact_alm_l1(
     S_spatial = xp.astype(xp.idctn(Sf, norm="ortho"), np.float32).reshape(1, p * q)
 
     # ------------------------------------------------------------------
-    # Build (optionally compiled) per-iteration core step.
-    # Steps 1-4: Ir, Sf, S_spatial, Ib, B update — pure-tensor ops with no
-    # Python control-flow branches on tensor values, so torch.compile can
-    # trace through them cleanly.  The darkfield update (step 5) and the
-    # Y/mu update (step 6) remain in the caller because they require Python
-    # branches on host values.
-    #
-    # S_spatial is passed as a pre-computed parameter (it is produced at the
-    # end of each iteration) to avoid a redundant iDCT on every call.
+    # Retrieve (or build and compile) the per-iteration core step.
+    # Steps 1-4 are a pure-tensor function compiled once per unique
+    # (backend, device, p, q, l_s) combination and cached at module scope.
     # ------------------------------------------------------------------
-    def _alm_core_step(
-        d: Any,
-        s_spatial: Any,
-        b: Any,
-        d_field: Any,
-        y: Any,
-        w: Any,
-        cur_mu: float,
-    ) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
-        y_f32 = xp.astype(y / cur_mu, np.float32)
-        # Step 1: update Ir using S_spatial from the previous iteration.
-        ib_old = s_spatial * b + d_field
-        new_ir = shrink(xp, d - ib_old + y_f32, w / cur_mu)
-        d_minus_ir = d - new_ir
-        # Step 2: update flat-field DCT coefficients.
-        r_dev = d_minus_ir - d_field + y_f32
-        r_for_sf_mean = xp.mean(r_dev.reshape(-1, p, q), axis=0)
-        d_sf = xp.astype(xp.dctn(r_for_sf_mean, norm="ortho"), np.float32)
-        new_sf = shrink(xp, d_sf, l_s / cur_mu)
-        # Step 3: reconstruct Ib from updated Sf.
-        new_s_spatial = xp.astype(xp.idctn(new_sf, norm="ortho"), np.float32).reshape(1, p * q)
-        new_ib = new_s_spatial * b + d_field
-        # Step 4: update baseline B.
-        r_mean_row = xp.mean(d_minus_ir, axis=1, keepdims=True)
-        new_r_mean_all = xp.mean(d_minus_ir)
-        new_b = xp.astype(xp.maximum(r_mean_row / (new_r_mean_all + 1e-9), 0.0), np.float32)
-        # dY for Lagrange update (caller only needs it after darkfield step).
-        d_y = d - new_ib - new_ir
-        return new_sf, new_s_spatial, new_ib, new_ir, d_minus_ir, new_b, new_r_mean_all, d_y
-
-    if xp._backend is not Backend.NUMPY:
-        try:
-            import torch as _torch
-
-            if hasattr(_torch, "compile"):
-                _alm_core_step = _torch.compile(_alm_core_step, mode="default", fullgraph=False)
-        except Exception:
-            pass
+    _alm_core_step = _build_alm_step(xp, p, q, l_s)
 
     # ------------------------------------------------------------------
     # Main loop  (gradient tracking disabled for torch backends)

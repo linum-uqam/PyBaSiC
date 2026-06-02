@@ -25,12 +25,18 @@ from scipy.fft import dctn
 from tqdm.auto import tqdm
 
 from linum_basic._alm import inexact_alm_l1
-from linum_basic.backend import get_xp
+from linum_basic.backend import Backend, get_xp
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-__all__ = ["DEFAULT_L_D_DIVISOR", "DEFAULT_L_S_DIVISOR", "BaSiC", "dct_energy"]
+__all__ = ["DEFAULT_L_D_DIVISOR", "DEFAULT_L_S_DIVISOR", "GPU_MIN_ELEMENTS", "BaSiC", "dct_energy"]
+
+#: Minimum number of image elements (``N * H * W``) required for the ``"auto"``
+#: backend to route a job to the GPU.  Below this threshold the JIT compilation
+#: and kernel-launch overhead outweighs the arithmetic gain and NumPy is faster.
+#: Override per-instance via :attr:`BaSiC.gpu_min_elements`.
+GPU_MIN_ELEMENTS: int = 1_000_000
 
 # Default divisors for auto-tuning the regularisation weights from DCT energy:
 # ``l_s = dct_energy / DEFAULT_L_S_DIVISOR`` and likewise for ``l_d``.  These
@@ -87,9 +93,16 @@ class BaSiC:
         Show progress bars during loading and optimisation.
     backend : {"numpy", "torch", "auto"}
         Compute backend for the ALM optimisation loop.  ``"auto"`` picks
-        Torch with CUDA/MPS when available, otherwise falls back to NumPy.
+        Torch with CUDA when available, otherwise falls back to NumPy.
     device : str or None
         PyTorch device string (e.g. ``"cuda:0"``).  Ignored for NumPy.
+    gpu_min_elements : int
+        When ``backend="auto"`` and a GPU is available, the GPU is only used
+        when ``N * working_size * working_size >= gpu_min_elements``.  Smaller
+        stacks are routed to NumPy because JIT and kernel-launch overhead
+        dominates at low problem sizes.  Default :data:`GPU_MIN_ELEMENTS`
+        (1 000 000).  Set to ``0`` to always use the GPU, or to a very large
+        value to always use NumPy.
 
     Attributes
     ----------
@@ -151,12 +164,16 @@ class BaSiC:
         verbose: bool = False,
         backend: Literal["numpy", "torch", "auto"] = "numpy",
         device: str | None = None,
+        gpu_min_elements: int = GPU_MIN_ELEMENTS,
     ) -> None:
         self.input_type: str | None = None
         self.extension = extension
         self.estimate_darkfield = estimate_darkfield
         self.verbose = verbose
+        self._backend_str: str = backend  # kept for size-based routing in prepare()
+        self._device_str: str | None = device
         self._xp = get_xp(backend, device)
+        self.gpu_min_elements: int = gpu_min_elements
 
         if isinstance(input, (str, Path)):
             self.directory: str | Path = input
@@ -311,6 +328,14 @@ class BaSiC:
             self.l_d = dct_sum / DEFAULT_L_D_DIVISOR
 
         self.img_sort = np.sort(self.img_stack_resized, axis=0)
+
+        # Size-based GPU routing: if "auto" selected a GPU but the stack is too
+        # small for GPU to be beneficial, fall back to NumPy.  An explicit
+        # backend choice (e.g. backend="torch") is always respected.
+        if self._backend_str == "auto":
+            n_elems = self.n_images * self.working_size * self.working_size
+            if self._xp._backend is not Backend.NUMPY and n_elems < self.gpu_min_elements:
+                self._xp = get_xp(Backend.NUMPY)
 
         ws = self.working_size
         self.flatfield = np.ones((ws, ws), dtype=np.float32)
