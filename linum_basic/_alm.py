@@ -262,7 +262,7 @@ def inexact_alm_l1(
             import torch as _torch
 
             if hasattr(_torch, "compile"):
-                _alm_core_step = _torch.compile(_alm_core_step, mode="reduce-overhead", fullgraph=False)
+                _alm_core_step = _torch.compile(_alm_core_step, mode="default", fullgraph=False)
         except Exception:
             pass
 
