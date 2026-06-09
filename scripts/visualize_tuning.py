@@ -12,10 +12,8 @@ Runs Optuna tuning on the mosaic and produces two output figures:
 
 Usage::
 
-    uv run python scripts/visualize_tuning.py
-    uv run python scripts/visualize_tuning.py --n-trials 50 --verbose
-
-All arguments have defaults that work with the development dataset.
+    uv run python scripts/visualize_tuning.py --input /path/to/mosaic.ome.zarr
+    uv run python scripts/visualize_tuning.py --input /path/to/mosaic.ome.zarr --n-trials 50 --verbose
 """
 
 from __future__ import annotations
@@ -30,10 +28,6 @@ import numpy as np
 
 from linum_basic import viz
 
-_DEFAULT_ZARR = "/Users/Frans/Downloads/sub-22/mosaic_grid_z27_focal_fix.ome.zarr"
-_DEFAULT_OUT_DIR = str(Path(_DEFAULT_ZARR).parent)
-
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -46,15 +40,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--input",
-        default=_DEFAULT_ZARR,
+        required=True,
         metavar="ZARR",
-        help="Path to the OME-Zarr mosaic (default: %(default)s).",
+        help="Path to the OME-Zarr mosaic.",
     )
     p.add_argument(
         "--output-dir",
-        default=_DEFAULT_OUT_DIR,
+        default=".",
         metavar="DIR",
-        help="Directory for output PNGs and JSON (default: %(default)s).",
+        help="Directory for output PNGs and JSON (default: current directory).",
     )
     p.add_argument(
         "--n-trials",

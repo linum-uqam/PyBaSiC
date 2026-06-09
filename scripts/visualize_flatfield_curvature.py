@@ -8,8 +8,8 @@ Fits one BaSiC flat-field per z-level and plots:
 
 Usage::
 
-    uv run python scripts/visualize_flatfield_curvature.py \\
-        --input /path/to/mosaic.ome.zarr \\
+    uv run python scripts/visualize_flatfield_curvature.py \
+        --input /path/to/mosaic.ome.zarr \
         --z-indices 0 10 20 30 40 50 \\
         --z-inspect 27 \\
         --overlap 0.2 \\
@@ -32,19 +32,16 @@ from linum_basic import viz
 # CLI
 # ---------------------------------------------------------------------------
 
-_DEFAULT_ZARR = "/Users/Frans/Downloads/sub-22/mosaic_grid_z27_focal_fix.ome.zarr"
-_DEFAULT_OUT = str(Path(_DEFAULT_ZARR).parent / "flatfield_curvature.png")
-
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    p.add_argument("--input", required=True, metavar="ZARR", help="Path to the OME-Zarr mosaic.")
     p.add_argument(
-        "--input", default=_DEFAULT_ZARR, metavar="ZARR", help="Path to the OME-Zarr mosaic (default: %(default)s)."
+        "--output", default=None, metavar="PNG", help="Output PNG path (default: flatfield_curvature.png next to the zarr)."
     )
-    p.add_argument("--output", default=_DEFAULT_OUT, metavar="PNG", help="Output PNG path (default: %(default)s).")
     p.add_argument(
         "--z-indices",
         nargs="+",
@@ -551,6 +548,8 @@ def _build_3d_figure(
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.output is None:
+        args.output = str(Path(args.input).parent / "flatfield_curvature.png")
 
     mosaic, fit = _load_and_fit(
         zarr_path=args.input,
