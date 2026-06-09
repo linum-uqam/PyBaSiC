@@ -1,6 +1,6 @@
 [project]
 name = "linum-basic"
-version = "0.2.0"
+version = "2.0.0"
 description = "Python implementation of the BaSiC shading correction algorithm"
 authors = [{ name = "Joël Lefebvre", email = "lefebvre.joel@uqam.ca" }]
 readme = "README.md"
