@@ -25,7 +25,14 @@ import os
 import warnings
 from collections.abc import Callable, Sequence
 
-__all__ = ["default_workers", "is_gpu_backend", "parallel_map", "resolve_workers"]
+__all__ = [
+    "default_workers",
+    "is_gpu_backend",
+    "list_cuda_devices",
+    "parallel_map",
+    "parallel_map_cuda_devices",
+    "resolve_workers",
+]
 
 
 def default_workers() -> int:
@@ -77,6 +84,41 @@ def is_gpu_backend(backend: str | None, device: str | None) -> bool:
     return False
 
 
+def list_cuda_devices(device: str | None) -> list[str]:
+    """Return CUDA device strings available for z-level parallelism.
+
+    When *device* is ``"cuda"`` (or ``None`` on a CUDA host), all visible
+    GPUs are returned.  A specific index such as ``"cuda:0"`` yields a
+    single-device list.
+
+    Parameters
+    ----------
+    device : str or None
+        PyTorch device string from BaSiC kwargs.
+
+    Returns
+    -------
+    list of str
+        Device strings, e.g. ``["cuda:0", "cuda:1"]``.  Empty when CUDA is
+        unavailable or *device* targets a non-CUDA backend.
+    """
+    dev = (device or "").lower()
+    if dev.startswith("mps"):
+        return []
+    try:
+        import torch
+    except ImportError:
+        return []
+    if not torch.cuda.is_available():
+        return []
+    dev = (device or "cuda").lower()
+    if dev in {"", "cuda"}:
+        return [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+    if dev.startswith("cuda:"):
+        return [dev]
+    return []
+
+
 def resolve_workers(n_workers: int | None, backend: str | None = None, device: str | None = None) -> int:
     """Resolve a concrete worker count, applying defaults and the GPU guard.
 
@@ -97,6 +139,9 @@ def resolve_workers(n_workers: int | None, backend: str | None = None, device: s
     """
     requested = default_workers() if n_workers is None else max(1, int(n_workers))
     if is_gpu_backend(backend, device):
+        cuda_devices = list_cuda_devices(device)
+        if len(cuda_devices) > 1:
+            return min(requested, len(cuda_devices))
         if requested > 1:
             warnings.warn(
                 f"Process-based parallelism is disabled on the '{backend}' backend with device "
@@ -156,3 +201,69 @@ def parallel_map[T, R](
     with parallel_config(backend="loky", inner_max_num_threads=1, n_jobs=n_workers):
         results: list[R] = Parallel(verbose=10 if verbose else 0)(delayed(fn)(x) for x in items)
     return results
+
+
+def parallel_map_cuda_devices[T, R](
+    fn: Callable[[T, str], R],
+    items: Sequence[T],
+    devices: Sequence[str],
+    *,
+    desc: str | None = None,
+    verbose: bool = False,
+) -> list[R]:
+    """Map *fn(item, device)* over *items*, round-robin across *devices*.
+
+    Each item runs in a **separate process** with ``CUDA_VISIBLE_DEVICES`` set
+    to the assigned GPU index.  This avoids ``torch.compile`` thread-safety
+    issues and keeps VRAM isolated per device.
+
+    Order is preserved: ``result[i]`` corresponds to ``items[i]``.
+
+    Parameters
+    ----------
+    fn : callable
+        ``fn(item, device) -> result``.  *device* is always ``"cuda:0"`` inside
+        the worker (the only visible GPU in that process).
+    items : sequence
+        Work items (one per z-level tile stack).
+    devices : sequence of str
+        CUDA device strings, e.g. ``["cuda:0", "cuda:1"]``.
+    desc : str or None
+        Progress-bar label when *verbose*.
+    verbose : bool
+        Show a :mod:`tqdm` progress bar.
+
+    Returns
+    -------
+    list
+        Results in input order.
+    """
+    import os
+
+    items = list(items)
+    devs = list(devices)
+    if not items:
+        return []
+    if len(devs) == 1:
+        dev = devs[0]
+        iterator = items
+        if verbose:
+            from tqdm.auto import tqdm
+
+            iterator = tqdm(items, desc=desc, total=len(items), leave=False)
+        return [fn(item, dev) for item in iterator]
+
+    def _task(index: int, item: T, device: str) -> tuple[int, R]:
+        gpu_ix = device.rsplit(":", 1)[-1]
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_ix
+        return index, fn(item, "cuda:0")
+
+    from joblib import Parallel, delayed, parallel_config
+
+    n_jobs = min(len(devs), len(items))
+    with parallel_config(backend="loky", inner_max_num_threads=1, n_jobs=n_jobs):
+        pairs: list[tuple[int, R]] = Parallel(verbose=10 if verbose else 0)(
+            delayed(_task)(i, item, devs[i % len(devs)]) for i, item in enumerate(items)
+        )
+    pairs.sort(key=lambda pair: pair[0])
+    return [value for _, value in pairs]

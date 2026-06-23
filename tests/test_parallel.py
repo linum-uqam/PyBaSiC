@@ -10,6 +10,7 @@ import pytest
 from linum_basic._parallel import (
     default_workers,
     is_gpu_backend,
+    list_cuda_devices,
     parallel_map,
     resolve_workers,
 )
@@ -65,7 +66,38 @@ def test_resolve_workers_gpu_guard_forces_one() -> None:
     assert resolve_workers(4, "torch", "cpu") == 4
     assert resolve_workers(4, "auto", "mps") == 1
     with pytest.warns(UserWarning, match="sequentially"):
-        assert resolve_workers(4, "torch", "cuda") == 1
+        assert resolve_workers(4, "torch", "cuda:0") == 1
+
+
+def test_list_cuda_devices_explicit_index() -> None:
+    try:
+        import torch
+    except ImportError:
+        pytest.skip("torch not installed")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    assert list_cuda_devices("cuda:0") == ["cuda:0"]
+
+
+def test_fit_mosaic_multi_gpu_matches_sequential() -> None:
+    try:
+        import torch
+    except ImportError:
+        pytest.skip("torch not installed")
+    if torch.cuda.device_count() < 2:
+        pytest.skip("needs >= 2 CUDA devices")
+    mosaic = _make_mosaic(n_z=4, n_rows=2, n_cols=2, th=8, tw=8, seed=7)
+    basic_kwargs = {
+        "estimate_darkfield": True,
+        "working_size": 8,
+        "backend": "torch",
+        "device": "cuda",
+        "max_reweighting_iterations": 3,
+    }
+    seq = fit_mosaic(mosaic, basic_kwargs=basic_kwargs, n_workers=1)
+    par = fit_mosaic(mosaic, basic_kwargs=basic_kwargs, n_workers=2)
+    assert np.allclose(seq.flatfields, par.flatfields, atol=1e-4)
+    assert np.allclose(seq.darkfields, par.darkfields, atol=1e-4)
 
 
 # ---------------------------------------------------------------------------

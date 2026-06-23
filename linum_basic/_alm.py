@@ -57,7 +57,18 @@ def shrink[ArrayT](xp: ArrayNamespace, theta: ArrayT, epsilon: float = 1e-3) -> 
     return xp.copysign(xp.maximum(xp.abs(theta) - epsilon, 0.0), theta)
 
 
-def _build_alm_step(xp: ArrayNamespace, n: int, p: int, q: int, l_s: float) -> Any:
+def _build_alm_step(
+    xp: ArrayNamespace,
+    n: int,
+    p: int,
+    q: int,
+    l_s: float,
+    *,
+    estimate_darkfield: bool = False,
+    l_d: float = 0.0,
+    ent2: float = 10.0,
+    b1_uplimit: float = 0.0,
+) -> Any:
     """Return a (possibly compiled) per-iteration ALM step function.
 
     The returned callable is cached by ``(backend, device, n, p, q, l_s)`` so
@@ -65,7 +76,17 @@ def _build_alm_step(xp: ArrayNamespace, n: int, p: int, q: int, l_s: float) -> A
     across different :class:`~linum_basic.core.BaSiC` instances that share
     the same problem shape and regularisation weight.
     """
-    cache_key = (xp._backend.value, getattr(xp, "device", ""), n, p, q, l_s)
+    device_key = str(getattr(xp, "_device", ""))
+    cache_key = (
+        xp._backend.value,
+        device_key,
+        n,
+        p,
+        q,
+        l_s,
+        estimate_darkfield,
+        l_d,
+    )
     if cache_key in _ALM_STEP_CACHE:
         return _ALM_STEP_CACHE[cache_key]
 
@@ -106,8 +127,9 @@ def _build_alm_step(xp: ArrayNamespace, n: int, p: int, q: int, l_s: float) -> A
         d_field: Any,
         y: Any,
         w: Any,
-        cur_mu: float,
-    ) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
+        cur_mu: Any,
+        b1: Any,
+    ) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any, Any]:
         y_f32 = xp.astype(y / cur_mu, np.float32)
         # Step 1: update Ir using S_spatial from the previous iteration.
         ib_old = s_spatial * b + d_field
@@ -125,9 +147,50 @@ def _build_alm_step(xp: ArrayNamespace, n: int, p: int, q: int, l_s: float) -> A
         r_mean_row = xp.mean(d_minus_ir, axis=1, keepdims=True)
         new_r_mean_all = xp.mean(d_minus_ir)
         new_b = xp.astype(xp.maximum(r_mean_row / (new_r_mean_all + 1e-9), 0.0), np.float32)
-        # dY for Lagrange update (caller only needs it after darkfield step).
+        # dY for Lagrange update (uses D_field before darkfield refresh).
         d_y = d - new_ib - new_ir
-        return new_sf, new_s_spatial, new_ib, new_ir, d_minus_ir, new_b, new_r_mean_all, d_y
+        new_d_field = d_field
+        new_b1 = b1
+        if estimate_darkfield:
+            s_mean = xp.mean(new_s_spatial)
+            mask_valid_b_f = xp.astype((new_b < 1.0)[:, 0], np.float32)
+            mask_high_s_f = xp.astype(new_s_spatial[0] > (s_mean - 1e-6), np.float32)
+            mask_low_s_f = xp.astype(new_s_spatial[0] < (s_mean + 1e-6), np.float32)
+            k_cnt = xp.sum(mask_valid_b_f)
+            dminus_ir_valid_rowsum = xp.sum(d_minus_ir * mask_valid_b_f[:, None], axis=0, keepdims=True)
+            n_high = xp.sum(mask_high_s_f)
+            n_low = xp.sum(mask_low_s_f)
+            r_high = xp.sum(dminus_ir_valid_rowsum * mask_high_s_f[None, :]) / (k_cnt * n_high + 1e-9)
+            r_low = xp.sum(dminus_ir_valid_rowsum * mask_low_s_f[None, :]) / (k_cnt * n_low + 1e-9)
+            b1_cand = (r_high - r_low) / (new_r_mean_all + 1e-9)
+            b_flat = xp.astype(new_b[:, 0], np.float32)
+            sum_b2 = xp.sum(b_flat**2 * mask_valid_b_f)
+            sum_b = xp.sum(b_flat * mask_valid_b_f)
+            temp1 = sum_b2
+            temp2 = sum_b
+            temp3 = b1_cand * k_cnt
+            temp4 = xp.sum(b_flat * b1_cand * mask_valid_b_f)
+            denom = temp2 * temp3 - k_cnt * temp4
+            b1_new_raw = (temp1 * temp3 - temp2 * temp4) / (denom + 1e-30)
+            b1_new_guarded = xp.where(xp.abs(denom) > 1e-30, b1_new_raw, b1)
+            b1_new = xp.minimum(b1_new_guarded, b1_uplimit / (s_mean + 1e-9))
+            new_b1 = xp.where(b1_new > 0.0, b1_new, b1)
+            z = new_b1 * (s_mean - new_s_spatial)
+            k_cnt_f64 = xp.astype(k_cnt, np.float64)
+            sum_b_f64 = xp.astype(sum_b, np.float64)
+            s64 = xp.astype(new_s_spatial, np.float64)
+            d_valid_rowsum_f64 = xp.astype(dminus_ir_valid_rowsum, np.float64)
+            b_valid_mean = sum_b_f64 / (k_cnt_f64 + 1e-30)
+            a1_offset = d_valid_rowsum_f64 / (k_cnt_f64 + 1e-30) - b_valid_mean * s64
+            a_offset = a1_offset - xp.astype(z, np.float64)
+            a_offset_mean = xp.mean(a_offset)
+            a_offset_centered = xp.astype(a_offset - a_offset_mean, np.float32)
+            dr_f = xp.astype(_dctn2(a_offset_centered.reshape(p, q)), np.float32)
+            dr_f_shrunk = shrink(xp, dr_f, l_d / (ent2 * cur_mu))
+            dr = xp.astype(_idctn2(dr_f_shrunk.reshape(p, q)), np.float32).reshape(1, p * q)
+            dr = shrink(xp, dr, l_d / (cur_mu * ent2))
+            new_d_field = xp.astype(dr + xp.astype(a_offset_mean, np.float32) + z, np.float32)
+        return new_sf, new_s_spatial, new_ib, new_ir, d_minus_ir, new_b, new_r_mean_all, d_y, new_d_field, new_b1
 
     fn: Any = _alm_core_step
     if xp._backend is not Backend.NUMPY:
@@ -326,7 +389,17 @@ def inexact_alm_l1(
     # Steps 1-4 are a pure-tensor function compiled once per unique
     # (backend, device, n, p, q, l_s) combination and cached at module scope.
     # ------------------------------------------------------------------
-    _alm_core_step = _build_alm_step(xp, n, p, q, l_s)
+    _alm_core_step = _build_alm_step(
+        xp,
+        n,
+        p,
+        q,
+        l_s,
+        estimate_darkfield=estimate_darkfield,
+        l_d=l_d,
+        ent2=ent2,
+        b1_uplimit=B1_uplimit,
+    )
 
     # ------------------------------------------------------------------
     # Main loop  (gradient tracking disabled for torch backends)
@@ -339,77 +412,12 @@ def inexact_alm_l1(
         mu: Any = xp.asarray(np.array(mu_scalar, dtype=np.float32))
         mu_bar: Any = xp.asarray(np.array(mu_bar_scalar, dtype=np.float32))
         while not converged and iteration < max_iter:
-            # Steps 1-4: Ir / Sf / S_spatial / Ib / B update (compiled when on GPU).
-            Sf, S_spatial, Ib, Ir, DminusIr, B, R_mean_all, dY = _alm_core_step(D, S_spatial, B, D_field, Y, W, mu)
-            # On the first iteration the fed-back tensors (B, S_spatial,
-            # D_field, Y) carry the plain {CUDA, BackendSelect} dispatch key
-            # (created outside inference_mode).  From iteration 2 they are
-            # updated inside inference_mode and carry InferenceMode.  This
-            # one-time key change triggers a single torch._dynamo guard failure
-            # and recompile.  Cloning B and S_spatial (the two tensors returned
-            # from the compiled step) strips any residual view keys and keeps
-            # them consistent; xp.clone() is a no-op on NumPy.
+            # Steps 1-5: flat-field, baseline, optional dark-field (compiled on GPU).
+            Sf, S_spatial, Ib, Ir, _DminusIr, B, _R_mean_all, dY, D_field, B1 = _alm_core_step(
+                D, S_spatial, B, D_field, Y, W, mu, B1
+            )
             B = xp.clone(B)
             S_spatial = xp.clone(S_spatial)
-            # When k_cnt == 0 (no valid rows), the masked sums are naturally
-            # zero so the formulas produce well-defined zero results without
-            # any Python branching on device values.
-            if estimate_darkfield:
-                S_mean = xp.mean(S_spatial)  # scalar f32 tensor, no sync
-                mask_valid_b_f = xp.astype((B < 1.0)[:, 0], np.float32)  # (N,)
-                mask_high_s_f = xp.astype(S_spatial[0] > (S_mean - 1e-6), np.float32)  # (P*Q,)
-                mask_low_s_f = xp.astype(S_spatial[0] < (S_mean + 1e-6), np.float32)  # (P*Q,)
-
-                # k_cnt: number of valid rows — scalar f32 tensor, stays on device.
-                k_cnt = xp.sum(mask_valid_b_f)
-
-                # Masked row-sum of DminusIr; zero when k_cnt == 0.
-                DminusIr_valid_rowsum = xp.sum(DminusIr * mask_valid_b_f[:, None], axis=0, keepdims=True)  # (1, P*Q)
-
-                n_high = xp.sum(mask_high_s_f)  # scalar f32
-                n_low = xp.sum(mask_low_s_f)  # scalar f32
-                R_high = xp.sum(DminusIr_valid_rowsum * mask_high_s_f[None, :]) / (k_cnt * n_high + 1e-9)
-                R_low = xp.sum(DminusIr_valid_rowsum * mask_low_s_f[None, :]) / (k_cnt * n_low + 1e-9)
-
-                b1_cand = (R_high - R_low) / (R_mean_all + 1e-9)
-
-                b_flat = xp.astype(B[:, 0], np.float32)  # (N,)
-                sum_b2 = xp.sum(b_flat**2 * mask_valid_b_f)
-                sum_b = xp.sum(b_flat * mask_valid_b_f)
-                temp1 = sum_b2
-                temp2 = sum_b
-                temp3 = b1_cand * k_cnt
-                temp4 = xp.sum(b_flat * b1_cand * mask_valid_b_f)
-                denom = temp2 * temp3 - k_cnt * temp4
-
-                # Guard against zero denominator; keep current B1 when denom ≈ 0.
-                B1_new_raw = (temp1 * temp3 - temp2 * temp4) / (denom + 1e-30)
-                B1_new_guarded = xp.where(xp.abs(denom) > 1e-30, B1_new_raw, B1)
-                B1_new = xp.minimum(B1_new_guarded, B1_uplimit / (S_mean + 1e-9))
-                # Monotonicity guard: only accept positive B1.
-                B1 = xp.where(B1_new > 0.0, B1_new, B1)
-
-                Z = B1 * (S_mean - S_spatial)  # (1, P*Q) f32, on device
-
-                # A1_offset in float64 to avoid catastrophic cancellation.
-                k_cnt_f64 = xp.astype(k_cnt, np.float64)
-                sum_b_f64 = xp.astype(sum_b, np.float64)
-                S64 = xp.astype(S_spatial, np.float64)
-                D_valid_rowsum_f64 = xp.astype(DminusIr_valid_rowsum, np.float64)
-                b_valid_mean = sum_b_f64 / (k_cnt_f64 + 1e-30)
-                A1_offset = D_valid_rowsum_f64 / (k_cnt_f64 + 1e-30) - b_valid_mean * S64  # (1, P*Q) f64
-                A_offset = A1_offset - xp.astype(Z, np.float64)  # (1, P*Q) f64
-
-                # Zero-mean centering before the proximal step.
-                A_offset_mean = xp.mean(A_offset)  # scalar f64 tensor, no sync
-                A_offset_centered = xp.astype(A_offset - A_offset_mean, np.float32)
-
-                Dr_f = xp.astype(xp.dctn(A_offset_centered.reshape(p, q), norm="ortho"), np.float32)
-                Dr_f_shrunk = shrink(xp, Dr_f, l_d / (ent2 * mu))
-                Dr = xp.astype(xp.idctn(Dr_f_shrunk.reshape(p, q), norm="ortho"), np.float32).reshape(1, p * q)
-                Dr = shrink(xp, Dr, l_d / (mu * ent2))
-                D_field = xp.astype(Dr + xp.astype(A_offset_mean, np.float32) + Z, np.float32)
-
             # 6. Update Lagrange multiplier Y (primal residual: D - Ib - Ir).
             # dY was returned by _alm_core_step; it equals D - Ib - Ir using the
             # new S_spatial/B and the current D_field (before the darkfield update).
