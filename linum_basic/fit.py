@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from linum_basic._parallel import parallel_map, resolve_workers
+from linum_basic._parallel import list_cuda_devices, parallel_map, parallel_map_cuda_devices, resolve_workers
 from linum_basic.core import BaSiC
 from linum_basic.mosaic import MosaicGrid
 
@@ -98,6 +98,29 @@ def _fit_one_z(
     model.prepare()
     model.run()
     return model.get_flatfield(), model.get_darkfield()
+
+
+def _fit_one_z_on_device(
+    tiles: np.ndarray,
+    device: str,
+    params: dict[str, Any],
+    n_extra_rows: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit one z-level on a specific CUDA device (picklable entry point)."""
+    dev_params = dict(params)
+    dev_params["device"] = device
+    return _fit_one_z(tiles, dev_params, n_extra_rows)
+
+
+def _fit_one_z_cuda_map(
+    tiles: np.ndarray,
+    device: str,
+    *,
+    params: dict[str, Any],
+    n_extra_rows: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Module-level partial target for :func:`parallel_map_cuda_devices`."""
+    return _fit_one_z_on_device(tiles, device, params, n_extra_rows)
 
 
 @dataclass(init=False)
@@ -205,6 +228,10 @@ def fit_mosaic(
         Fitted flat/dark-fields for each requested z-level.
     """
     params: dict[str, Any] = dict(basic_kwargs or {})
+    # Warm-start inner ALM across outer reweighting passes when the cap is high.
+    if "warm_start_reweighting" not in params and int(params.get("max_reweighting_iterations", 10)) >= 5:
+        params["warm_start_reweighting"] = True
+
     z_idx = list(z_indices) if z_indices is not None else list(range(mosaic.n_z))
 
     th, tw = mosaic.tile_shape
@@ -212,17 +239,33 @@ def fit_mosaic(
     darkfields = np.zeros((len(z_idx), th, tw), dtype=np.float32)
 
     n_eff = resolve_workers(n_workers, params.get("backend"), params.get("device"))
+    cuda_devices = list_cuda_devices(params.get("device"))
+    use_cuda_fanout = (
+        len(cuda_devices) > 1
+        and params.get("backend") in {"torch", "auto"}
+        and (params.get("device") or "cuda").lower().startswith("cuda")
+    )
 
     # Pre-extract per-z tile stacks so workers receive only the slice they
     # need (cheap views into the in-memory mosaic) instead of the whole grid.
     tile_stacks = [mosaic.iter_tiles(z) for z in z_idx]
-    results = parallel_map(
-        partial(_fit_one_z, params=params, n_extra_rows=n_extra_rows),
-        tile_stacks,
-        n_eff,
-        desc="Fitting z-levels",
-        verbose=verbose,
-    )
+    if use_cuda_fanout:
+        cuda_fit = partial(_fit_one_z_cuda_map, params=params, n_extra_rows=n_extra_rows)
+        results = parallel_map_cuda_devices(
+            cuda_fit,
+            tile_stacks,
+            cuda_devices,
+            desc="Fitting z-levels (multi-GPU)",
+            verbose=verbose,
+        )
+    else:
+        results = parallel_map(
+            partial(_fit_one_z, params=params, n_extra_rows=n_extra_rows),
+            tile_stacks,
+            n_eff,
+            desc="Fitting z-levels",
+            verbose=verbose,
+        )
     for i, (flatfield, darkfield) in enumerate(results):
         flatfields[i, n_extra_rows:, :] = flatfield
         darkfields[i, n_extra_rows:, :] = darkfield
