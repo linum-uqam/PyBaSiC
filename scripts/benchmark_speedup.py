@@ -29,7 +29,7 @@ import platform
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -48,14 +48,14 @@ def _time_fit(mosaic: Any, basic_kwargs: dict[str, Any], *, force_batched: bool 
 
     original = fit_mod.should_use_batched_cuda
 
-    def _selector(**kwargs: Any) -> bool:
+    def _selector(*, field_mode: str, n_z: int, backend: str | None, device: str | None) -> bool:
         if force_batched is True:
             return True
         if force_batched is False:
             return False
-        return original(**kwargs)
+        return original(field_mode=field_mode, n_z=n_z, backend=backend, device=device)
 
-    fit_mod.should_use_batched_cuda = _selector
+    fit_mod.should_use_batched_cuda = cast(Any, _selector)
     try:
         from linum_basic.fit import fit_mosaic
 
@@ -63,7 +63,7 @@ def _time_fit(mosaic: Any, basic_kwargs: dict[str, Any], *, force_batched: bool 
         fit_mosaic(mosaic, basic_kwargs=basic_kwargs, n_workers=1, verbose=False)
         return time.perf_counter() - t0
     finally:
-        fit_mod.should_use_batched_cuda = original
+        fit_mod.should_use_batched_cuda = cast(Any, original)
 
 
 def _run_mode(
@@ -74,6 +74,7 @@ def _run_mode(
     max_reweighting_iterations: int,
     estimate_darkfield: bool,
     repeats: int,
+    batched_z_chunk_size: int | None,
 ) -> dict[str, Any]:
     if mode == "sequential":
         kwargs: dict[str, Any] = {
@@ -104,6 +105,8 @@ def _run_mode(
             "max_reweighting_iterations": max_reweighting_iterations,
             "warm_start_reweighting": True,
         }
+        if batched_z_chunk_size is not None:
+            kwargs["batched_z_chunk_size"] = batched_z_chunk_size
         force_batched = True
     else:
         msg = f"Unknown mode: {mode}"
@@ -129,6 +132,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--max-reweighting-iterations", type=int, default=15)
     p.add_argument("--estimate-darkfield", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument(
+        "--batched-z-chunk-size",
+        type=int,
+        default=None,
+        help="Optional z chunk size for batched CUDA mode; <=0 disables chunking.",
+    )
     p.add_argument(
         "--mode",
         choices=("sequential", "multi", "batched", "all"),
@@ -181,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_reweighting_iterations=args.max_reweighting_iterations,
                 estimate_darkfield=args.estimate_darkfield,
                 repeats=args.repeats,
+                batched_z_chunk_size=args.batched_z_chunk_size,
             )
         )
 
@@ -209,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         },
         "working_size": args.working_size,
         "max_reweighting_iterations": args.max_reweighting_iterations,
+        "batched_z_chunk_size": args.batched_z_chunk_size,
     }
     Path(args.output).write_text(json.dumps(out, indent=2))
     print(f"Wrote {args.output}")

@@ -169,6 +169,42 @@ def _fit_batched_chunk(
     return upsample_fields_batched(ff_ws, df_ws, (int(crop_shape[0]), int(crop_shape[1])))
 
 
+def _resolve_batched_z_chunk_size(params: dict[str, Any], n_z: int, n_devices: int) -> int:
+    """Resolve z-chunk size for the batched CUDA path.
+
+    A single ws=128 batch over dozens of z-planes is memory-bandwidth bound.
+    Smaller chunks keep per-batch working sets cache-friendlier and, on
+    multi-GPU systems, give the scheduler enough chunks to keep both devices
+    busy without launching one process per z-plane.
+    """
+    import os
+
+    raw = params.get("batched_z_chunk_size")
+    if raw is None:
+        raw = os.environ.get("LINUM_BASIC_BATCHED_Z_CHUNK_SIZE")
+    if raw is not None:
+        chunk_size = int(raw)
+        if chunk_size <= 0:
+            return n_z
+        return max(1, min(n_z, chunk_size))
+
+    working_size = int(params.get("working_size", 128))
+    if working_size >= 128:
+        # 8 z-planes is a good default for production ws=128: it limits peak
+        # memory while creating enough chunks for two A6000s to share work.
+        return min(n_z, 8)
+    if working_size >= 96:
+        return min(n_z, 12)
+    if working_size >= 64:
+        return min(n_z, 24 if n_devices <= 1 else 16)
+    return n_z
+
+
+def _iter_z_chunks(tile_stacks: list[np.ndarray], chunk_size: int) -> list[tuple[int, list[np.ndarray]]]:
+    """Return ``(start_index, chunk)`` pairs preserving z order."""
+    return [(start, tile_stacks[start : start + chunk_size]) for start in range(0, len(tile_stacks), chunk_size)]
+
+
 def _fit_mosaic_batched_cuda(
     tile_stacks: list[np.ndarray],
     *,
@@ -177,14 +213,19 @@ def _fit_mosaic_batched_cuda(
     cuda_devices: list[str],
     verbose: bool,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Batched CUDA fit, optionally splitting z-levels across GPUs."""
-    if len(cuda_devices) <= 1 or len(tile_stacks) <= 1:
-        device = cuda_devices[0] if cuda_devices else "cuda:0"
-        ff, df = _fit_batched_chunk(tile_stacks, device, params=params, n_extra_rows=n_extra_rows)
-        return [(ff[i], df[i]) for i in range(ff.shape[0])]
+    """Batched CUDA fit, optionally splitting z-levels into chunks across GPUs."""
+    chunk_size = _resolve_batched_z_chunk_size(params, len(tile_stacks), len(cuda_devices))
+    chunks = _iter_z_chunks(tile_stacks, chunk_size)
 
-    n_jobs = min(len(cuda_devices), len(tile_stacks))
-    chunks: list[list[np.ndarray]] = [list(part) for part in np.array_split(tile_stacks, n_jobs, axis=0)]
+    if len(cuda_devices) <= 1 or len(chunks) <= 1:
+        device = cuda_devices[0] if cuda_devices else "cuda:0"
+        results: list[tuple[np.ndarray, np.ndarray]] = []
+        for _start, chunk in chunks:
+            ff, df = _fit_batched_chunk(chunk, device, params=params, n_extra_rows=n_extra_rows)
+            results.extend((ff[i], df[i]) for i in range(ff.shape[0]))
+        return results
+
+    n_jobs = min(len(cuda_devices), len(chunks))
     chunk_fn = partial(_fit_batched_chunk, params=params, n_extra_rows=n_extra_rows)
 
     def _run_chunk(item: tuple[int, list[np.ndarray]], device: str) -> tuple[int, list[tuple[np.ndarray, np.ndarray]]]:
@@ -202,7 +243,7 @@ def _fit_mosaic_batched_cuda(
 
     with parallel_config(backend="loky", inner_max_num_threads=1, n_jobs=n_jobs):
         pairs: list[tuple[int, list[tuple[np.ndarray, np.ndarray]]]] = Parallel(verbose=10 if verbose else 0)(
-            delayed(_task)(i, chunk, cuda_devices[i % len(cuda_devices)]) for i, chunk in enumerate(chunks)
+            delayed(_task)(start, chunk, cuda_devices[i % len(cuda_devices)]) for i, (start, chunk) in enumerate(chunks)
         )
     pairs.sort(key=lambda pair: pair[0])
     return [item for _idx, chunk_results in pairs for item in chunk_results]
