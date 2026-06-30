@@ -703,11 +703,6 @@ def inexact_alm_l1_batched(
 
     pbar: tqdm | None = tqdm(desc="Batched ALM", total=max_iter, leave=False) if verbose else None
 
-    # Match the scalar solver's GPU convergence cadence (checked every 10
-    # iterations) so warm-started inner solves run the same number of steps and
-    # the per-z fields stay bit-close to the sequential path.
-    convergence_check_every = 10
-
     with xp.inference_mode():
         while iteration < max_iter:
             active = 1.0 - converged
@@ -736,10 +731,9 @@ def inexact_alm_l1_batched(
             mu = xp.minimum(mu * rho, mu_bar) * active + mu * converged
             iteration += 1
 
-            if iteration % convergence_check_every == 0:
-                stop_crit = xp.norm_fro_batched(dY) / (d_norm + 1e-9)
-                newly_done = xp.astype((stop_crit < tol).to(dtype=xp._torch.float32), np.float32).reshape(z, 1, 1)
-                converged = xp.maximum(converged, newly_done)
+            stop_crit = xp.norm_fro_batched(dY) / (d_norm + 1e-9)
+            newly_done = xp.astype((stop_crit < tol).to(dtype=xp._torch.float32), np.float32).reshape(z, 1, 1)
+            converged = xp.maximum(converged, newly_done)
 
             if pbar is not None:
                 pbar.update()
