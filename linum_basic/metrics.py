@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
-from linum_basic.curvature import seam_curvature
+from linum_basic.curvature import seam_curvature, seam_curvature_per_z
 from linum_basic.mosaic import MosaicGrid, SeamPair
 
 if TYPE_CHECKING:
@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 __all__ = [
     "evaluate_correction",
     "evaluate_correction_volume",
+    "evaluate_correction_volume_per_z",
     "seam_l1",
     "seam_pearson",
 ]
@@ -263,3 +264,91 @@ def evaluate_correction_volume(
         result["seam_curvature"] = seam_curvature(ffs, seam_pairs)
 
     return result
+
+
+def evaluate_correction_volume_per_z(
+    mosaic: MosaicGrid,
+    fit: MosaicFit,
+    *,
+    epsilon: float = 1e-6,
+) -> dict[str, Any]:
+    """Evaluate per-z seam L1 and seam curvature for a mosaic fit.
+
+    Returns one row per fitted z-level plus aggregate scalars consistent with
+    :func:`evaluate_correction_volume`.
+
+    Parameters
+    ----------
+    mosaic : MosaicGrid
+        The source mosaic volume; used to extract per-z tile stacks.
+    fit : MosaicFit
+        Fitted flat/dark-fields from :func:`~linum_basic.fit.fit_mosaic`.
+    epsilon : float
+        Divisor stabilisation constant for the flat-field correction.
+
+    Returns
+    -------
+    dict
+        ``{"rows": list[dict], "aggregates": dict}`` where each row has keys
+        ``z``, ``seam_l1``, and ``seam_curvature``, and *aggregates* carries
+        ``seam_l1`` (mean over z) and ``seam_curvature`` (volume aggregate).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from linum_basic.fit import MosaicFit
+    >>> from linum_basic.metrics import evaluate_correction_volume_per_z
+    >>> from linum_basic.mosaic import MosaicGrid
+    >>> rng = np.random.default_rng(0)
+    >>> arr = rng.random((2, 32, 48), dtype=np.float32)
+    >>> mosaic = MosaicGrid(arr, tile_shape=(16, 16), overlap_fraction=0.2)
+    >>> fit = MosaicFit(
+    ...     flatfields=np.ones((2, 16, 16), dtype=np.float32),
+    ...     darkfields=np.zeros((2, 16, 16), dtype=np.float32),
+    ...     field_mode="per-z",
+    ...     z_indices=[0, 1],
+    ... )
+    >>> result = evaluate_correction_volume_per_z(mosaic, fit)
+    >>> len(result["rows"])
+    2
+    >>> "seam_l1" in result["aggregates"]
+    True
+    """
+    seam_pairs = mosaic.seam_pairs()
+    rows: list[dict[str, float | int]] = []
+    l1_vals: list[float] = []
+
+    for z_pos, z in enumerate(fit.z_indices):
+        tiles = mosaic.iter_tiles(z)
+        if fit.field_mode == "global":
+            ff: np.ndarray = fit.flatfields
+            df: np.ndarray = fit.darkfields
+        else:
+            ff = fit.flatfields[z_pos]
+            df = fit.darkfields[z_pos]
+        corrected = (tiles.astype(np.float32) - df[np.newaxis]) / (ff[np.newaxis] + epsilon)
+        seam_l1_val = seam_l1(corrected, seam_pairs)
+        l1_vals.append(seam_l1_val)
+        rows.append({"z": z, "seam_l1": seam_l1_val, "seam_curvature": float("nan")})
+
+    if fit.z_indices:
+        if fit.field_mode == "global":
+            ffs = fit.flatfields[np.newaxis]
+            curv_per_z = np.full(len(fit.z_indices), seam_curvature(ffs, seam_pairs))
+        else:
+            ffs = fit.flatfields
+            curv_per_z = seam_curvature_per_z(ffs, seam_pairs)
+        for i, row in enumerate(rows):
+            row["seam_curvature"] = float(curv_per_z[i])
+        agg_curvature = seam_curvature(
+            fit.flatfields[np.newaxis] if fit.field_mode == "global" else fit.flatfields,
+            seam_pairs,
+        )
+    else:
+        agg_curvature = float("nan")
+
+    aggregates = {
+        "seam_l1": float(np.nanmean(l1_vals)) if l1_vals else float("nan"),
+        "seam_curvature": agg_curvature,
+    }
+    return {"rows": rows, "aggregates": aggregates}

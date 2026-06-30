@@ -172,6 +172,7 @@ def write_ome_zarr(
     # Try both the OME-NGFF v0.4+ wrapper key and the bare top-level key.
     root_attrs_w: dict = dict(root.attrs)  # type: ignore[arg-type]
     ms_meta: dict = (root_attrs_w.get("ome", {}).get("multiscales") or root_attrs_w.get("multiscales") or [{}])[0]
+    ms_meta["axes"] = axes_dicts
     s0_shape = np.array(array.shape, dtype=float)
     for ds in ms_meta.get("datasets", []):
         lvl_arr = zarr.open_array(str(out_path / ds["path"]), mode="r")

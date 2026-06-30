@@ -110,3 +110,29 @@ venv.bak/
 # AI Aides
 .vscode/
 AGENTS.md
+
+# === OpenGSD (gsd-core) — keep ALL GSD-produced files out of git ===
+# Runtime installs (Cursor / Claude / Windsurf)
+.cursor/
+.claude/
+.windsurf/
+.windsurf/gsd-local-patches/
+.windsurf/gsd-pristine/
+# Planning workspace — everything GSD writes during discuss/plan/execute/verify/ship
+.planning/
+# Agent scratch inside planning (doc-verifier JSON, ingest manifests)
+.planning/tmp/
+# Generated agent instruction / rules files (repo root)
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+# Graphify working copy (canonical graph lives under .planning/graphs/)
+graphify-out/
+# GSD handoffs, repo memories, context intel, specs
+handoffs/
+memories/
+context/
+specs/
+# GSD meta / surface state
+.gsd/
+.gsd-profile
