@@ -22,6 +22,7 @@ troubleshooting recipes.
 | `l_d` | post-init | `float\|None` | auto | Dark-field regularisation weight ($\lambda_d$) |
 | `reweighting_tolerance` | post-init | `float` | `1e-3` | Outer-loop convergence threshold |
 | `max_reweighting_iterations` | post-init | `int` | `10` | Hard cap on outer iterations |
+| `convergence_check_every` | post-init | `int` or `None` | `None` | Inner ALM sync cadence (`None` = backend default) |
 | `warm_start_reweighting` | post-init | `bool` | `False` | Warm-start ALM primal variables between outer iterations |
 
 ---
@@ -247,6 +248,20 @@ exploratory work.
 Hard cap on the number of outer reweighting iterations regardless of
 convergence.  Increase to `20` if the flat-field is still changing
 noticeably at iteration 10 (check with `verbose=True`).
+
+---
+
+### `convergence_check_every`
+
+| | |
+|---|---|
+| **Type** | `int` or `None` |
+| **Default** | `None` (backend default: every iteration on NumPy, every 10 on GPU) |
+
+Controls how often the inner ALM loop evaluates the primal residual norm.
+Higher values reduce GPU synchronisation overhead at the cost of slower
+early exit inside a single reweighting pass.  Leave at the default unless
+you are tuning performance with the benchmark harness.
 
 ---
 

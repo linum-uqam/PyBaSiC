@@ -22,6 +22,9 @@ ALLOWED_OVERRIDE_KEYS: frozenset[str] = frozenset(
         "device",
         "backend",
         "force_batched_cuda",
+        "reweighting_tolerance",
+        "convergence_check_every",
+        "tile_subsample_ratio",
     }
 )
 

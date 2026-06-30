@@ -130,6 +130,9 @@ class BaSiC:
         change in flat-field and dark-field).  Default ``1e-3``.
     max_reweighting_iterations : int
         Hard cap on outer reweighting iterations.  Default ``10``.
+    convergence_check_every : int or None
+        Inner ALM convergence check cadence.  ``None`` uses the backend
+        default (every iteration on NumPy, every 10 on GPU).
 
     Raises
     ------
@@ -199,6 +202,8 @@ class BaSiC:
         self.l_d: float | None = None
         self.reweighting_tolerance: float = 1e-3
         self.max_reweighting_iterations: int = 10
+        self.convergence_check_every: int | None = None
+        self.tile_subsample_ratio: float | None = None
         self.reweighting_iteration: int = 0
         self.warm_start_reweighting: bool = False
 
@@ -320,6 +325,19 @@ class BaSiC:
         else:
             self._load_images(self.img_stack)
 
+        # D-07 last-resort tile subsampling: harness-only via tile_subsample_ratio.
+        # Default None preserves the full tile stack; do not enable until higher-priority
+        # ranked levers are exhausted (see OPTIMIZATION_RUNBOOK.md).
+        ratio = self.tile_subsample_ratio
+        if ratio is not None and 0 < ratio < 1:
+            from linum_basic.tuning import _subsample_tiles
+
+            max_tiles = max(1, round(self.n_images * ratio))
+            if max_tiles < self.n_images:
+                subsampled = _subsample_tiles(self.img_stack_resized, max_tiles)
+                self.img_stack_resized = subsampled
+                self.n_images = int(subsampled.shape[0])
+
         # Auto-tune regularisation from the DCT of the mean image
         dct_sum = dct_energy(self.img_stack_resized.mean(axis=0))
         if self.l_s is None:
@@ -393,6 +411,7 @@ class BaSiC:
             xp=self._xp,
             warm_start=self._alm_state if self.warm_start_reweighting else None,
             return_state=self.warm_start_reweighting,
+            convergence_check_every=self.convergence_check_every,
         )
         Ib, Ir, D, alm_state = result
         if self.warm_start_reweighting:

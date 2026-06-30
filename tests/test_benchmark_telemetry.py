@@ -187,3 +187,93 @@ class TestRunMetadata:
         info = metadata.collect_torch_cuda_info()
         assert info["available"] is False
         assert info["devices"] == []
+
+
+class _FakeMatmulBackend:
+    def __init__(self, *, allow_tf32: bool = True) -> None:
+        self.allow_tf32 = allow_tf32
+
+
+class _FakeCudnnBackend:
+    def __init__(self, *, allow_tf32: bool = True) -> None:
+        self.allow_tf32 = allow_tf32
+
+
+class _FakeCudaBackends:
+    def __init__(self, *, matmul_allow_tf32: bool = True, cudnn_allow_tf32: bool = True) -> None:
+        self.matmul = _FakeMatmulBackend(allow_tf32=matmul_allow_tf32)
+        self.cudnn = _FakeCudnnBackend(allow_tf32=cudnn_allow_tf32)
+
+
+def _install_fake_torch_precision(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    matmul_precision: str = "high",
+    matmul_allow_tf32: bool = True,
+    cudnn_allow_tf32: bool = True,
+) -> None:
+    torch_mod = ModuleType("torch")
+    torch_mod.__version__ = "2.7.0"  # type: ignore[attr-defined]
+    torch_mod.backends = SimpleNamespace(  # type: ignore[attr-defined]
+        cuda=SimpleNamespace(
+            matmul=_FakeMatmulBackend(allow_tf32=matmul_allow_tf32),
+        ),
+        cudnn=_FakeCudnnBackend(allow_tf32=cudnn_allow_tf32),
+    )
+    torch_mod.get_float32_matmul_precision = lambda: matmul_precision  # type: ignore[attr-defined]
+    torch_mod.compile = lambda fn, **kwargs: fn  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", torch_mod)
+
+
+class TestCollectPrecisionMetadata:
+    _REQUIRED_KEYS = (
+        "float32_matmul_precision",
+        "allow_tf32_matmul",
+        "allow_tf32_cudnn",
+        "compile_requested",
+        "compile_fallback_reason",
+    )
+
+    def test_without_torch_returns_unavailable_dict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _block_torch(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "torch" or name.startswith("torch."):
+                raise ImportError("torch unavailable")
+            return real_import(name, *args, **kwargs)
+
+        for key in list(sys.modules):
+            if key == "torch" or key.startswith("torch."):
+                monkeypatch.delitem(sys.modules, key, raising=False)
+        monkeypatch.setattr(builtins, "__import__", _block_torch)
+
+        from linum_basic.benchmark import telemetry
+
+        result = telemetry.collect_precision_metadata()
+        for key in self._REQUIRED_KEYS:
+            assert key in result
+        assert result["float32_matmul_precision"] is None
+        assert result["allow_tf32_matmul"] is None
+        assert result["allow_tf32_cudnn"] is None
+        assert result["compile_requested"] is False
+        assert result["compile_fallback_reason"] is None
+
+    def test_with_fake_torch_captures_tf32_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _install_fake_torch_precision(
+            monkeypatch,
+            matmul_precision="high",
+            matmul_allow_tf32=True,
+            cudnn_allow_tf32=False,
+        )
+        from linum_basic.benchmark import telemetry
+
+        result = telemetry.collect_precision_metadata(compile_fallback_reason="inductor OOM")
+        for key in self._REQUIRED_KEYS:
+            assert key in result
+        assert result["float32_matmul_precision"] == "high"
+        assert result["allow_tf32_matmul"] is True
+        assert result["allow_tf32_cudnn"] is False
+        assert result["compile_requested"] is True
+        assert result["compile_fallback_reason"] == "inductor OOM"

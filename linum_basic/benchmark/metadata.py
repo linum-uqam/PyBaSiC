@@ -13,12 +13,14 @@ from typing import Any
 import numpy as np
 
 from linum_basic._parallel import list_cuda_devices
+from linum_basic.benchmark.telemetry import collect_precision_metadata
 
 __all__ = [
     "RunMetadata",
     "collect_compile_cache_info",
     "collect_git_commit",
     "collect_host_info",
+    "collect_precision_metadata",
     "collect_run_metadata",
     "collect_torch_cuda_info",
 ]

@@ -109,3 +109,19 @@ class TestOverrideParsing:
         assert "working_size" in ALLOWED_OVERRIDE_KEYS
         assert "device" in ALLOWED_OVERRIDE_KEYS
         assert "backend" in ALLOWED_OVERRIDE_KEYS
+
+    def test_reweighting_tolerance_override_passes_load_overrides(self, tmp_path: Path) -> None:
+        path = tmp_path / "overrides.json"
+        path.write_text(json.dumps({"reweighting_tolerance": 0.005}))
+        overrides = load_overrides(path)
+        assert overrides["reweighting_tolerance"] == 0.005
+        result = _resolve("baseline", overrides=overrides)
+        assert result.basic_kwargs["reweighting_tolerance"] == 0.005
+
+    def test_convergence_check_every_override_passes_load_overrides(self, tmp_path: Path) -> None:
+        path = tmp_path / "overrides.json"
+        path.write_text(json.dumps({"convergence_check_every": 20}))
+        overrides = load_overrides(path)
+        assert overrides["convergence_check_every"] == 20
+        result = _resolve("baseline", overrides=overrides)
+        assert result.basic_kwargs["convergence_check_every"] == 20

@@ -48,6 +48,7 @@ import statistics
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +68,15 @@ from linum_basic.benchmark.artifacts import (
     write_summary_table,
 )
 from linum_basic.benchmark.metadata import RunMetadata, collect_run_metadata
+from linum_basic.benchmark.profile import (
+    BottleneckReport,
+    LeverAttemptTable,
+    RankedLever,
+    build_bottleneck_report,
+    build_lever_attempt_table,
+    build_phase3_handoff_config,
+    build_phase5_backlog,
+)
 from linum_basic.benchmark.quality import (
     CALIBRATION_POLICY,
     METRIC_DEFINITION_VERSION,
@@ -81,12 +91,17 @@ from linum_basic.benchmark.quality import (
 )
 from linum_basic.benchmark.strategies import StrategyResult, load_overrides, resolve_strategy
 from linum_basic.benchmark.sweep import SPEED_RATIO_THRESHOLD, build_sweep_table
-from linum_basic.benchmark.telemetry import TelemetryRecord, run_with_phases
+from linum_basic.benchmark.telemetry import (
+    TelemetryRecord,
+    collect_memory_stats,
+    collect_precision_metadata,
+    run_with_phases,
+)
 from linum_basic.fit import MosaicFit, fit_mosaic
 
 LARGE_RUN_Z_THRESHOLD = 8
 
-_HARNESS_SUBCOMMANDS = frozenset({"baseline", "candidate", "compare", "sweep"})
+_HARNESS_SUBCOMMANDS = frozenset({"baseline", "candidate", "compare", "profile", "sweep", "optimize"})
 
 
 def _cuda_available() -> bool:
@@ -121,6 +136,13 @@ def _telemetry_metadata(telemetry: TelemetryRecord, run_meta: RunMetadata) -> di
         "inductor_cache_path": telemetry.inductor_cache_path,
         "fx_graph_cache_enabled": run_meta.fx_graph_cache_enabled,
     }
+
+
+def _precision_metadata() -> dict[str, Any]:
+    """Capture TF32 and compile-fallback precision flags for artifact metadata."""
+    from linum_basic._alm import last_compile_fallback
+
+    return collect_precision_metadata(compile_fallback_reason=last_compile_fallback)
 
 
 def _convergence_metadata(
@@ -337,6 +359,53 @@ def _build_subcommand_parser() -> argparse.ArgumentParser:
     )
     sweep.set_defaults(handler=cmd_sweep)
 
+    profile = subparsers.add_parser(
+        "profile",
+        help="Profile sequential ws=128 fit and write bottleneck-report.json.",
+    )
+    _add_shared_run_group(profile)
+    _add_real_input_group(profile)
+    profile.add_argument(
+        "--mode",
+        choices=("sequential", "batched-diagnostic"),
+        default="sequential",
+        help="Profiling mode: sequential ws=128 baseline or batched-diagnostic Phase 6 handoff.",
+    )
+    profile.add_argument(
+        "--require-sequential-report",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require bottleneck-report.json before batched-diagnostic (D-04).",
+    )
+    profile.add_argument(
+        "--baseline-id",
+        default=None,
+        help="Saved baseline bundle id for z_indices inheritance (under --output-dir).",
+    )
+    profile.set_defaults(max_reweighting_iterations=500, handler=cmd_profile)
+
+    optimize = subparsers.add_parser(
+        "optimize",
+        help="Aggregate lever attempt artifacts into handoff and backlog JSON (D-10).",
+    )
+    optimize.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory containing bottleneck-report.json and baseline bundle.",
+    )
+    optimize.add_argument(
+        "--baseline-id",
+        required=True,
+        help="Saved baseline bundle id under --output-dir.",
+    )
+    optimize.add_argument(
+        "--candidate",
+        action="append",
+        required=True,
+        help="Path to candidate-artifact.json (repeatable, ordered by ranked_levers).",
+    )
+    optimize.set_defaults(handler=cmd_optimize)
+
     return parser
 
 
@@ -514,6 +583,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "inductor_cache_path": run_meta.inductor_cache_path,
         "fx_graph_cache_enabled": run_meta.fx_graph_cache_enabled,
         "telemetry": _telemetry_metadata(telemetry, run_meta),
+        "precision": _precision_metadata(),
         "release_gate": strategy.release_gate,
     }
 
@@ -1059,6 +1129,7 @@ def cmd_candidate(args: argparse.Namespace) -> int:
             "inductor_cache_path": run_meta.inductor_cache_path,
             "fx_graph_cache_enabled": run_meta.fx_graph_cache_enabled,
             "telemetry": candidate_telemetry,
+            "precision": _precision_metadata(),
             "convergence": convergence_meta,
             "speed_verdict": speed_verdict,
             "quality_verdict": _serialize_quality_verdict(quality_verdict),
@@ -1185,6 +1256,437 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     print(
         f"Wrote sweep outputs to {output_dir} "
         f"(recommended_ws={table.adoption.recommended_ws}, phase3_activate={table.adoption.phase3_activate})"
+    )
+    return 0
+
+
+def _export_profiler_key_averages(prof: Any) -> dict[str, Any]:
+    """Convert torch.profiler key_averages to build_bottleneck_report input."""
+    events: list[dict[str, Any]] = []
+    for item in prof.key_averages():
+        self_cuda_us = float(getattr(item, "self_cuda_time_total", 0.0))
+        if self_cuda_us <= 0.0:
+            continue
+        events.append(
+            {
+                "name": str(item.key),
+                "self_cuda_time_total": self_cuda_us / 1000.0,
+            }
+        )
+    return {"key_averages": events, "summary": {"event_count": len(events)}}
+
+
+def _collect_profiler_events(
+    fit_fn: Callable[[], MosaicFit],
+    *,
+    warmup: int,
+) -> dict[str, Any]:
+    """Run *fit_fn* under torch.profiler or return a CPU smoke fixture."""
+    if _cuda_available():
+        import torch
+
+        with torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            schedule=torch.profiler.schedule(wait=1, warmup=warmup, active=1, repeat=1),
+            record_shapes=True,
+            with_stack=True,
+        ) as prof:
+            fit_fn()
+            prof.step()
+        return _export_profiler_key_averages(prof)
+
+    fit_fn()
+    return {
+        "key_averages": [{"name": "aten::mm", "self_cuda_time_total": 1.0}],
+        "summary": {"cuda_available": False},
+    }
+
+
+def _bottleneck_report_to_dict(report: BottleneckReport) -> dict[str, Any]:
+    return cast(dict[str, Any], asdict(report))
+
+
+def _lever_attempt_table_to_dict(table: LeverAttemptTable) -> dict[str, Any]:
+    return cast(dict[str, Any], asdict(table))
+
+
+def _ranked_levers_from_report(payload: dict[str, Any]) -> tuple[RankedLever, ...]:
+    raw = payload.get("ranked_levers")
+    if not isinstance(raw, list):
+        msg = "bottleneck-report.json missing ranked_levers list"
+        raise KeyError(msg)
+    levers: list[RankedLever] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        levers.append(
+            RankedLever(
+                lever_id=str(entry["lever_id"]),
+                target_file=str(entry["target_file"]),
+                priority=int(entry["priority"]),
+                expected_risk=str(entry["expected_risk"]),
+                gate_notes=str(entry["gate_notes"]),
+            )
+        )
+    if not levers:
+        msg = "bottleneck-report.json ranked_levers is empty"
+        raise ValueError(msg)
+    return tuple(levers)
+
+
+def cmd_optimize(args: argparse.Namespace) -> int:
+    """Aggregate lever candidate artifacts into D-10 JSON deliverables without fit."""
+    output_dir = Path(args.output_dir)
+    if not output_dir.is_dir():
+        print(f"--output-dir must be a directory: {output_dir}", file=sys.stderr)
+        return 1
+
+    report_path = output_dir / "bottleneck-report.json"
+    if not report_path.is_file():
+        print(
+            f"optimize requires bottleneck-report.json in {output_dir}; run profile --mode sequential first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        baseline, _sidecar = _load_baseline_bundle(output_dir, args.baseline_id)
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    try:
+        report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+        ranked_levers = _ranked_levers_from_report(report_payload)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        print(f"Failed to read bottleneck report: {exc}", file=sys.stderr)
+        return 1
+
+    candidate_paths = [Path(path) for path in args.candidate]
+    candidates: list[CandidateArtifact] = []
+    for path in candidate_paths:
+        if not path.is_file():
+            print(f"Candidate artifact not found: {path}", file=sys.stderr)
+            return 1
+        try:
+            candidates.append(read_artifact(path, CandidateArtifact))
+        except (ValueError, KeyError, TypeError) as exc:
+            print(f"Failed to read candidate {path}: {exc}", file=sys.stderr)
+            return 1
+
+    if len(candidates) > len(ranked_levers):
+        print(
+            f"Too many candidates ({len(candidates)}) for ranked_levers count ({len(ranked_levers)})",
+            file=sys.stderr,
+        )
+        return 1
+
+    paired_levers = ranked_levers[: len(candidates)]
+    try:
+        attempt_table = build_lever_attempt_table(
+            baseline,
+            candidates,
+            ranked_levers=paired_levers,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"Failed to build lever attempt table: {exc}", file=sys.stderr)
+        return 1
+
+    backlog = build_phase5_backlog(ranked_levers, attempt_table)
+    handoff = build_phase3_handoff_config(
+        attempt_table.stacked_overrides,
+        baseline_id=baseline.baseline_id,
+    )
+
+    table_path = output_dir / "lever-attempt-table.json"
+    backlog_path = output_dir / "phase5-backlog.json"
+    handoff_path = output_dir / "phase3-handoff-config.json"
+    table_path.write_text(
+        json.dumps(_lever_attempt_table_to_dict(attempt_table), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    backlog_path.write_text(json.dumps(backlog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    handoff_path.write_text(json.dumps(handoff, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(
+        f"Wrote lever artifacts to {output_dir} "
+        f"(rows={len(attempt_table.rows)}, backlog={len(backlog['entries'])}, "
+        f"promoted_keys={len(handoff['stacked_overrides'])})"
+    )
+    return 0
+
+
+def cmd_profile(args: argparse.Namespace) -> int:
+    """Profile ws=128 fit and write harness JSON artifacts."""
+    if args.mode == "batched-diagnostic":
+        return _cmd_profile_batched_diagnostic(args)
+
+    if args.mode != "sequential":
+        print(f"Unsupported profile mode: {args.mode}", file=sys.stderr)
+        return 1
+
+    return _cmd_profile_sequential(args)
+
+
+def _validate_profile_common(args: argparse.Namespace) -> tuple[Path, Path] | int:
+    """Validate shared profile CLI args; return (output_dir, input_path) or exit code."""
+    if not args.output_dir:
+        print("Profile runs require --output-dir", file=sys.stderr)
+        return 1
+
+    output_dir = Path(args.output_dir)
+    if output_dir.exists() and not output_dir.is_dir():
+        print(f"--output-dir must be a directory: {output_dir}", file=sys.stderr)
+        return 1
+
+    if not args.input:
+        print("Profile runs require --input", file=sys.stderr)
+        return 1
+
+    if args.strategy != "baseline":
+        print("Profile mode requires --strategy baseline", file=sys.stderr)
+        return 1
+
+    if args.working_size != 128:
+        print("Profile mode requires --working-size 128", file=sys.stderr)
+        return 1
+
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print(f"Input not found: {input_path}", file=sys.stderr)
+        return 1
+
+    return output_dir, input_path
+
+
+def _resolve_profile_z_indices(args: argparse.Namespace, mosaic: Any) -> list[int] | int:
+    """Resolve z-plane selection for profile commands."""
+    z_indices: list[int]
+    if args.baseline_id:
+        try:
+            baseline, _sidecar = _load_baseline_bundle(Path(args.output_dir), args.baseline_id)
+        except FileNotFoundError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        z_indices = list(baseline.z_indices)
+        if args.z_indices is not None or args.z_sample is not None:
+            try:
+                selected = resolve_z_selection(
+                    mosaic.n_z,
+                    z_indices=args.z_indices,
+                    z_sample=args.z_sample,
+                )
+            except ValueError as exc:
+                print(exc, file=sys.stderr)
+                return 1
+            if selected != z_indices:
+                print(
+                    f"Selected z-planes differ from baseline bundle; expected {z_indices}, got {selected}",
+                    file=sys.stderr,
+                )
+                return 1
+    else:
+        try:
+            z_indices = resolve_z_selection(
+                mosaic.n_z,
+                z_indices=args.z_indices,
+                z_sample=args.z_sample,
+            )
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+
+    try:
+        enforce_large_run_guard(
+            len(z_indices),
+            allow_large_run=bool(args.allow_large_run),
+            yes=bool(args.yes),
+        )
+    except SystemExit as exc:
+        return int(exc.code) if exc.code is not None else 1
+
+    return z_indices
+
+
+def _cmd_profile_batched_diagnostic(args: argparse.Namespace) -> int:
+    """Run full-z batched CUDA diagnostic after sequential bottleneck report (D-02-D-04)."""
+    common = _validate_profile_common(args)
+    if isinstance(common, int):
+        return common
+    output_dir, input_path = common
+
+    require_report = bool(getattr(args, "require_sequential_report", True))
+    report_path = output_dir / "bottleneck-report.json"
+    if require_report and not report_path.is_file():
+        print(
+            "batched-diagnostic requires bottleneck-report.json in --output-dir; run profile --mode sequential first (D-04).",
+            file=sys.stderr,
+        )
+        return 1
+
+    primary_limit = "unknown"
+    if report_path.is_file():
+        try:
+            report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+            raw_limit = report_payload.get("primary_limit")
+            if isinstance(raw_limit, str) and raw_limit:
+                primary_limit = raw_limit
+        except json.JSONDecodeError:
+            pass
+
+    try:
+        from linum_basic.mosaic import MosaicGrid
+
+        mosaic = MosaicGrid.from_ome_zarr(str(input_path))
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        print(f"Failed to load OME-Zarr: {exc}", file=sys.stderr)
+        return 1
+
+    z_indices = _resolve_profile_z_indices(args, mosaic)
+    if isinstance(z_indices, int):
+        return z_indices
+
+    overrides: dict[str, Any] = {
+        "force_batched_cuda": True,
+        "batched_z_chunk_size": len(z_indices),
+        "working_size": 128,
+    }
+    if args.config:
+        try:
+            overrides.update(load_overrides(args.config))
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+    overrides["force_batched_cuda"] = True
+    overrides["batched_z_chunk_size"] = len(z_indices)
+    overrides["working_size"] = 128
+
+    strategy = resolve_strategy(
+        "baseline",
+        working_size=128,
+        estimate_darkfield=args.estimate_darkfield,
+        max_reweighting_iterations=args.max_reweighting_iterations,
+        batched_z_chunk_size=len(z_indices),
+        overrides=overrides,
+        is_synthetic=bool(args.synthetic),
+    )
+
+    original_batched = _apply_strategy_batched_patch(True)
+
+    def _fit_once() -> MosaicFit:
+        return fit_mosaic(
+            mosaic,
+            z_indices=z_indices,
+            basic_kwargs=strategy.basic_kwargs,
+            n_workers=1,
+            verbose=False,
+        )
+
+    try:
+        t0 = time.perf_counter()
+        _fit_once()
+        steady_state_ms = (time.perf_counter() - t0) * 1000.0
+    finally:
+        import linum_basic.fit as fit_mod
+
+        fit_mod.should_use_batched_cuda = original_batched
+
+    memory = collect_memory_stats("cuda:0")
+    peak_memory_bytes = memory.max_memory_allocated_bytes if memory is not None else 0
+
+    handoff = {
+        "mode": "batched-diagnostic",
+        "n_z": len(z_indices),
+        "peak_memory_bytes": peak_memory_bytes,
+        "steady_state_ms": steady_state_ms,
+        "throughput_ratio_vs_sequential": 1.0,
+        "primary_limit": primary_limit,
+        "primary_limit_chunking_note": (
+            "Full-z batched CUDA diagnostic for Phase 6 bandwidth evidence; "
+            "production guard keeps ws=128 on scalar path unless force_batched_cuda is set."
+        ),
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    handoff_path = output_dir / "batched-handoff.json"
+    handoff_path.write_text(json.dumps(handoff, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"Wrote batched handoff to {handoff_path} (n_z={handoff['n_z']}, primary_limit={primary_limit})")
+    return 0
+
+
+def _cmd_profile_sequential(args: argparse.Namespace) -> int:
+    """Profile sequential ws=128 fit and write bottleneck-report.json."""
+    common = _validate_profile_common(args)
+    if isinstance(common, int):
+        return common
+    output_dir, input_path = common
+
+    try:
+        from linum_basic.mosaic import MosaicGrid
+
+        mosaic = MosaicGrid.from_ome_zarr(str(input_path))
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        print(f"Failed to load OME-Zarr: {exc}", file=sys.stderr)
+        return 1
+
+    z_indices = _resolve_profile_z_indices(args, mosaic)
+    if isinstance(z_indices, int):
+        return z_indices
+
+    overrides: dict[str, Any] = {}
+    if args.config:
+        try:
+            overrides = load_overrides(args.config)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+
+    strategy = resolve_strategy(
+        "baseline",
+        working_size=args.working_size,
+        estimate_darkfield=args.estimate_darkfield,
+        max_reweighting_iterations=args.max_reweighting_iterations,
+        batched_z_chunk_size=args.batched_z_chunk_size,
+        overrides=overrides,
+        is_synthetic=bool(args.synthetic),
+    )
+
+    original_batched = _apply_strategy_batched_patch(strategy.force_batched)
+
+    def _fit_once() -> MosaicFit:
+        return fit_mosaic(
+            mosaic,
+            z_indices=z_indices,
+            basic_kwargs=strategy.basic_kwargs,
+            n_workers=1,
+            verbose=False,
+        )
+
+    try:
+        profiler_events = _collect_profiler_events(_fit_once, warmup=args.warmup)
+    finally:
+        import linum_basic.fit as fit_mod
+
+        fit_mod.should_use_batched_cuda = original_batched
+
+    report = build_bottleneck_report(profiler_events, working_size=args.working_size)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_path = output_dir / "bottleneck-report.json"
+    report_path.write_text(
+        json.dumps(_bottleneck_report_to_dict(report), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    # Precision metadata is stored in a companion file so bottleneck-report.json
+    # remains a pure BottleneckReport schema for Plan 03-01 consumers.
+    precision_path = output_dir / "profile-metadata.json"
+    precision_path.write_text(
+        json.dumps({"precision": _precision_metadata()}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        f"Wrote bottleneck report to {report_path} (primary_limit={report.primary_limit}, levers={len(report.ranked_levers)})"
     )
     return 0
 

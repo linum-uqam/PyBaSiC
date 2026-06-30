@@ -8,6 +8,7 @@ so the same code can run on CPU (NumPy) or GPU (PyTorch).
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import numpy as np
@@ -26,6 +27,7 @@ __all__ = ["inexact_alm_l1", "inexact_alm_l1_batched", "shrink"]
 # and regularisation weight across the entire process lifetime.
 # ---------------------------------------------------------------------------
 _ALM_STEP_CACHE: dict[tuple, Any] = {}
+last_compile_fallback: str | None = None
 
 
 def shrink[ArrayT](xp: ArrayNamespace, theta: ArrayT, epsilon: float = 1e-3) -> ArrayT:
@@ -202,8 +204,14 @@ def _build_alm_step(
                 # negligible precision loss for the iterative ALM solver.
                 _torch.set_float32_matmul_precision("high")
                 fn = _torch.compile(_alm_core_step, mode="default", fullgraph=False)
-        except Exception:
-            pass
+        except Exception as exc:
+            global last_compile_fallback
+            last_compile_fallback = f"{type(exc).__name__}: {exc}"
+            warnings.warn(
+                f"torch.compile failed for ALM step cache_key={cache_key!r}: {last_compile_fallback}; falling back to eager",
+                UserWarning,
+                stacklevel=2,
+            )
 
     _ALM_STEP_CACHE[cache_key] = fn
     return fn
@@ -223,6 +231,7 @@ def inexact_alm_l1(
     xp: ArrayNamespace | None = None,
     warm_start: dict | None = None,
     return_state: bool = False,
+    convergence_check_every: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict | None]:
     r"""L1 minimisation via the inexact augmented Lagrangian method.
 
@@ -285,6 +294,9 @@ def inexact_alm_l1(
         When ``True`` a fifth return value is added — a dict containing the
         final ALM state suitable for passing as ``warm_start`` to the next
         outer reweighting iteration.  Default ``False``.
+    convergence_check_every : int or None
+        Evaluate the primal residual norm every N ALM iterations.  ``None``
+        uses the backend default (every iteration on NumPy, every 10 on GPU).
 
     Returns
     -------
@@ -370,7 +382,8 @@ def inexact_alm_l1(
     # On GPU backends xp.norm_fro forces a GPU→CPU synchronisation via float().
     # Check convergence every N iterations to amortise this cost.
     # On CPU backends every iteration is essentially free.
-    convergence_check_every = 10 if xp._backend is not Backend.NUMPY else 1
+    if convergence_check_every is None:
+        convergence_check_every = 10 if xp._backend is not Backend.NUMPY else 1
     B1: Any = xp.zeros((), dtype=np.float32)  # scalar device tensor; 0 is safe default
 
     pbar: tqdm | None = tqdm(desc="ALM Iteration", total=max_iter, leave=False) if verbose else None
@@ -587,8 +600,15 @@ def _build_alm_step_batched(
         if hasattr(_torch, "compile"):
             _torch.set_float32_matmul_precision("high")
             fn = _torch.compile(_alm_core_step_batched, mode="default", fullgraph=False)
-    except Exception:
-        pass
+    except Exception as exc:
+        global last_compile_fallback
+        last_compile_fallback = f"{type(exc).__name__}: {exc}"
+        warnings.warn(
+            f"torch.compile failed for batched ALM step cache_key={cache_key!r}: "
+            f"{last_compile_fallback}; falling back to eager",
+            UserWarning,
+            stacklevel=2,
+        )
 
     _ALM_STEP_BATCHED_CACHE[cache_key] = fn
     return fn

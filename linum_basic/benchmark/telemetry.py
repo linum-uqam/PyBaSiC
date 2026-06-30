@@ -7,12 +7,14 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 __all__ = [
     "MemoryStats",
     "TelemetryRecord",
     "TimingPhase",
     "collect_memory_stats",
+    "collect_precision_metadata",
     "run_with_phases",
     "timed_call",
 ]
@@ -189,6 +191,60 @@ def collect_memory_stats(device: str | None) -> MemoryStats | None:
         max_memory_allocated_bytes=int(torch.cuda.max_memory_allocated(device)),
         max_memory_reserved_bytes=int(torch.cuda.max_memory_reserved(device)),
     )
+
+
+def collect_precision_metadata(*, compile_fallback_reason: str | None = None) -> dict[str, Any]:
+    """Capture TF32 and torch.compile precision settings for artifact metadata.
+
+    Parameters
+    ----------
+    compile_fallback_reason : str or None
+        Optional reason when ``torch.compile`` fell back to eager mode.
+
+    Returns
+    -------
+    dict
+        Keys ``float32_matmul_precision``, ``allow_tf32_matmul``,
+        ``allow_tf32_cudnn``, ``compile_requested``, and
+        ``compile_fallback_reason``.  When PyTorch is unavailable, TF32 fields
+        are ``None`` and ``compile_requested`` is ``False``.
+    """
+    unavailable: dict[str, Any] = {
+        "float32_matmul_precision": None,
+        "allow_tf32_matmul": None,
+        "allow_tf32_cudnn": None,
+        "compile_requested": False,
+        "compile_fallback_reason": compile_fallback_reason,
+    }
+    try:
+        import torch
+    except ImportError:
+        return unavailable
+
+    float32_matmul_precision: str | None = None
+    get_precision = getattr(torch, "get_float32_matmul_precision", None)
+    if callable(get_precision):
+        float32_matmul_precision = str(get_precision())
+
+    allow_tf32_matmul: bool | None = None
+    allow_tf32_cudnn: bool | None = None
+    cuda_backends = getattr(getattr(torch, "backends", None), "cuda", None)
+    if cuda_backends is not None:
+        matmul = getattr(cuda_backends, "matmul", None)
+        if matmul is not None:
+            allow_tf32_matmul = bool(getattr(matmul, "allow_tf32", None))
+    cudnn = getattr(getattr(torch, "backends", None), "cudnn", None)
+    if cudnn is not None:
+        allow_tf32_cudnn = bool(getattr(cudnn, "allow_tf32", None))
+
+    compile_requested = hasattr(torch, "compile")
+    return {
+        "float32_matmul_precision": float32_matmul_precision,
+        "allow_tf32_matmul": allow_tf32_matmul,
+        "allow_tf32_cudnn": allow_tf32_cudnn,
+        "compile_requested": compile_requested,
+        "compile_fallback_reason": compile_fallback_reason,
+    }
 
 
 def timed_call[T](

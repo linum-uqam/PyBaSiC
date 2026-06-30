@@ -170,6 +170,10 @@ class TestBaselineSyntheticIntegration:
         bundle_data = json.loads(bundle_path.read_text(encoding="utf-8"))
         assert bundle_data["metadata"]["release_gate"] is False
         assert "git_commit" in bundle_data["metadata"]
+        precision = bundle_data["metadata"]["precision"]
+        assert "allow_tf32_matmul" in precision
+        assert "float32_matmul_precision" in precision
+        assert "compile_requested" in precision
         assert bundle_data["z_indices"]
         assert bundle_data["array_shape"]
         assert bundle_data["tile_shape"]
@@ -513,6 +517,10 @@ class TestCandidateSubcommand:
         assert telemetry["chunk_size"] == 8
         assert "compile_status" in telemetry
         assert telemetry["compile_status"] in ("disabled", "unavailable", "enabled")
+        precision = meta["precision"]
+        assert "allow_tf32_matmul" in precision
+        assert "float32_matmul_precision" in precision
+        assert "compile_requested" in precision
         assert "inductor_cache_path" in telemetry
         assert "fx_graph_cache_enabled" in telemetry
         assert "steady_state_ms" in telemetry
@@ -1160,3 +1168,279 @@ class TestSweepSubcommand:
         assert "rationale" in verdict
         assert verdict["recommended_ws"] == 64
         assert verdict["phase3_activate"] is False
+
+
+class TestProfileSubcommand:
+    def test_profile_help_lists_sequential_mode(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit):
+            bench.main(["profile", "--help"])
+        captured = capsys.readouterr()
+        assert "--mode" in captured.out
+        assert "sequential" in captured.out
+
+    def test_profile_sequential_writes_bottleneck_report(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=3, n_rows=2, n_cols=2, tile=8)
+        out_dir = tmp_path / "profile-out"
+
+        def _fake_fit(*_args, **_kwargs):
+            return object()
+
+        def _fake_profiler_events(*_args, **_kwargs):
+            return {
+                "key_averages": [
+                    {"name": "aten::mm", "self_cuda_time_total": 250.0},
+                ]
+            }
+
+        monkeypatch.setattr(bench, "fit_mosaic", _fake_fit)
+        monkeypatch.setattr(bench, "_collect_profiler_events", _fake_profiler_events)
+
+        rc = bench.main(
+            [
+                "profile",
+                "--input",
+                str(zarr_in),
+                "--subject-id",
+                "sub-22",
+                "--output-dir",
+                str(out_dir),
+                "--strategy",
+                "baseline",
+                "--working-size",
+                "128",
+                "--max-reweighting-iterations",
+                "500",
+                "--estimate-darkfield",
+                "--repeats",
+                "1",
+                "--warmup",
+                "0",
+                "--z-sample",
+                "2",
+                "--synthetic",
+            ]
+        )
+        assert rc == 0
+        report_path = out_dir / "bottleneck-report.json"
+        assert report_path.exists()
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        assert payload["primary_limit"] == "compute"
+        assert payload["ranked_levers"]
+        assert payload["working_size"] == 128
+        precision_path = out_dir / "profile-metadata.json"
+        assert precision_path.exists()
+        precision_payload = json.loads(precision_path.read_text(encoding="utf-8"))
+        assert "allow_tf32_matmul" in precision_payload["precision"]
+        assert "float32_matmul_precision" in precision_payload["precision"]
+
+    def test_batched_diagnostic_requires_sequential_report(self, tmp_path: Path) -> None:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+        out_dir = tmp_path / "profile-out"
+
+        rc = bench.main(
+            [
+                "profile",
+                "--mode",
+                "batched-diagnostic",
+                "--input",
+                str(zarr_in),
+                "--subject-id",
+                "sub-22",
+                "--output-dir",
+                str(out_dir),
+                "--strategy",
+                "baseline",
+                "--working-size",
+                "128",
+                "--z-sample",
+                "2",
+                "--synthetic",
+            ]
+        )
+        assert rc != 0
+        assert not (out_dir / "batched-handoff.json").exists()
+
+    def test_batched_diagnostic_writes_handoff_and_force_batched(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.fit import _allow_batched_cuda_for_params
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=3, n_rows=2, n_cols=2, tile=8)
+        out_dir = tmp_path / "profile-out"
+        out_dir.mkdir()
+        (out_dir / "bottleneck-report.json").write_text(
+            json.dumps({"primary_limit": "chunking", "working_size": 128}),
+            encoding="utf-8",
+        )
+
+        captured_kwargs: dict[str, object] = {}
+
+        def _fake_fit(*_args, **kwargs):
+            captured_kwargs.update(kwargs.get("basic_kwargs", {}))
+            return object()
+
+        monkeypatch.setattr(bench, "fit_mosaic", _fake_fit)
+
+        rc = bench.main(
+            [
+                "profile",
+                "--mode",
+                "batched-diagnostic",
+                "--input",
+                str(zarr_in),
+                "--subject-id",
+                "sub-22",
+                "--output-dir",
+                str(out_dir),
+                "--strategy",
+                "baseline",
+                "--working-size",
+                "128",
+                "--z-sample",
+                "3",
+                "--synthetic",
+            ]
+        )
+        assert rc == 0
+        assert captured_kwargs.get("force_batched_cuda") is True
+        assert captured_kwargs.get("batched_z_chunk_size") == 3
+        assert captured_kwargs.get("working_size") == 128
+        assert _allow_batched_cuda_for_params({"working_size": 128}) is False
+
+        handoff_path = out_dir / "batched-handoff.json"
+        assert handoff_path.exists()
+        handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+        assert handoff["mode"] == "batched-diagnostic"
+        assert handoff["n_z"] == 3
+        assert handoff["throughput_ratio_vs_sequential"] == 1.0
+        assert "peak_memory_bytes" in handoff
+        assert "steady_state_ms" in handoff
+        assert "primary_limit" in handoff
+
+
+class TestOptimizeSubcommand:
+    def test_optimize_writes_lever_artifacts_from_fixtures(self, tmp_path: Path) -> None:
+        from linum_basic.benchmark.artifacts import (
+            SCHEMA_VERSION,
+            BaselineBundle,
+            ToleranceSidecar,
+            write_artifact,
+        )
+        from linum_basic.benchmark.profile import build_bottleneck_report
+        from linum_basic.benchmark.quality import CALIBRATION_POLICY, METRIC_DEFINITION_VERSION
+
+        out_dir = tmp_path / "opt-out"
+        out_dir.mkdir()
+        baseline_id = "baseline-20260630T163351-e7c47a4-sub-22"
+        baseline = BaselineBundle(
+            baseline_id=baseline_id,
+            uuid="550e8400-e29b-41d4-a716-446655440000",
+            schema_version=SCHEMA_VERSION,
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            subject_id="sub22",
+            run_label="production",
+            input_fingerprint="sha256:deadbeef",
+            z_indices=[0, 1],
+            array_shape=[2, 64, 64],
+            tile_shape=[64, 64],
+            strategy_params={"working_size": 128},
+            metrics_rows=[{"z": 0, "seam_l1": 0.1, "seam_curvature": 0.02}],
+            metrics_aggregates={"seam_l1": 0.1, "seam_curvature": 0.02},
+            repeats=1,
+            metadata={"telemetry": {"steady_state_ms": 200.0}},
+            timestamp="2026-06-30T16:33:51Z",
+        )
+        sidecar = ToleranceSidecar(
+            baseline_id=baseline_id,
+            schema_version=SCHEMA_VERSION,
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            calibration_policy=CALIBRATION_POLICY,
+            sigma=3.0,
+            min_abs=1e-6,
+            tolerances={
+                "seam_l1": {"mean": 0.1, "std": 0.001, "abs_tol": 0.01, "rel_tol": 0.1},
+                "seam_curvature": {"mean": 0.02, "std": 0.001, "abs_tol": 0.01, "rel_tol": 0.1},
+            },
+        )
+        bundle_dir = out_dir / baseline_id
+        bundle_dir.mkdir()
+        write_artifact(bundle_dir / "baseline-bundle.json", baseline)
+        write_artifact(bundle_dir / "tolerance-sidecar.json", sidecar)
+
+        report = build_bottleneck_report({"key_averages": [{"name": "aten::mm", "self_cuda_time_total": 100.0}]})
+        (out_dir / "bottleneck-report.json").write_text(
+            json.dumps(bench._bottleneck_report_to_dict(report), indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        cand_path = out_dir / "candidate-sync.json"
+        cand_path.write_text(
+            json.dumps(
+                {
+                    "candidate_id": "candidate-sync",
+                    "baseline_id": baseline_id,
+                    "schema_version": SCHEMA_VERSION,
+                    "metric_definition_version": METRIC_DEFINITION_VERSION,
+                    "subject_id": "sub22",
+                    "run_label": "candidate-sync",
+                    "input_fingerprint": "sha256:deadbeef",
+                    "z_indices": [0, 1],
+                    "array_shape": [2, 64, 64],
+                    "tile_shape": [64, 64],
+                    "strategy_params": {"working_size": 128, "convergence_check_every": 20},
+                    "metrics_rows": [{"z": 0, "seam_l1": 0.1, "seam_curvature": 0.02}],
+                    "metrics_aggregates": {"seam_l1": 0.1, "seam_curvature": 0.02},
+                    "repeats": 1,
+                    "metadata": {
+                        "telemetry": {"steady_state_ms": 100.0},
+                        "quality_verdict": {"passed": True, "failures": []},
+                        "overall": "promote",
+                        "overrides_applied": {"convergence_check_every": 20},
+                    },
+                    "environment": {},
+                    "timestamp": "2026-06-30T17:00:00Z",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        rc = bench.main(
+            [
+                "optimize",
+                "--output-dir",
+                str(out_dir),
+                "--baseline-id",
+                baseline_id,
+                "--candidate",
+                str(cand_path),
+            ]
+        )
+        assert rc == 0
+        assert (out_dir / "lever-attempt-table.json").exists()
+        assert (out_dir / "phase5-backlog.json").exists()
+        assert (out_dir / "phase3-handoff-config.json").exists()
+        handoff = json.loads((out_dir / "phase3-handoff-config.json").read_text(encoding="utf-8"))
+        assert handoff["stacked_overrides"] == {"convergence_check_every": 20}
+        backlog = json.loads((out_dir / "phase5-backlog.json").read_text(encoding="utf-8"))
+        deferred = [entry for entry in backlog["entries"] if entry["lever_id"] == "inductor-cache-warm-policy"]
+        assert deferred and deferred[0]["status"] == "deferred"

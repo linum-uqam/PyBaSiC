@@ -12,6 +12,7 @@ import pytest
 
 from linum_basic._alm import inexact_alm_l1, shrink
 from linum_basic.backend import Backend, get_xp
+from linum_basic.core import BaSiC
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -122,3 +123,30 @@ class TestAlmNumpy:
         xp = get_xp(Backend.NUMPY)
         Ib, Ir, _, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=200, xp=xp)
         assert float(np.abs(Ir).mean()) < float(np.abs(Ib).mean())
+
+
+class TestConvergenceCheckEvery:
+    def test_basic_default_is_none(self, synthetic_stack: tuple[np.ndarray, np.ndarray]) -> None:
+        stack, _ = synthetic_stack
+        model = BaSiC(stack)
+        assert model.convergence_check_every is None
+
+    def test_basic_forwards_convergence_check_every(
+        self,
+        synthetic_stack: tuple[np.ndarray, np.ndarray],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        stack, _ = synthetic_stack
+        captured: dict[str, object] = {}
+
+        def _fake_alm(*_args, **kwargs):
+            captured["convergence_check_every"] = kwargs.get("convergence_check_every")
+            _n, h, w = stack.shape
+            return stack.copy(), np.zeros_like(stack), np.zeros((1, h * w), dtype=np.float32), None
+
+        monkeypatch.setattr("linum_basic.core.inexact_alm_l1", _fake_alm)
+        model = BaSiC(stack, estimate_darkfield=False)
+        model.working_size = 32
+        model.convergence_check_every = 20
+        model.run()
+        assert captured.get("convergence_check_every") == 20
