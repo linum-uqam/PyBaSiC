@@ -439,8 +439,8 @@ class ArrayNamespace:
         """
         if self._backend is Backend.NUMPY:
             flat = x.reshape(x.shape[0], -1)
-            return np.linalg.norm(flat, axis=1, ord="fro")
-        return self._torch.linalg.norm(x.reshape(x.shape[0], -1), ord="fro", dim=1)
+            return np.linalg.norm(flat, axis=1)
+        return self._torch.linalg.vector_norm(x.reshape(x.shape[0], -1), ord=2, dim=1)
 
     def min(self, x: Any) -> float:
         """Return the global minimum value of *x* as a Python float.
