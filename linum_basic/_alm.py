@@ -709,38 +709,57 @@ def inexact_alm_l1_batched(
     # serialises the whole batch and dominates runtime for large z-batches.
     check_every = 10
 
+    # As long as no z-plane has converged, every plane advances together and
+    # the per-z freeze mask is all-ones, so we take a fast path with direct
+    # assignment (no clones, no blend).  Only once some planes freeze do we
+    # switch to the masked path that preserves their converged state.
+    any_frozen = False
+
     with xp.inference_mode():
         while iteration < max_iter:
-            active = 1.0 - converged
+            if any_frozen:
+                active = 1.0 - converged
+                Sf_old = Sf
+                S_spatial_old = S_spatial
+                Ir_old = Ir
+                B_old = B
+                D_field_old = D_field
+                B1_old = B1
 
-            Sf_old = xp.clone(Sf)
-            S_spatial_old = xp.clone(S_spatial)
-            Ir_old = xp.clone(Ir)
-            B_old = xp.clone(B)
-            D_field_old = xp.clone(D_field)
-            B1_old = xp.clone(B1)
+                Sf_new, S_spatial_new, Ib, Ir_new, _dminus, B_new, _rmean, dY, D_field_new, B1_new = _alm_core_step(
+                    D, S_spatial, B, D_field, Y, W, mu, B1, b1_uplimit, l_s_scale, l_d_scale
+                )
 
-            Sf_new, S_spatial_new, Ib, Ir_new, _dminus, B_new, _rmean, dY, D_field_new, B1_new = _alm_core_step(
-                D, S_spatial, B, D_field, Y, W, mu, B1, b1_uplimit, l_s_scale, l_d_scale
-            )
+                Sf = _blend_batched_state(active, Sf_new, Sf_old)
+                S_spatial = _blend_batched_state(active, xp.clone(S_spatial_new), S_spatial_old)
+                Ir = _blend_batched_state(active, Ir_new, Ir_old)
+                B = _blend_batched_state(active, xp.clone(B_new), B_old)
+                D_field = _blend_batched_state(active, D_field_new, D_field_old)
+                B1 = _blend_batched_state(active, B1_new, B1_old)
 
-            Sf = _blend_batched_state(active, Sf_new, Sf_old)
-            S_spatial = _blend_batched_state(active, xp.clone(S_spatial_new), S_spatial_old)
-            Ir = _blend_batched_state(active, Ir_new, Ir_old)
-            B = _blend_batched_state(active, xp.clone(B_new), B_old)
-            D_field = _blend_batched_state(active, D_field_new, D_field_old)
-            B1 = _blend_batched_state(active, B1_new, B1_old)
+                Y = Y + xp.astype(mu, np.float64) * xp.astype(dY, np.float64) * active
+                mu = xp.minimum(mu * rho, mu_bar) * active + mu * converged
+            else:
+                Sf, S_spatial, Ib, Ir, _dminus, B, _rmean, dY, D_field, B1 = _alm_core_step(
+                    D, S_spatial, B, D_field, Y, W, mu, B1, b1_uplimit, l_s_scale, l_d_scale
+                )
+                # Clone the tensors fed back as inputs; the compiled step may
+                # reuse its output buffers on the next call (mirrors scalar).
+                S_spatial = xp.clone(S_spatial)
+                B = xp.clone(B)
+                Y = Y + xp.astype(mu, np.float64) * xp.astype(dY, np.float64)
+                mu = xp.minimum(mu * rho, mu_bar)
 
-            Y = Y + xp.astype(mu, np.float64) * xp.astype(dY, np.float64) * active
-            mu = xp.minimum(mu * rho, mu_bar) * active + mu * converged
             iteration += 1
 
             if iteration % check_every == 0:
                 stop_crit = xp.norm_fro_batched(dY) / (d_norm + 1e-9)
                 newly_done = xp.astype((stop_crit < tol).to(dtype=xp._torch.float32), np.float32).reshape(z, 1, 1)
                 converged = xp.maximum(converged, newly_done)
-                if float(xp.to_numpy(xp.sum(converged)).item()) >= z:
+                n_done = float(xp.to_numpy(xp.sum(converged)).item())
+                if n_done >= z:
                     break
+                any_frozen = n_done > 0.0
 
             if pbar is not None:
                 pbar.update()
