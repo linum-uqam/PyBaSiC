@@ -153,7 +153,11 @@ def fit_stacks_batched(
 
         denom = np.abs(ir / (ib.mean(axis=(1, 2, 3), keepdims=True) + 1e-6)) + epsilon
         weights = 1.0 / denom
-        weights = weights * weights.size / weights.sum(axis=(1, 2, 3), keepdims=True)
+        # Normalise per z-plane so mean(W)=1 within each plane (matches the
+        # single-plane BaSiC.update_weights, which uses the per-plane element
+        # count, not the whole batch).
+        per_z_size = weights[0].size
+        weights = weights * per_z_size / weights.sum(axis=(1, 2, 3), keepdims=True)
 
         d_2d = d_field.reshape(z, ws, ws)
         flatfields = ib.mean(axis=1) - d_2d
