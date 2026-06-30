@@ -473,7 +473,7 @@ class ArrayNamespace:
             return np.min(x, axis=axis, keepdims=keepdims)
         return self._torch.amin(x, dim=axis, keepdim=keepdims)
 
-    def svd_leading_singular(self, x: Any, *, n_iter: int = 10) -> float:
+    def svd_leading_singular(self, x: Any, *, n_iter: int = 30) -> float:
         """Return the largest singular value of *x*.
 
         Uses power iteration on ``x @ x.T`` for GPU backends to avoid a full
@@ -496,7 +496,7 @@ class ArrayNamespace:
             return float(np.linalg.svd(x, compute_uv=False)[0])
         return float(self._svd_leading_singular_torch(x, n_iter=n_iter))
 
-    def svd_leading_singular_batched(self, x: Any, *, n_iter: int = 10) -> Any:
+    def svd_leading_singular_batched(self, x: Any, *, n_iter: int = 30) -> Any:
         """Return the largest singular value for each batch matrix.
 
         Parameters
@@ -521,17 +521,23 @@ class ArrayNamespace:
         return float(sigma[0])
 
     def _svd_leading_singular_torch_batched(self, x: Any, *, n_iter: int) -> Any:
-        """Power iteration for σ₁ of batched matrices ``(Z, n, m)``."""
+        """Power iteration for σ₁ of batched matrices ``(Z, n, m)``.
+
+        Uses a deterministic uniform initial vector so the estimate is
+        reproducible across processes and GPUs (the leading right-singular
+        vector of sorted, mostly-positive image data is close to uniform,
+        so this also converges quickly).
+        """
         torch = self._torch
         z, _n, m = x.shape
-        v = torch.randn(z, m, 1, dtype=x.dtype, device=x.device)
-        v = v / (torch.linalg.norm(v, dim=1, keepdim=True) + 1e-9)
+        v = torch.ones(z, m, 1, dtype=x.dtype, device=x.device)
+        v = v / (torch.linalg.vector_norm(v, dim=1, keepdim=True) + 1e-9)
         for _ in range(n_iter):
             u = torch.bmm(x, v)
-            u = u / (torch.linalg.norm(u, dim=1, keepdim=True) + 1e-9)
+            u = u / (torch.linalg.vector_norm(u, dim=1, keepdim=True) + 1e-9)
             v = torch.bmm(x.transpose(1, 2), u)
-            v = v / (torch.linalg.norm(v, dim=1, keepdim=True) + 1e-9)
-        return torch.linalg.norm(torch.bmm(x, v), dim=(1, 2))
+            v = v / (torch.linalg.vector_norm(v, dim=1, keepdim=True) + 1e-9)
+        return torch.linalg.vector_norm(torch.bmm(x, v), dim=(1, 2))
 
     def inference_mode(self) -> Any:
         """Return a context manager that disables gradient tracking.
