@@ -79,11 +79,22 @@ def make_model(tiles: np.ndarray, params: dict[str, Any]) -> BaSiC:
     return model
 
 
+def _convergence_from_model(model: Any) -> dict[str, Any]:
+    """Extract reweighting iteration count and auto-tuned regularisation."""
+    l_s = getattr(model, "l_s", None)
+    l_d = getattr(model, "l_d", None)
+    return {
+        "reweighting_iteration": int(model.reweighting_iteration),
+        "l_s": float(l_s) if l_s is not None else None,
+        "l_d": float(l_d) if l_d is not None else None,
+    }
+
+
 def _fit_one_z(
     tiles: np.ndarray,
     params: dict[str, Any],
     n_extra_rows: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Fit a single z-level tile stack and return its flat/dark-fields.
 
     Module-level (picklable) so it can run inside a worker process. The
@@ -102,14 +113,15 @@ def _fit_one_z(
     Returns
     -------
     tuple of numpy.ndarray
-        ``(flatfield, darkfield)`` for the (possibly row-cropped) tiles.
+        ``(flatfield, darkfield, convergence)`` for the (possibly row-cropped) tiles.
+        *convergence* carries ``reweighting_iteration``, ``l_s``, and ``l_d``.
     """
     if n_extra_rows > 0:
         tiles = tiles[:, n_extra_rows:, :]
     model = make_model(tiles, params)
     model.prepare()
     model.run()
-    return model.get_flatfield(), model.get_darkfield()
+    return model.get_flatfield(), model.get_darkfield(), _convergence_from_model(model)
 
 
 def _fit_one_z_on_device(
@@ -117,7 +129,7 @@ def _fit_one_z_on_device(
     device: str,
     params: dict[str, Any],
     n_extra_rows: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Fit one z-level on a specific CUDA device (picklable entry point)."""
     dev_params = dict(params)
     dev_params["device"] = device
@@ -130,7 +142,7 @@ def _fit_one_z_cuda_map(
     *,
     params: dict[str, Any],
     n_extra_rows: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Module-level partial target for :func:`parallel_map_cuda_devices`."""
     return _fit_one_z_on_device(tiles, device, params, n_extra_rows)
 
@@ -282,6 +294,9 @@ class MosaicFit:
         Z-levels that were fitted (subset of all z-levels).
     params : dict
         BaSiC hyperparameters used for this fit.
+    convergence_per_z : list of dict or None
+        Per-z reweighting telemetry from the scalar fit path; ``None`` when
+        unavailable (e.g. batched CUDA).
     """
 
     flatfields: np.ndarray
@@ -289,6 +304,7 @@ class MosaicFit:
     field_mode: str
     z_indices: list[int]
     params: dict[str, Any]
+    convergence_per_z: list[dict[str, Any]] | None
 
     def __init__(
         self,
@@ -297,6 +313,7 @@ class MosaicFit:
         field_mode: str,
         z_indices: list[int],
         params: dict[str, Any] | None = None,
+        convergence_per_z: list[dict[str, Any]] | None = None,
     ) -> None:
         """Construct a :class:`MosaicFit` result.
 
@@ -313,12 +330,15 @@ class MosaicFit:
             Z-levels that were fitted (subset of all z-levels).
         params : dict or None
             BaSiC hyperparameters used for this fit.  Defaults to ``{}``.
+        convergence_per_z : list of dict or None
+            Per-z reweighting telemetry; ``None`` when not recorded.
         """
         self.flatfields = flatfields
         self.darkfields = darkfields
         self.field_mode = field_mode
         self.z_indices = z_indices
         self.params = params if params is not None else {}
+        self.convergence_per_z = convergence_per_z
 
 
 def fit_mosaic(
@@ -400,6 +420,7 @@ def fit_mosaic(
     )
     if use_batched_cuda and not _allow_batched_cuda_for_params(params):
         use_batched_cuda = False
+    convergence_per_z: list[dict[str, Any]] | None = None
     if use_batched_cuda:
         results = _fit_mosaic_batched_cuda(
             tile_stacks,
@@ -408,24 +429,29 @@ def fit_mosaic(
             cuda_devices=cuda_devices or ["cuda:0"],
             verbose=verbose,
         )
-    elif use_cuda_fanout:
-        cuda_fit = partial(_fit_one_z_cuda_map, params=params, n_extra_rows=n_extra_rows)
-        results = parallel_map_cuda_devices(
-            cuda_fit,
-            tile_stacks,
-            cuda_devices,
-            desc="Fitting z-levels (multi-GPU)",
-            verbose=verbose,
-        )
     else:
-        results = parallel_map(
-            partial(_fit_one_z, params=params, n_extra_rows=n_extra_rows),
-            tile_stacks,
-            n_eff,
-            desc="Fitting z-levels",
-            verbose=verbose,
-        )
-    for i, (flatfield, darkfield) in enumerate(results):
+        convergence_per_z = []
+        if use_cuda_fanout:
+            cuda_fit = partial(_fit_one_z_cuda_map, params=params, n_extra_rows=n_extra_rows)
+            results = parallel_map_cuda_devices(
+                cuda_fit,
+                tile_stacks,
+                cuda_devices,
+                desc="Fitting z-levels (multi-GPU)",
+                verbose=verbose,
+            )
+        else:
+            results = parallel_map(
+                partial(_fit_one_z, params=params, n_extra_rows=n_extra_rows),
+                tile_stacks,
+                n_eff,
+                desc="Fitting z-levels",
+                verbose=verbose,
+            )
+    for i, result in enumerate(results):
+        flatfield, darkfield = result[0], result[1]
+        if convergence_per_z is not None and len(result) == 3:
+            convergence_per_z.append(result[2])
         flatfields[i, n_extra_rows:, :] = flatfield
         darkfields[i, n_extra_rows:, :] = darkfield
 
@@ -442,6 +468,7 @@ def fit_mosaic(
         field_mode=field_mode,
         z_indices=z_idx,
         params=params,
+        convergence_per_z=convergence_per_z,
     )
 
 

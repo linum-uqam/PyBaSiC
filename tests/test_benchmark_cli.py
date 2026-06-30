@@ -318,12 +318,14 @@ def _stub_fit_factory(*, seam_offset: float = 0.0):
         th, tw = mosaic.tile_shape
         n = len(z_indices)
         flat = np.ones((n, th, tw), dtype=np.float32) * (1.0 + seam_offset)
+        convergence_per_z = [{"reweighting_iteration": 2, "l_s": 0.5, "l_d": 0.2} for _ in z_indices]
         return MosaicFit(
             flatfields=flat,
             darkfields=np.zeros((n, th, tw), dtype=np.float32),
             field_mode="per-z",
             z_indices=list(z_indices),
             params=dict(kwargs.get("basic_kwargs") or {}),
+            convergence_per_z=convergence_per_z,
         )
 
     return _stub_fit
@@ -515,6 +517,11 @@ class TestCandidateSubcommand:
         assert "fx_graph_cache_enabled" in telemetry
         assert "steady_state_ms" in telemetry
         assert "deltas" in meta
+        assert "convergence" in meta
+        convergence = meta["convergence"]
+        assert convergence["reweight_iterations_median"] == 2.0
+        assert convergence["max_reweighting_iterations"] == 15
+        assert convergence["reweight_iterations_per_z"] == {"0": 2, "2": 2}
 
     def test_regressed_candidate_rejects_with_nonzero_exit(
         self,
@@ -1105,3 +1112,51 @@ class TestCompareSubcommand:
             ]
         )
         assert rc != 0
+
+
+class TestSweepSubcommand:
+    def test_sweep_writes_table_and_verdict_without_fit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from tests.test_benchmark_sweep import _write_sweep_fixtures
+
+        fixtures = _write_sweep_fixtures(tmp_path / "artifacts")
+        baseline = fixtures["baseline"]
+        candidates = fixtures["candidates"]
+        baseline_path = tmp_path / "artifacts" / baseline.baseline_id / "baseline-bundle.json"
+        candidate_paths = [
+            tmp_path / "artifacts" / candidate.candidate_id / "candidate-artifact.json" for candidate in candidates
+        ]
+        out_dir = tmp_path / "sweep-out"
+
+        def _raise_fit(*_args, **_kwargs):
+            raise AssertionError("fit_mosaic must not be called by sweep")
+
+        monkeypatch.setattr(bench, "fit_mosaic", _raise_fit)
+
+        rc = bench.main(
+            [
+                "sweep",
+                "--baseline",
+                str(baseline_path),
+                "--candidate",
+                str(candidate_paths[0]),
+                "--candidate",
+                str(candidate_paths[1]),
+                "--output-dir",
+                str(out_dir),
+            ]
+        )
+        assert rc == 0
+        assert (out_dir / "sweep-table.json").exists()
+        assert (out_dir / "sweep-verdict.json").exists()
+        assert (out_dir / "summary.md").exists()
+
+        verdict = json.loads((out_dir / "sweep-verdict.json").read_text(encoding="utf-8"))
+        assert "recommended_ws" in verdict
+        assert "phase3_activate" in verdict
+        assert "rationale" in verdict
+        assert verdict["recommended_ws"] == 64
+        assert verdict["phase3_activate"] is False

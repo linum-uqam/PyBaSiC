@@ -44,9 +44,11 @@ import hashlib
 import json
 import os
 import platform
+import statistics
 import sys
 import time
 import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -78,12 +80,13 @@ from linum_basic.benchmark.quality import (
     evaluate_quality_gate,
 )
 from linum_basic.benchmark.strategies import StrategyResult, load_overrides, resolve_strategy
+from linum_basic.benchmark.sweep import SPEED_RATIO_THRESHOLD, build_sweep_table
 from linum_basic.benchmark.telemetry import TelemetryRecord, run_with_phases
 from linum_basic.fit import MosaicFit, fit_mosaic
 
 LARGE_RUN_Z_THRESHOLD = 8
 
-_HARNESS_SUBCOMMANDS = frozenset({"baseline", "candidate", "compare"})
+_HARNESS_SUBCOMMANDS = frozenset({"baseline", "candidate", "compare", "sweep"})
 
 
 def _cuda_available() -> bool:
@@ -118,6 +121,39 @@ def _telemetry_metadata(telemetry: TelemetryRecord, run_meta: RunMetadata) -> di
         "inductor_cache_path": telemetry.inductor_cache_path,
         "fx_graph_cache_enabled": run_meta.fx_graph_cache_enabled,
     }
+
+
+def _convergence_metadata(
+    fit: MosaicFit,
+    z_indices: list[int],
+    *,
+    max_reweighting_iterations: int,
+) -> dict[str, Any]:
+    """Summarise per-z reweighting telemetry for candidate artifact metadata."""
+    per_z = fit.convergence_per_z
+    if per_z is None:
+        return {
+            "reweight_iterations_per_z": None,
+            "reweight_iterations_median": None,
+            "max_reweighting_iterations": max_reweighting_iterations,
+        }
+
+    reweight_iterations_per_z = {
+        str(z): int(entry["reweighting_iteration"]) for z, entry in zip(z_indices, per_z, strict=True)
+    }
+    iterations = [int(entry["reweighting_iteration"]) for entry in per_z]
+    block: dict[str, Any] = {
+        "reweight_iterations_per_z": reweight_iterations_per_z,
+        "reweight_iterations_median": float(statistics.median(iterations)) if iterations else None,
+        "max_reweighting_iterations": max_reweighting_iterations,
+    }
+    l_s_vals = [float(entry["l_s"]) for entry in per_z if entry.get("l_s") is not None]
+    l_d_vals = [float(entry["l_d"]) for entry in per_z if entry.get("l_d") is not None]
+    if l_s_vals:
+        block["l_s"] = float(statistics.median(l_s_vals))
+    if l_d_vals:
+        block["l_d"] = float(statistics.median(l_d_vals))
+    return block
 
 
 def resolve_z_selection(
@@ -280,6 +316,26 @@ def _build_subcommand_parser() -> argparse.ArgumentParser:
     compare.add_argument("--candidate", required=True, help="Path to candidate-artifact.json.")
     compare.add_argument("--output-dir", required=True, help="Directory for comparison summary.")
     compare.set_defaults(handler=cmd_compare)
+
+    sweep = subparsers.add_parser(
+        "sweep",
+        help="Aggregate saved baseline and candidate artifacts into a speed-quality sweep table.",
+    )
+    sweep.add_argument("--baseline", required=True, help="Path to baseline-bundle.json.")
+    sweep.add_argument(
+        "--candidate",
+        action="append",
+        required=True,
+        help="Path to candidate-artifact.json (repeatable).",
+    )
+    sweep.add_argument("--output-dir", required=True, help="Directory for sweep outputs.")
+    sweep.add_argument(
+        "--speed-ratio-threshold",
+        type=float,
+        default=SPEED_RATIO_THRESHOLD,
+        help=f"Minimum speed ratio for adoption (default {SPEED_RATIO_THRESHOLD}).",
+    )
+    sweep.set_defaults(handler=cmd_sweep)
 
     return parser
 
@@ -956,6 +1012,12 @@ def cmd_candidate(args: argparse.Namespace) -> int:
     )
 
     candidate_telemetry = _telemetry_metadata(telemetry, run_meta)
+    max_reweight_iters = int(strategy.basic_kwargs.get("max_reweighting_iterations", 10))
+    convergence_meta = _convergence_metadata(
+        primary_fit,
+        z_indices,
+        max_reweighting_iterations=max_reweight_iters,
+    )
 
     summary, speed_verdict, quality_verdict, overall, comparison_warnings = _run_candidate_comparison(
         baseline,
@@ -997,6 +1059,7 @@ def cmd_candidate(args: argparse.Namespace) -> int:
             "inductor_cache_path": run_meta.inductor_cache_path,
             "fx_graph_cache_enabled": run_meta.fx_graph_cache_enabled,
             "telemetry": candidate_telemetry,
+            "convergence": convergence_meta,
             "speed_verdict": speed_verdict,
             "quality_verdict": _serialize_quality_verdict(quality_verdict),
             "overall": overall,
@@ -1071,6 +1134,59 @@ def cmd_compare(args: argparse.Namespace) -> int:
     for warning in warnings:
         print(f"Warning: {warning}", file=sys.stderr)
     return 1 if overall == "reject" else 0
+
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    """Aggregate saved baseline and candidate artifacts into sweep table + verdict."""
+    baseline_path = Path(args.baseline)
+    output_dir = Path(args.output_dir)
+
+    if not baseline_path.is_file():
+        print(f"Baseline artifact not found: {baseline_path}", file=sys.stderr)
+        return 1
+
+    candidates: list[CandidateArtifact] = []
+    for candidate_arg in args.candidate:
+        candidate_path = Path(candidate_arg)
+        if not candidate_path.is_file():
+            print(f"Candidate artifact not found: {candidate_path}", file=sys.stderr)
+            return 1
+        candidates.append(read_artifact(candidate_path, CandidateArtifact))
+
+    baseline = read_artifact(baseline_path, BaselineBundle)
+    table = build_sweep_table(
+        baseline,
+        candidates,
+        speed_ratio_threshold=float(args.speed_ratio_threshold),
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "sweep-table.json").write_text(
+        json.dumps(asdict(table), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "sweep-verdict.json").write_text(
+        json.dumps(asdict(table.adoption), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    summary_rows = [
+        {
+            "working_size": row.working_size,
+            "steady_state_ms": row.steady_state_ms,
+            "speed_ratio": row.speed_ratio,
+            "quality_passed": row.quality_passed,
+            "speed_passed": row.speed_passed,
+            "overall": row.candidate_overall,
+        }
+        for row in table.rows
+    ]
+    write_summary_table(output_dir / "summary.md", summary_rows, fmt="markdown")
+
+    print(
+        f"Wrote sweep outputs to {output_dir} "
+        f"(recommended_ws={table.adoption.recommended_ws}, phase3_activate={table.adoption.phase3_activate})"
+    )
+    return 0
 
 
 def _synthetic_mosaic(n_z: int, n_rows: int, n_cols: int, th: int, tw: int) -> Any:
