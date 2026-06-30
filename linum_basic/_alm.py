@@ -15,7 +15,7 @@ from tqdm.auto import tqdm
 
 from linum_basic.backend import ArrayNamespace, Backend, get_xp
 
-__all__ = ["inexact_alm_l1", "shrink"]
+__all__ = ["inexact_alm_l1", "inexact_alm_l1_batched", "shrink"]
 
 # ---------------------------------------------------------------------------
 # Module-level cache for compiled per-iteration step functions.
@@ -446,6 +446,307 @@ def inexact_alm_l1(
     # Convert outputs back to NumPy
     Ib_np = xp.to_numpy(Ib).reshape(n, p, q)
     Ir_np = xp.to_numpy(Ir).reshape(n, p, q)
+    D_field_np = xp.to_numpy(D_field)
+
+    if return_state:
+        state: dict | None = {
+            "Sf": xp.to_numpy(Sf).astype(np.float32),
+            "Ir": Ir_np.copy(),
+            "B": xp.to_numpy(B).astype(np.float32),
+            "D_field": D_field_np.copy(),
+        }
+    else:
+        state = None
+
+    return Ib_np, Ir_np, D_field_np, state
+
+
+# ---------------------------------------------------------------------------
+# Batched ALM (Z independent planes solved in one GPU pass)
+# ---------------------------------------------------------------------------
+_ALM_STEP_BATCHED_CACHE: dict[tuple, Any] = {}
+
+
+def _build_alm_step_batched(
+    xp: ArrayNamespace,
+    z: int,
+    n: int,
+    p: int,
+    q: int,
+    *,
+    estimate_darkfield: bool = False,
+    ent2: float = 10.0,
+) -> Any:
+    """Return a compiled batched ALM step for shape ``(Z, N, P, Q)``."""
+    device_key = str(getattr(xp, "_device", ""))
+    cache_key = (
+        xp._backend.value,
+        device_key,
+        z,
+        n,
+        p,
+        q,
+        estimate_darkfield,
+    )
+    if cache_key in _ALM_STEP_BATCHED_CACHE:
+        return _ALM_STEP_BATCHED_CACHE[cache_key]
+
+    if xp._backend is not Backend.NUMPY:
+        from linum_basic.backend import _get_dct_matrix as _gcm
+
+        _device = getattr(xp, "_device", "cpu")
+        _Ap = _gcm(p, _device).float()
+        _Aq = _gcm(q, _device).float()
+
+        def _dctn2_batched(x: Any) -> Any:
+            return xp._torch.matmul(_Ap.unsqueeze(0), xp._torch.matmul(x, _Aq.T))
+
+        def _idctn2_batched(x: Any) -> Any:
+            return xp._torch.matmul(_Ap.T.unsqueeze(0), xp._torch.matmul(x, _Aq))
+
+    else:
+        msg = "Batched ALM step requires a Torch GPU backend."
+        raise RuntimeError(msg)
+
+    def _alm_core_step_batched(
+        d: Any,
+        s_spatial: Any,
+        b: Any,
+        d_field: Any,
+        y: Any,
+        w: Any,
+        cur_mu: Any,
+        b1: Any,
+        b1_uplimit: Any,
+        l_s_scale: Any,
+        l_d_scale: Any,
+    ) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any, Any, Any]:
+        y_f32 = xp.astype(y / cur_mu, np.float32)
+        ib_old = s_spatial * b + d_field
+        new_ir = shrink(xp, d - ib_old + y_f32, w / cur_mu)
+        d_minus_ir = d - new_ir
+        r_dev = d_minus_ir - d_field + y_f32
+        r_for_sf_mean = xp.mean(r_dev.reshape(z, n, p, q), axis=1)
+        d_sf = xp.astype(_dctn2_batched(r_for_sf_mean), np.float32)
+        new_sf = shrink(xp, d_sf, l_s_scale / cur_mu)
+        new_s_spatial = xp.astype(_idctn2_batched(new_sf), np.float32).reshape(z, 1, p * q)
+        new_ib = new_s_spatial * b + d_field
+        r_mean_row = xp.mean(d_minus_ir, axis=1, keepdims=True)
+        new_r_mean_all = xp.mean(d_minus_ir.reshape(z, -1), axis=1, keepdims=True).reshape(z, 1, 1)
+        new_b = xp.astype(xp.maximum(r_mean_row / (new_r_mean_all + 1e-9), 0.0), np.float32)
+        d_y = d - new_ib - new_ir
+        new_d_field = d_field
+        new_b1 = b1
+        if estimate_darkfield:
+            s_mean = xp.mean(new_s_spatial, axis=2, keepdims=True)
+            mask_valid_b_f = xp.astype((new_b < 1.0)[:, :, 0], np.float32)
+            mask_high_s_f = xp.astype(new_s_spatial[:, 0, :] > (s_mean[:, :, 0] - 1e-6), np.float32)
+            mask_low_s_f = xp.astype(new_s_spatial[:, 0, :] < (s_mean[:, :, 0] + 1e-6), np.float32)
+            k_cnt = xp.sum(mask_valid_b_f, axis=1, keepdims=True)
+            dminus_ir_valid_rowsum = xp.sum(d_minus_ir * mask_valid_b_f[:, :, None], axis=1, keepdims=True)
+            n_high = xp.sum(mask_high_s_f, axis=1, keepdims=True)
+            n_low = xp.sum(mask_low_s_f, axis=1, keepdims=True)
+            r_high = xp.sum(dminus_ir_valid_rowsum * mask_high_s_f[:, None, :], axis=2, keepdims=True) / (
+                k_cnt * n_high + 1e-9
+            )
+            r_low = xp.sum(dminus_ir_valid_rowsum * mask_low_s_f[:, None, :], axis=2, keepdims=True) / (k_cnt * n_low + 1e-9)
+            b1_cand = (r_high - r_low) / (new_r_mean_all + 1e-9)
+            b_flat = xp.astype(new_b[:, :, 0], np.float32)
+            sum_b2 = xp.sum(b_flat**2 * mask_valid_b_f, axis=1, keepdims=True)
+            sum_b = xp.sum(b_flat * mask_valid_b_f, axis=1, keepdims=True)
+            temp1 = sum_b2
+            temp2 = sum_b
+            temp3 = b1_cand * k_cnt
+            temp4 = xp.sum(b_flat * b1_cand * mask_valid_b_f, axis=1, keepdims=True)
+            denom = temp2 * temp3 - k_cnt * temp4
+            b1_new_raw = (temp1 * temp3 - temp2 * temp4) / (denom + 1e-30)
+            b1_new_guarded = xp.where(xp.abs(denom) > 1e-30, b1_new_raw, b1)
+            b1_new = xp.minimum(b1_new_guarded, b1_uplimit / (s_mean + 1e-9))
+            new_b1 = xp.where(b1_new > 0.0, b1_new, b1)
+            z_offset = new_b1 * (s_mean - new_s_spatial)
+            k_cnt_f64 = xp.astype(k_cnt, np.float64)
+            sum_b_f64 = xp.astype(sum_b, np.float64)
+            s64 = xp.astype(new_s_spatial, np.float64)
+            d_valid_rowsum_f64 = xp.astype(dminus_ir_valid_rowsum, np.float64)
+            b_valid_mean = sum_b_f64 / (k_cnt_f64 + 1e-30)
+            a1_offset = d_valid_rowsum_f64 / (k_cnt_f64 + 1e-30) - b_valid_mean * s64
+            a_offset = a1_offset - xp.astype(z_offset, np.float64)
+            a_offset_mean = xp.mean(a_offset, axis=2, keepdims=True)
+            a_offset_centered = xp.astype(a_offset - a_offset_mean, np.float32)
+            dr_f = xp.astype(_dctn2_batched(a_offset_centered.reshape(z, p, q)), np.float32)
+            dr_f_shrunk = shrink(xp, dr_f, l_d_scale / (ent2 * cur_mu))
+            dr = xp.astype(_idctn2_batched(dr_f_shrunk.reshape(z, p, q)), np.float32).reshape(z, 1, p * q)
+            dr = shrink(xp, dr, l_d_scale / (cur_mu * ent2))
+            new_d_field = xp.astype(dr + xp.astype(a_offset_mean, np.float32) + z_offset, np.float32)
+        return new_sf, new_s_spatial, new_ib, new_ir, d_minus_ir, new_b, new_r_mean_all, d_y, new_d_field, new_b1
+
+    fn: Any = _alm_core_step_batched
+    try:
+        import torch as _torch
+
+        if hasattr(_torch, "compile"):
+            _torch.set_float32_matmul_precision("high")
+            fn = _torch.compile(_alm_core_step_batched, mode="default", fullgraph=False)
+    except Exception:
+        pass
+
+    _ALM_STEP_BATCHED_CACHE[cache_key] = fn
+    return fn
+
+
+def _blend_batched_state(active: Any, new: Any, old: Any) -> Any:
+    """Keep *old* where ``active==0``, else *new* (per batch index)."""
+    return active * new + (1.0 - active) * old
+
+
+def inexact_alm_l1_batched(
+    imgs: np.ndarray,
+    l_s: float | np.ndarray,
+    l_d: float | np.ndarray,
+    *,
+    tol: float = 1e-6,
+    max_iter: int = 500,
+    weight: np.ndarray | float = 1.0,
+    estimate_darkfield: bool = True,
+    rho: float = 1.5,
+    verbose: bool = False,
+    xp: ArrayNamespace | None = None,
+    warm_start: dict | None = None,
+    return_state: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict | None]:
+    """Batched L1 ALM for stacks shaped ``(Z, N, P, Q)``.
+
+    Each leading batch index is an independent BaSiC solve.  Per-batch early
+    stopping preserves the same convergence semantics as repeated calls to
+    :func:`inexact_alm_l1`.
+
+    Returns
+    -------
+    Ib : numpy.ndarray, shape (Z, N, P, Q)
+        Unnormalised estimated flat-field per batch slice.
+    Ir : numpy.ndarray, shape (Z, N, P, Q)
+        Sparse residual images.
+    D_field : numpy.ndarray, shape (Z, 1, P*Q)
+        Estimated dark-field per batch slice.
+    state : dict or None
+        ALM warm-start state when ``return_state=True``.
+    """
+    if xp is None:
+        msg = "inexact_alm_l1_batched requires a Torch GPU ArrayNamespace."
+        raise ValueError(msg)
+    if xp._backend is Backend.NUMPY:
+        msg = "inexact_alm_l1_batched requires a Torch GPU backend."
+        raise ValueError(msg)
+
+    z, n, p, q = imgs.shape
+    D = xp.asarray(imgs.reshape(z, n, p * q).astype(np.float32))
+    if isinstance(weight, (int, float)):
+        W = xp.asarray(np.ones((z, n, p * q), dtype=np.float32) * weight)
+    else:
+        W = xp.asarray(np.asarray(weight).reshape(z, n, p * q).astype(np.float32))
+
+    d_norm = xp.norm_fro_batched(D)
+    b1_uplimit = xp.min_along(D.reshape(z, -1), axis=1, keepdims=True).reshape(z, 1, 1)
+
+    sigma1 = xp.svd_leading_singular_batched(D)
+    mu = xp.astype(12.5 / (sigma1.reshape(z, 1, 1) + 1e-9), np.float32)
+    mu_bar = mu * 1e7
+
+    if isinstance(l_s, (int, float)):
+        l_s_arr = np.full(z, float(l_s), dtype=np.float32)
+    else:
+        l_s_arr = np.asarray(l_s, dtype=np.float32).reshape(z)
+    if isinstance(l_d, (int, float)):
+        l_d_arr = np.full(z, float(l_d), dtype=np.float32)
+    else:
+        l_d_arr = np.asarray(l_d, dtype=np.float32).reshape(z)
+    l_s_scale = xp.asarray(l_s_arr.reshape(z, 1, 1))
+    l_d_scale = xp.asarray(l_d_arr.reshape(z, 1, 1))
+    ent2 = 10.0
+
+    if warm_start is not None:
+        Sf = xp.asarray(warm_start["Sf"].reshape(z, p, q).astype(np.float32))
+        Ir = xp.asarray(warm_start["Ir"].reshape(z, n, p * q).astype(np.float32))
+        B = xp.asarray(warm_start["B"].reshape(z, n, 1).astype(np.float32))
+        D_field = xp.asarray(warm_start["D_field"].reshape(z, 1, p * q).astype(np.float32))
+        Y = xp.zeros((z, n, p * q), dtype=np.float64)
+    else:
+        Sf = xp.zeros((z, p, q), dtype=np.float32)
+        Ir = xp.zeros_like(D)
+        B = xp.ones((z, n, 1), dtype=np.float32)
+        D_field = xp.zeros((z, 1, p * q), dtype=np.float32)
+        Y = xp.zeros((z, n, p * q), dtype=np.float64)
+
+    converged = xp.zeros((z, 1, 1), dtype=np.float32)
+    iteration = 0
+    B1 = xp.zeros((z, 1, 1), dtype=np.float32)
+    Ib = xp.zeros_like(D)
+
+    if warm_start is not None:
+        from linum_basic.backend import _get_dct_matrix
+
+        _Ap = _get_dct_matrix(p, xp._device).float()
+        _Aq = _get_dct_matrix(q, xp._device).float()
+        S_spatial = xp._torch.matmul(_Ap.T.unsqueeze(0), xp._torch.matmul(Sf, _Aq)).reshape(z, 1, p * q)
+    else:
+        S_spatial = xp.zeros((z, 1, p * q), dtype=np.float32)
+
+    _alm_core_step = _build_alm_step_batched(
+        xp,
+        z,
+        n,
+        p,
+        q,
+        estimate_darkfield=estimate_darkfield,
+        ent2=ent2,
+    )
+
+    pbar: tqdm | None = tqdm(desc="Batched ALM", total=max_iter, leave=False) if verbose else None
+
+    with xp.inference_mode():
+        while iteration < max_iter:
+            active = 1.0 - converged
+            if float(xp.to_numpy(xp.sum(active)).item()) <= 0.0:
+                break
+
+            Sf_old = xp.clone(Sf)
+            S_spatial_old = xp.clone(S_spatial)
+            Ir_old = xp.clone(Ir)
+            B_old = xp.clone(B)
+            D_field_old = xp.clone(D_field)
+            B1_old = xp.clone(B1)
+
+            Sf_new, S_spatial_new, Ib, Ir_new, _dminus, B_new, _rmean, dY, D_field_new, B1_new = _alm_core_step(
+                D, S_spatial, B, D_field, Y, W, mu, B1, b1_uplimit, l_s_scale, l_d_scale
+            )
+
+            Sf = _blend_batched_state(active, Sf_new, Sf_old)
+            S_spatial = _blend_batched_state(active, xp.clone(S_spatial_new), S_spatial_old)
+            Ir = _blend_batched_state(active, Ir_new, Ir_old)
+            B = _blend_batched_state(active, xp.clone(B_new), B_old)
+            D_field = _blend_batched_state(active, D_field_new, D_field_old)
+            B1 = _blend_batched_state(active, B1_new, B1_old)
+
+            Y = Y + xp.astype(mu, np.float64) * xp.astype(dY, np.float64) * active
+            mu = xp.minimum(mu * rho, mu_bar) * active + mu * converged
+            iteration += 1
+
+            stop_crit = xp.norm_fro_batched(dY) / (d_norm + 1e-9)
+            newly_done = xp.astype((stop_crit < tol).to(dtype=xp._torch.float32), np.float32).reshape(z, 1, 1)
+            converged = xp.maximum(converged, newly_done)
+
+            if pbar is not None:
+                pbar.update()
+
+    if iteration == max_iter and float(xp.to_numpy(xp.sum(1.0 - converged)).item()) > 0.0:
+        print("Maximum batched ALM iterations reached without full convergence on all planes.")
+    if pbar is not None:
+        pbar.close()
+
+    D_field = xp.astype(D_field + B1 * S_spatial, np.float32)
+
+    Ib_np = xp.to_numpy(Ib).reshape(z, n, p, q)
+    Ir_np = xp.to_numpy(Ir).reshape(z, n, p, q)
     D_field_np = xp.to_numpy(D_field)
 
     if return_state:

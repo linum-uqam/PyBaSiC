@@ -30,6 +30,18 @@ from linum_basic._parallel import list_cuda_devices, parallel_map, parallel_map_
 from linum_basic.core import BaSiC
 from linum_basic.mosaic import MosaicGrid
 
+try:
+    from linum_basic._batched_fit import (
+        fit_stacks_batched,
+        prepare_stacks_batched,
+        should_use_batched_cuda,
+        upsample_fields_batched,
+    )
+
+    _BATCHED_FIT_AVAILABLE = True
+except ImportError:
+    _BATCHED_FIT_AVAILABLE = False
+
 if TYPE_CHECKING:
     pass
 
@@ -121,6 +133,79 @@ def _fit_one_z_cuda_map(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Module-level partial target for :func:`parallel_map_cuda_devices`."""
     return _fit_one_z_on_device(tiles, device, params, n_extra_rows)
+
+
+def _fit_batched_chunk(
+    tile_stacks: list[np.ndarray],
+    device: str,
+    *,
+    params: dict[str, Any],
+    n_extra_rows: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit a z-chunk with the batched CUDA solver on *device*."""
+    from linum_basic.backend import get_xp
+
+    dev_params = dict(params)
+    dev_params["device"] = device
+    working_size = int(dev_params.get("working_size", 128))
+    l_s = dev_params.get("l_s")
+    l_d = dev_params.get("l_d")
+
+    img_sort, l_s_arr, l_d_arr, crop_shape = prepare_stacks_batched(
+        tile_stacks,
+        working_size=working_size,
+        n_extra_rows=n_extra_rows,
+        l_s=float(l_s) if l_s is not None else None,
+        l_d=float(l_d) if l_d is not None else None,
+    )
+    xp = get_xp("torch", device)
+    ff_ws, df_ws = fit_stacks_batched(
+        img_sort,
+        l_s_arr=l_s_arr,
+        l_d_arr=l_d_arr,
+        params=dev_params,
+        xp=xp,
+    )
+    return upsample_fields_batched(ff_ws, df_ws, (int(crop_shape[0]), int(crop_shape[1])))
+
+
+def _fit_mosaic_batched_cuda(
+    tile_stacks: list[np.ndarray],
+    *,
+    params: dict[str, Any],
+    n_extra_rows: int,
+    cuda_devices: list[str],
+    verbose: bool,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Batched CUDA fit, optionally splitting z-levels across GPUs."""
+    if len(cuda_devices) <= 1 or len(tile_stacks) <= 1:
+        device = cuda_devices[0] if cuda_devices else "cuda:0"
+        ff, df = _fit_batched_chunk(tile_stacks, device, params=params, n_extra_rows=n_extra_rows)
+        return [(ff[i], df[i]) for i in range(ff.shape[0])]
+
+    n_jobs = min(len(cuda_devices), len(tile_stacks))
+    chunks: list[list[np.ndarray]] = [list(part) for part in np.array_split(tile_stacks, n_jobs, axis=0)]
+    chunk_fn = partial(_fit_batched_chunk, params=params, n_extra_rows=n_extra_rows)
+
+    def _run_chunk(item: tuple[int, list[np.ndarray]], device: str) -> tuple[int, list[tuple[np.ndarray, np.ndarray]]]:
+        ff, df = chunk_fn(item[1], device)
+        return item[0], [(ff[i], df[i]) for i in range(ff.shape[0])]
+
+    import os
+
+    from joblib import Parallel, delayed, parallel_config
+
+    def _task(index: int, chunk: list[np.ndarray], device: str) -> tuple[int, list[tuple[np.ndarray, np.ndarray]]]:
+        gpu_ix = device.rsplit(":", 1)[-1]
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_ix
+        return _run_chunk((index, chunk), "cuda:0")
+
+    with parallel_config(backend="loky", inner_max_num_threads=1, n_jobs=n_jobs):
+        pairs: list[tuple[int, list[tuple[np.ndarray, np.ndarray]]]] = Parallel(verbose=10 if verbose else 0)(
+            delayed(_task)(i, chunk, cuda_devices[i % len(cuda_devices)]) for i, chunk in enumerate(chunks)
+        )
+    pairs.sort(key=lambda pair: pair[0])
+    return [item for _idx, chunk_results in pairs for item in chunk_results]
 
 
 @dataclass(init=False)
@@ -249,7 +334,22 @@ def fit_mosaic(
     # Pre-extract per-z tile stacks so workers receive only the slice they
     # need (cheap views into the in-memory mosaic) instead of the whole grid.
     tile_stacks = [mosaic.iter_tiles(z) for z in z_idx]
-    if use_cuda_fanout:
+
+    use_batched_cuda = _BATCHED_FIT_AVAILABLE and should_use_batched_cuda(
+        field_mode=field_mode,
+        n_z=len(z_idx),
+        backend=params.get("backend"),
+        device=params.get("device"),
+    )
+    if use_batched_cuda:
+        results = _fit_mosaic_batched_cuda(
+            tile_stacks,
+            params=params,
+            n_extra_rows=n_extra_rows,
+            cuda_devices=cuda_devices or ["cuda:0"],
+            verbose=verbose,
+        )
+    elif use_cuda_fanout:
         cuda_fit = partial(_fit_one_z_cuda_map, params=params, n_extra_rows=n_extra_rows)
         results = parallel_map_cuda_devices(
             cuda_fit,

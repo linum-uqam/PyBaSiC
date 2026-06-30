@@ -27,6 +27,6 @@ See Also
 linum_basic.core.BaSiC : High-level estimator that drives ``inexact_alm_l1``.
 """
 
-from linum_basic._alm import inexact_alm_l1, shrink
+from linum_basic._alm import inexact_alm_l1, inexact_alm_l1_batched, shrink
 
-__all__ = ["inexact_alm_l1", "shrink"]
+__all__ = ["inexact_alm_l1", "inexact_alm_l1_batched", "shrink"]

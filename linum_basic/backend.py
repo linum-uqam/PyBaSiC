@@ -423,6 +423,25 @@ class ArrayNamespace:
             return float(np.linalg.norm(x, "fro"))
         return float(self._torch.linalg.norm(x, ord="fro"))
 
+    def norm_fro_batched(self, x: Any) -> Any:
+        """Per-batch Frobenius norm along trailing matrix dimensions.
+
+        Parameters
+        ----------
+        x : Any
+            Array with shape ``(Z, …)`` where the last two dimensions form
+            the matrix whose norm is computed for each leading batch index.
+
+        Returns
+        -------
+        Any
+            Shape ``(Z,)`` on the active device (Torch) or NumPy array.
+        """
+        if self._backend is Backend.NUMPY:
+            flat = x.reshape(x.shape[0], -1)
+            return np.linalg.norm(flat, axis=1, ord="fro")
+        return self._torch.linalg.norm(x.reshape(x.shape[0], -1), ord="fro", dim=1)
+
     def min(self, x: Any) -> float:
         """Return the global minimum value of *x* as a Python float.
 
@@ -442,16 +461,31 @@ class ArrayNamespace:
             return float(np.min(x))
         return float(self._torch.min(x))
 
-    def svd_leading_singular(self, x: Any) -> float:
+    def min_along(self, x: Any, axis: int, *, keepdims: bool = False) -> Any:
+        """Minimum along *axis*, keeping result on the active device.
+
+        Returns
+        -------
+        Any
+            Reduced array on the same backend as *x*.
+        """
+        if self._backend is Backend.NUMPY:
+            return np.min(x, axis=axis, keepdims=keepdims)
+        return self._torch.amin(x, dim=axis, keepdim=keepdims)
+
+    def svd_leading_singular(self, x: Any, *, n_iter: int = 10) -> float:
         """Return the largest singular value of *x*.
 
-        Only the leading singular value is computed to avoid the cost of a
-        full SVD decomposition.
+        Uses power iteration on ``x @ x.T`` for GPU backends to avoid a full
+        SVD and the associated device synchronisation.  NumPy falls back to
+        ``numpy.linalg.svd(compute_uv=False)``.
 
         Parameters
         ----------
         x : object
             2-D input matrix.
+        n_iter : int
+            Power-iteration steps (GPU path only).
 
         Returns
         -------
@@ -460,7 +494,44 @@ class ArrayNamespace:
         """
         if self._backend is Backend.NUMPY:
             return float(np.linalg.svd(x, compute_uv=False)[0])
-        return float(self._torch.linalg.svdvals(x)[0])
+        return float(self._svd_leading_singular_torch(x, n_iter=n_iter))
+
+    def svd_leading_singular_batched(self, x: Any, *, n_iter: int = 10) -> Any:
+        """Return the largest singular value for each batch matrix.
+
+        Parameters
+        ----------
+        x : object
+            3-D array ``(Z, n, m)``.
+        n_iter : int
+            Power-iteration steps.
+
+        Returns
+        -------
+        object
+            Shape ``(Z,)`` tensor/array on the active device.
+        """
+        if self._backend is Backend.NUMPY:
+            return np.array([float(np.linalg.svd(x[z], compute_uv=False)[0]) for z in range(x.shape[0])])
+        return self._svd_leading_singular_torch_batched(x, n_iter=n_iter)
+
+    def _svd_leading_singular_torch(self, x: Any, *, n_iter: int) -> Any:
+        """Power iteration for σ₁ of a single 2-D matrix (returns Python float)."""
+        sigma = self._svd_leading_singular_torch_batched(x.unsqueeze(0), n_iter=n_iter)
+        return float(sigma[0])
+
+    def _svd_leading_singular_torch_batched(self, x: Any, *, n_iter: int) -> Any:
+        """Power iteration for σ₁ of batched matrices ``(Z, n, m)``."""
+        torch = self._torch
+        z, _n, m = x.shape
+        v = torch.randn(z, m, 1, dtype=x.dtype, device=x.device)
+        v = v / (torch.linalg.norm(v, dim=1, keepdim=True) + 1e-9)
+        for _ in range(n_iter):
+            u = torch.bmm(x, v)
+            u = u / (torch.linalg.norm(u, dim=1, keepdim=True) + 1e-9)
+            v = torch.bmm(x.transpose(1, 2), u)
+            v = v / (torch.linalg.norm(v, dim=1, keepdim=True) + 1e-9)
+        return torch.linalg.norm(torch.bmm(x, v), dim=(1, 2))
 
     def inference_mode(self) -> Any:
         """Return a context manager that disables gradient tracking.
