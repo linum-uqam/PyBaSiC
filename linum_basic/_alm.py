@@ -703,11 +703,15 @@ def inexact_alm_l1_batched(
 
     pbar: tqdm | None = tqdm(desc="Batched ALM", total=max_iter, leave=False) if verbose else None
 
+    # Convergence/early-exit are only evaluated every ``check_every`` iterations.
+    # This (a) matches the scalar solver's GPU cadence and (b) avoids a
+    # GPU->CPU sync on every iteration — the per-iteration ``.item()`` call
+    # serialises the whole batch and dominates runtime for large z-batches.
+    check_every = 10
+
     with xp.inference_mode():
         while iteration < max_iter:
             active = 1.0 - converged
-            if float(xp.to_numpy(xp.sum(active)).item()) <= 0.0:
-                break
 
             Sf_old = xp.clone(Sf)
             S_spatial_old = xp.clone(S_spatial)
@@ -731,9 +735,12 @@ def inexact_alm_l1_batched(
             mu = xp.minimum(mu * rho, mu_bar) * active + mu * converged
             iteration += 1
 
-            stop_crit = xp.norm_fro_batched(dY) / (d_norm + 1e-9)
-            newly_done = xp.astype((stop_crit < tol).to(dtype=xp._torch.float32), np.float32).reshape(z, 1, 1)
-            converged = xp.maximum(converged, newly_done)
+            if iteration % check_every == 0:
+                stop_crit = xp.norm_fro_batched(dY) / (d_norm + 1e-9)
+                newly_done = xp.astype((stop_crit < tol).to(dtype=xp._torch.float32), np.float32).reshape(z, 1, 1)
+                converged = xp.maximum(converged, newly_done)
+                if float(xp.to_numpy(xp.sum(converged)).item()) >= z:
+                    break
 
             if pbar is not None:
                 pbar.update()
