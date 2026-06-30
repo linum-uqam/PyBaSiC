@@ -531,39 +531,39 @@ def _build_alm_step_batched(
         new_sf = shrink(xp, d_sf, l_s_scale / cur_mu)
         new_s_spatial = xp.astype(_idctn2_batched(new_sf), np.float32).reshape(z, 1, p * q)
         new_ib = new_s_spatial * b + d_field
-        r_mean_row = xp.mean(d_minus_ir, axis=1, keepdims=True)
+        # Per-tile baseline: mean over pixels (axis=2) -> (z, n, 1).
+        r_mean_row = xp.mean(d_minus_ir, axis=2, keepdims=True)
         new_r_mean_all = xp.mean(d_minus_ir.reshape(z, -1), axis=1, keepdims=True).reshape(z, 1, 1)
         new_b = xp.astype(xp.maximum(r_mean_row / (new_r_mean_all + 1e-9), 0.0), np.float32)
         d_y = d - new_ib - new_ir
         new_d_field = d_field
         new_b1 = b1
         if estimate_darkfield:
-            s_mean = xp.mean(new_s_spatial, axis=2, keepdims=True)
-            mask_valid_b_f = xp.astype((new_b < 1.0)[:, :, 0], np.float32)
-            mask_high_s_f = xp.astype(new_s_spatial[:, 0, :] > (s_mean[:, :, 0] - 1e-6), np.float32)
-            mask_low_s_f = xp.astype(new_s_spatial[:, 0, :] < (s_mean[:, :, 0] + 1e-6), np.float32)
-            k_cnt = xp.sum(mask_valid_b_f, axis=1, keepdims=True)
-            dminus_ir_valid_rowsum = xp.sum(d_minus_ir * mask_valid_b_f[:, :, None], axis=1, keepdims=True)
-            n_high = xp.sum(mask_high_s_f, axis=1, keepdims=True)
-            n_low = xp.sum(mask_low_s_f, axis=1, keepdims=True)
-            r_high = xp.sum(dminus_ir_valid_rowsum * mask_high_s_f[:, None, :], axis=2, keepdims=True) / (
-                k_cnt * n_high + 1e-9
-            )
-            r_low = xp.sum(dminus_ir_valid_rowsum * mask_low_s_f[:, None, :], axis=2, keepdims=True) / (k_cnt * n_low + 1e-9)
-            b1_cand = (r_high - r_low) / (new_r_mean_all + 1e-9)
-            b_flat = xp.astype(new_b[:, :, 0], np.float32)
-            sum_b2 = xp.sum(b_flat**2 * mask_valid_b_f, axis=1, keepdims=True)
-            sum_b = xp.sum(b_flat * mask_valid_b_f, axis=1, keepdims=True)
+            # Shapes: scalars (z,1,1); per-tile (z,n,1); per-pixel (z,1,p*q).
+            s_mean = xp.mean(new_s_spatial, axis=2, keepdims=True)  # (z,1,1)
+            mask_valid_b = xp.astype(new_b < 1.0, np.float32)  # (z,n,1)
+            mask_high_s = xp.astype(new_s_spatial > (s_mean - 1e-6), np.float32)  # (z,1,p*q)
+            mask_low_s = xp.astype(new_s_spatial < (s_mean + 1e-6), np.float32)  # (z,1,p*q)
+            k_cnt = xp.sum(mask_valid_b, axis=1, keepdims=True)  # (z,1,1)
+            dminus_ir_valid_rowsum = xp.sum(d_minus_ir * mask_valid_b, axis=1, keepdims=True)  # (z,1,p*q)
+            n_high = xp.sum(mask_high_s, axis=2, keepdims=True)  # (z,1,1)
+            n_low = xp.sum(mask_low_s, axis=2, keepdims=True)  # (z,1,1)
+            r_high = xp.sum(dminus_ir_valid_rowsum * mask_high_s, axis=2, keepdims=True) / (k_cnt * n_high + 1e-9)
+            r_low = xp.sum(dminus_ir_valid_rowsum * mask_low_s, axis=2, keepdims=True) / (k_cnt * n_low + 1e-9)
+            b1_cand = (r_high - r_low) / (new_r_mean_all + 1e-9)  # (z,1,1)
+            b_flat = xp.astype(new_b, np.float32)  # (z,n,1)
+            sum_b2 = xp.sum(b_flat**2 * mask_valid_b, axis=1, keepdims=True)  # (z,1,1)
+            sum_b = xp.sum(b_flat * mask_valid_b, axis=1, keepdims=True)  # (z,1,1)
             temp1 = sum_b2
             temp2 = sum_b
             temp3 = b1_cand * k_cnt
-            temp4 = xp.sum(b_flat * b1_cand * mask_valid_b_f, axis=1, keepdims=True)
+            temp4 = xp.sum(b_flat * b1_cand * mask_valid_b, axis=1, keepdims=True)
             denom = temp2 * temp3 - k_cnt * temp4
             b1_new_raw = (temp1 * temp3 - temp2 * temp4) / (denom + 1e-30)
             b1_new_guarded = xp.where(xp.abs(denom) > 1e-30, b1_new_raw, b1)
             b1_new = xp.minimum(b1_new_guarded, b1_uplimit / (s_mean + 1e-9))
             new_b1 = xp.where(b1_new > 0.0, b1_new, b1)
-            z_offset = new_b1 * (s_mean - new_s_spatial)
+            z_offset = new_b1 * (s_mean - new_s_spatial)  # (z,1,p*q)
             k_cnt_f64 = xp.astype(k_cnt, np.float64)
             sum_b_f64 = xp.astype(sum_b, np.float64)
             s64 = xp.astype(new_s_spatial, np.float64)
