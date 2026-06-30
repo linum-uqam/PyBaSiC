@@ -128,6 +128,11 @@ def fit_stacks_batched(
     weights = np.ones_like(img_sort, dtype=np.float32)
     flatfields = np.ones((z, ws, ws), dtype=np.float32)
     darkfields = np.zeros((z, ws, ws), dtype=np.float32)
+    # Per-z outer-loop freeze: each plane converges independently, exactly as a
+    # standalone BaSiC.run() would.  Once a plane's relative flat/dark-field
+    # change drops below the tolerance its fields and weights are frozen so it
+    # receives no further reweighting iterations (matching the sequential path).
+    done = np.zeros(z, dtype=bool)
     alm_state: dict | None = None
     flag = True
     reweight_iter = 0
@@ -152,17 +157,23 @@ def fit_stacks_batched(
             alm_state = alm_state_out
 
         denom = np.abs(ir / (ib.mean(axis=(1, 2, 3), keepdims=True) + 1e-6)) + epsilon
-        weights = 1.0 / denom
+        new_weights = 1.0 / denom
         # Normalise per z-plane so mean(W)=1 within each plane (matches the
         # single-plane BaSiC.update_weights, which uses the per-plane element
         # count, not the whole batch).
-        per_z_size = weights[0].size
-        weights = weights * per_z_size / weights.sum(axis=(1, 2, 3), keepdims=True)
+        per_z_size = new_weights[0].size
+        new_weights = new_weights * per_z_size / new_weights.sum(axis=(1, 2, 3), keepdims=True)
 
         d_2d = d_field.reshape(z, ws, ws)
-        flatfields = ib.mean(axis=1) - d_2d
-        flatfields = flatfields / (flatfields.mean(axis=(1, 2), keepdims=True) + 1e-9)
-        darkfields = d_2d
+        new_ff = ib.mean(axis=1) - d_2d
+        new_ff = new_ff / (new_ff.mean(axis=(1, 2), keepdims=True) + 1e-9)
+        new_df = d_2d
+
+        # Apply updates only to planes that have not yet converged.
+        active = ~done
+        weights[active] = new_weights[active]
+        flatfields[active] = new_ff[active]
+        darkfields[active] = new_df[active]
 
         mad_flat = np.abs(flatfields - last_ff).sum(axis=(1, 2)) / (np.abs(last_ff).sum(axis=(1, 2)) + 1e-9)
         mad_dark_abs = np.abs(darkfields - last_df).sum(axis=(1, 2))
@@ -174,7 +185,9 @@ def fit_stacks_batched(
         )
 
         reweight_iter += 1
-        if np.all(np.maximum(mad_flat, mad_dark) <= reweighting_tol) or reweight_iter >= max_reweighting:
+        newly_done = active & (np.maximum(mad_flat, mad_dark) <= reweighting_tol)
+        done = done | newly_done
+        if np.all(done) or reweight_iter >= max_reweighting:
             flag = False
         if pbar is not None:
             pbar.update()
