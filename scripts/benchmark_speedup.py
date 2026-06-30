@@ -104,6 +104,7 @@ def _run_mode(
             "estimate_darkfield": estimate_darkfield,
             "max_reweighting_iterations": max_reweighting_iterations,
             "warm_start_reweighting": True,
+            "force_batched_cuda": True,
         }
         if batched_z_chunk_size is not None:
             kwargs["batched_z_chunk_size"] = batched_z_chunk_size

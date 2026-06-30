@@ -200,6 +200,22 @@ def _resolve_batched_z_chunk_size(params: dict[str, Any], n_z: int, n_devices: i
     return n_z
 
 
+def _allow_batched_cuda_for_params(params: dict[str, Any]) -> bool:
+    """Return whether batched CUDA should run for this parameter set."""
+    import os
+
+    if bool(params.get("force_batched_cuda", False)):
+        return True
+    if os.environ.get("LINUM_BASIC_FORCE_BATCHED_CUDA", "0") == "1":
+        return True
+
+    # Production linumpy currently uses BaSiC's default working_size=128.
+    # Server benchmarks show this shape is memory-bound: chunking helps peak
+    # memory, but still loses to the scalar per-z CUDA path. Keep the batched
+    # path for lower working sizes where it gives a real throughput win.
+    return int(params.get("working_size", 128)) < 128
+
+
 def _iter_z_chunks(tile_stacks: list[np.ndarray], chunk_size: int) -> list[tuple[int, list[np.ndarray]]]:
     """Return ``(start_index, chunk)`` pairs preserving z order."""
     return [(start, tile_stacks[start : start + chunk_size]) for start in range(0, len(tile_stacks), chunk_size)]
@@ -382,6 +398,8 @@ def fit_mosaic(
         backend=params.get("backend"),
         device=params.get("device"),
     )
+    if use_batched_cuda and not _allow_batched_cuda_for_params(params):
+        use_batched_cuda = False
     if use_batched_cuda:
         results = _fit_mosaic_batched_cuda(
             tile_stacks,
