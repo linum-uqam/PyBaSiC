@@ -65,6 +65,23 @@ class TestAlmCompileWarning:
 
         assert callable(step_fn)
 
+    def test_build_alm_step_skips_compile_when_mode_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("torch")
+        import torch
+
+        monkeypatch.setenv("LINUM_BASIC_ALM_COMPILE_MODE", "off")
+        compile_called = {"n": 0}
+        real_compile = torch.compile
+
+        def _counting_compile(fn: Any, **kwargs: Any) -> Any:
+            compile_called["n"] += 1
+            return real_compile(fn, **kwargs)
+
+        monkeypatch.setattr(torch, "compile", _counting_compile)
+        xp = get_xp(Backend.TORCH, "cpu")
+        _build_alm_step(xp, n=4, p=8, q=8, l_s=0.5, estimate_darkfield=True, l_d=0.2)
+        assert compile_called["n"] == 0
+
     def test_build_alm_step_compile_fallback_warns_once_per_scalar_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.importorskip("torch")
         import torch

@@ -95,6 +95,7 @@ def _convergence_from_model(model: Any) -> dict[str, Any]:
     l_d = getattr(model, "l_d", None)
     return {
         "reweighting_iteration": int(model.reweighting_iteration),
+        "alm_iterations_last": int(getattr(model, "last_alm_iterations", 0)),
         "l_s": float(l_s) if l_s is not None else None,
         "l_d": float(l_d) if l_d is not None else None,
     }

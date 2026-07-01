@@ -49,15 +49,19 @@ def _warn_compile_fallback_once(key: str, msg: str) -> None:
     warnings.warn(msg, UserWarning, stacklevel=3)
 
 
-def _read_alm_compile_mode() -> str:
-    """Return ``torch.compile`` mode for the ALM step (default-off compile-shape lever).
+def _read_alm_compile_mode() -> str | None:
+    """Return ``torch.compile`` mode for the ALM step, or ``None`` to skip compile.
 
     ``LINUM_BASIC_ALM_COMPILE_MODE`` selects the compile mode passed to
     ``torch.compile``. Unset or ``"default"`` preserves production behavior.
+    ``off``, ``false``, ``0``, ``disable``, or ``disabled`` run the eager GPU
+    step instead (avoids Inductor CPU compile storms in short-lived joblib workers).
     """
     raw = os.environ.get("LINUM_BASIC_ALM_COMPILE_MODE", "default").strip().lower()
     if raw in ("", "default"):
         return "default"
+    if raw in {"off", "false", "0", "disable", "disabled", "none", "no"}:
+        return None
     return raw
 
 
@@ -243,7 +247,7 @@ def _build_alm_step(
         return new_sf, new_s_spatial, new_ib, new_ir, d_minus_ir, new_b, new_r_mean_all, d_y, new_d_field, new_b1
 
     fn: Any = _alm_core_step
-    if xp._backend is not Backend.NUMPY:
+    if xp._backend is not Backend.NUMPY and compile_mode is not None:
         try:
             import torch as _torch
 
@@ -522,6 +526,7 @@ def inexact_alm_l1(
             "Ir": Ir_np.copy(),
             "B": xp.to_numpy(B).astype(np.float32),
             "D_field": D_field_np.copy(),
+            "alm_iterations": int(iteration),
         }
     else:
         state = None

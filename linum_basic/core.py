@@ -130,6 +130,11 @@ class BaSiC:
         change in flat-field and dark-field).  Default ``1e-3``.
     max_reweighting_iterations : int
         Hard cap on outer reweighting iterations.  Default ``10``.
+    alm_max_iter : int
+        Maximum inner ALM iterations per reweighting pass (passed to
+        :func:`~linum_basic.algorithms.inexact_alm_l1` as ``max_iter``).
+        Default ``500``; production fits typically converge in far fewer
+        steps when ``reweighting_tolerance`` is met.
     convergence_check_every : int or None
         Inner ALM convergence check cadence.  ``None`` uses the backend
         default (every iteration on NumPy, every 10 on GPU).
@@ -202,7 +207,9 @@ class BaSiC:
         self.l_d: float | None = None
         self.reweighting_tolerance: float = 1e-3
         self.max_reweighting_iterations: int = 10
+        self.alm_max_iter: int = 500
         self.convergence_check_every: int | None = None
+        self.last_alm_iterations: int = 0
         self.tile_subsample_ratio: float | None = None
         self.reweighting_iteration: int = 0
         self.warm_start_reweighting: bool = False
@@ -401,6 +408,7 @@ class BaSiC:
         if self.l_s is None or self.l_d is None:
             msg = "l_s and l_d must be set before calling update(); call prepare() first."
             raise RuntimeError(msg)
+        need_state = self.warm_start_reweighting
         result = inexact_alm_l1(
             self.img_sort,
             self.l_s,
@@ -409,12 +417,14 @@ class BaSiC:
             estimate_darkfield=self.estimate_darkfield,
             verbose=self.verbose,
             xp=self._xp,
+            max_iter=self.alm_max_iter,
             warm_start=self._alm_state if self.warm_start_reweighting else None,
-            return_state=self.warm_start_reweighting,
+            return_state=True,
             convergence_check_every=self.convergence_check_every,
         )
         Ib, Ir, D, alm_state = result
-        if self.warm_start_reweighting:
+        self.last_alm_iterations = int(alm_state["alm_iterations"]) if alm_state else 0
+        if need_state:
             self._alm_state = alm_state
 
         self._Ib = Ib

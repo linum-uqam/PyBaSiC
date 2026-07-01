@@ -26,9 +26,18 @@ def _cuda_joblib_worker_init(
     """Configure shared Inductor cache and fast-path env in a loky worker.
 
     Must run **before** the first ``torch`` import in the worker process.
+
+    Notes
+    -----
+    Fresh loky workers otherwise pay minutes of Inductor compile time per
+    z-plane while GPUs sit idle.  Default to eager GPU in workers unless the
+    parent process already opted into a non-default compile mode.
     """
     for key, value in env_items:
         os.environ[key] = value
+    compile_mode = os.environ.get("LINUM_BASIC_ALM_COMPILE_MODE", "default").strip().lower()
+    if compile_mode in ("", "default"):
+        os.environ["LINUM_BASIC_ALM_COMPILE_MODE"] = "off"
     configure_torch_inductor_cache(cache_dir)
 
 

@@ -127,20 +127,33 @@ def test_parallel_map_empty() -> None:
 
 
 def test_cuda_joblib_worker_init_sets_env_and_cache(tmp_path) -> None:
-    for key in ("TORCHINDUCTOR_CACHE_DIR", "TORCHINDUCTOR_FX_GRAPH_CACHE", "LINUM_BASIC_DCT_KERNEL"):
+    for key in (
+        "TORCHINDUCTOR_CACHE_DIR",
+        "TORCHINDUCTOR_FX_GRAPH_CACHE",
+        "LINUM_BASIC_DCT_KERNEL",
+        "LINUM_BASIC_ALM_COMPILE_MODE",
+    ):
         os.environ.pop(key, None)
     cache_dir = tmp_path / "inductor-cache"
     _cuda_joblib_worker_init(str(cache_dir), (("LINUM_BASIC_DCT_KERNEL", "tuned"),))
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(cache_dir.resolve())
     assert os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] == "1"
     assert os.environ["LINUM_BASIC_DCT_KERNEL"] == "tuned"
+    assert os.environ["LINUM_BASIC_ALM_COMPILE_MODE"] == "off"
+
+
+def test_cuda_joblib_worker_init_preserves_explicit_compile_mode(tmp_path) -> None:
+    os.environ["LINUM_BASIC_ALM_COMPILE_MODE"] = "reduce-overhead"
+    _cuda_joblib_worker_init(str(tmp_path / "cache"), (("LINUM_BASIC_ALM_COMPILE_MODE", "reduce-overhead"),))
+    assert os.environ["LINUM_BASIC_ALM_COMPILE_MODE"] == "reduce-overhead"
 
 
 def test_cuda_joblib_worker_init_none_cache_dir_is_safe() -> None:
-    for key in ("TORCHINDUCTOR_CACHE_DIR", "TORCHINDUCTOR_FX_GRAPH_CACHE"):
+    for key in ("TORCHINDUCTOR_CACHE_DIR", "TORCHINDUCTOR_FX_GRAPH_CACHE", "LINUM_BASIC_ALM_COMPILE_MODE"):
         os.environ.pop(key, None)
     _cuda_joblib_worker_init(None, ())
     assert "TORCHINDUCTOR_FX_GRAPH_CACHE" in os.environ
+    assert os.environ["LINUM_BASIC_ALM_COMPILE_MODE"] == "off"
 
 
 def _read_torchinductor_cache_dir(_item: int, _device: str) -> str | None:
