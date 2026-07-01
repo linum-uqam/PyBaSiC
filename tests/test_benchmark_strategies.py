@@ -75,6 +75,14 @@ class TestBuiltinStrategyResolution:
         assert _resolve("baseline", is_synthetic=False).release_gate is True
 
 
+class TestBuiltinTupleUnchanged:
+    """Regression: harness tuple stays 4 names; auto is resolver-only (Open Q1)."""
+
+    def test_auto_not_in_builtin_strategies(self) -> None:
+        assert BUILTIN_STRATEGIES == ("baseline", "sequential", "multi", "batched")
+        assert "auto" not in BUILTIN_STRATEGIES
+
+
 class TestOverrideParsing:
     def test_json_overrides_apply_to_resolve(self, tmp_path: Path) -> None:
         path = tmp_path / "overrides.json"

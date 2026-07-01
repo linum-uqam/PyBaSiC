@@ -27,6 +27,14 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 from linum_basic._parallel import list_cuda_devices, parallel_map, parallel_map_cuda_devices, resolve_workers
+from linum_basic.benchmark.strategies import (
+    BASELINE_REFERENCE_ID,
+    EVIDENCE_POLICY_ID,
+    REASON_GUARD_WS128_BLOCKED_BATCHED,
+    build_workload_context,
+    resolve_auto_strategy,
+    resolve_strategy,
+)
 from linum_basic.core import BaSiC
 from linum_basic.mosaic import MosaicGrid
 
@@ -46,6 +54,8 @@ if TYPE_CHECKING:
     pass
 
 __all__ = ["MosaicFit", "apply_fit", "fit_mosaic", "make_model"]
+
+FIT_MOSAIC_STRATEGIES: tuple[str, ...] = ("auto", "sequential", "multi", "batched")
 
 # BaSiC.__init__ keyword-argument names; everything else is a post-init attr.
 _BASIC_INIT_PARAMS: frozenset[str] = frozenset({"estimate_darkfield", "extension", "verbose", "backend", "device"})
@@ -228,6 +238,106 @@ def _allow_batched_cuda_for_params(params: dict[str, Any]) -> bool:
     return int(params.get("working_size", 128)) < 128
 
 
+def _strategy_lock_execution_path(name: str, n_gpus: int) -> str:
+    """Map a named strategy lock to the resolver execution-path vocabulary."""
+    if name == "sequential":
+        return "sequential_scalar"
+    if name == "multi":
+        return "multi_gpu_fanout"
+    if name == "batched":
+        return "batched_cuda_multi_gpu" if n_gpus >= 2 else "batched_cuda"
+    return "sequential_scalar"
+
+
+def _build_strategy_lock_metadata(
+    *,
+    name: str,
+    params: dict[str, Any],
+    context: Any,
+    n_z: int,
+) -> dict[str, Any]:
+    """Build D-19 ``_strategy`` metadata for a named (non-auto) strategy lock."""
+    execution_path = _strategy_lock_execution_path(name, context.n_gpus)
+    return {
+        "name": name,
+        "execution_path": execution_path,
+        "chunk_size": None,
+        "device": params.get("device"),
+        "backend": params.get("backend", "torch"),
+        "working_size": int(params.get("working_size", 128)),
+        "n_z": n_z,
+        "n_tiles": context.n_tiles,
+        "n_gpus": context.n_gpus,
+        "memory_estimate_bytes": context.memory_estimate_bytes,
+        "batched_cuda_guard": None,
+        "attempted_execution_path": None,
+        "reason_codes": [f"STRATEGY_LOCK_{name.upper()}"],
+        "reason_summary": f"Named strategy '{name}' locks execution path (auto heuristics suppressed).",
+        "override_source": "strategy_lock",
+        "evidence_policy": EVIDENCE_POLICY_ID,
+        "baseline_reference_id": BASELINE_REFERENCE_ID,
+    }
+
+
+def _batched_explicitly_desired(params: dict[str, Any], strategy_meta: dict[str, Any]) -> bool:
+    """Return whether the caller or resolver intentionally selected batched CUDA."""
+    import os
+
+    if bool(params.get("force_batched_cuda", False)):
+        return True
+    if os.environ.get("LINUM_BASIC_FORCE_BATCHED_CUDA", "0") == "1":
+        return True
+    if strategy_meta.get("name") == "batched":
+        return True
+    resolved_path = str(strategy_meta.get("execution_path") or "")
+    return "batched" in resolved_path
+
+
+def _record_batched_guard_downgrade(
+    strategy_meta: dict[str, Any],
+    *,
+    n_cuda_devices: int,
+) -> None:
+    """Record ws>=128 batched guard block in ``_strategy`` metadata (D-18)."""
+    attempted = "batched_cuda_multi_gpu" if n_cuda_devices > 1 else "batched_cuda"
+    actual = "multi_gpu_fanout" if n_cuda_devices > 1 else "sequential_scalar"
+    strategy_meta["attempted_execution_path"] = attempted
+    strategy_meta["batched_cuda_guard"] = "ws>=128_blocked"
+    strategy_meta["execution_path"] = actual
+    reason_codes = strategy_meta.setdefault("reason_codes", [])
+    if REASON_GUARD_WS128_BLOCKED_BATCHED not in reason_codes:
+        reason_codes.append(REASON_GUARD_WS128_BLOCKED_BATCHED)
+
+
+def _finalize_strategy_execution_metadata(
+    strategy_meta: dict[str, Any],
+    *,
+    params: dict[str, Any],
+    n_z: int,
+    cuda_devices: list[str],
+    use_batched_cuda: bool,
+    use_cuda_fanout: bool,
+) -> None:
+    """Set final ``execution_path`` and ``chunk_size`` from the actual execution fork."""
+    if use_batched_cuda:
+        strategy_meta["execution_path"] = "batched_cuda_multi_gpu" if len(cuda_devices) > 1 else "batched_cuda"
+        strategy_meta["batched_cuda_guard"] = None
+        strategy_meta["chunk_size"] = _resolve_batched_z_chunk_size(
+            params,
+            n_z,
+            len(cuda_devices) or 1,
+        )
+        return
+
+    strategy_meta["chunk_size"] = None
+    if strategy_meta.get("batched_cuda_guard") is not None:
+        return
+    if use_cuda_fanout:
+        strategy_meta["execution_path"] = "multi_gpu_fanout"
+    else:
+        strategy_meta["execution_path"] = "sequential_scalar"
+
+
 def _iter_z_chunks(tile_stacks: list[np.ndarray], chunk_size: int) -> list[tuple[int, list[np.ndarray]]]:
     """Return ``(start_index, chunk)`` pairs preserving z order."""
     return [(start, tile_stacks[start : start + chunk_size]) for start in range(0, len(tile_stacks), chunk_size)]
@@ -347,6 +457,7 @@ def fit_mosaic(
     z_indices: list[int] | None = None,
     field_mode: Literal["per-z", "global"] = "per-z",
     basic_kwargs: dict[str, Any] | None = None,
+    strategy: Literal["auto", "sequential", "multi", "batched"] = "auto",
     n_extra_rows: int = 0,
     n_workers: int | None = None,
     verbose: bool = False,
@@ -369,6 +480,11 @@ def fit_mosaic(
         Hyperparameters forwarded to :class:`~linum_basic.core.BaSiC`.
         May include ``working_size``, ``l_s``, ``l_d``, ``epsilon``,
         ``estimate_darkfield``, ``backend``, ``device``, etc.
+    strategy : {"auto", "sequential", "multi", "batched"}
+        Execution strategy. ``"auto"`` (default) resolves path from workload
+        shape, hardware, and Phase 2/3 policy. Named strategies lock the
+        execution path; the resolved decision is recorded in
+        ``params["_strategy"]``.
     n_extra_rows : int
         Number of rows at the top of each tile to exclude from the BaSiC
         fit (galvo return / flyback signal).  The excluded rows are filled
@@ -389,12 +505,49 @@ def fit_mosaic(
     MosaicFit
         Fitted flat/dark-fields for each requested z-level.
     """
-    params: dict[str, Any] = dict(basic_kwargs or {})
+    if strategy not in FIT_MOSAIC_STRATEGIES:
+        msg = f"Unknown strategy: {strategy}; choose from {FIT_MOSAIC_STRATEGIES}"
+        raise ValueError(msg)
+
+    user_kwargs = dict(basic_kwargs or {})
+    z_idx = list(z_indices) if z_indices is not None else list(range(mosaic.n_z))
+
+    working_size = int(user_kwargs.get("working_size", 128))
+    estimate_darkfield = bool(user_kwargs.get("estimate_darkfield", False))
+    max_reweighting_iterations = int(user_kwargs.get("max_reweighting_iterations", 10))
+
+    context = build_workload_context(
+        n_z=len(z_idx),
+        n_tiles=mosaic.n_tiles,
+        field_mode=field_mode,
+        working_size=working_size,
+        device=user_kwargs.get("device"),
+    )
+
+    if strategy == "auto":
+        resolved = resolve_auto_strategy(context, user_kwargs=basic_kwargs)
+        strategy_meta = dict(resolved.strategy_metadata)
+        params: dict[str, Any] = {**resolved.basic_kwargs, **user_kwargs}
+    else:
+        strat = resolve_strategy(
+            strategy,
+            working_size=working_size,
+            estimate_darkfield=estimate_darkfield,
+            max_reweighting_iterations=max_reweighting_iterations,
+        )
+        params = {**strat.basic_kwargs, **user_kwargs}
+        strategy_meta = _build_strategy_lock_metadata(
+            name=strategy,
+            params=params,
+            context=context,
+            n_z=len(z_idx),
+        )
+
     # Warm-start inner ALM across outer reweighting passes when the cap is high.
     if "warm_start_reweighting" not in params and int(params.get("max_reweighting_iterations", 10)) >= 5:
         params["warm_start_reweighting"] = True
 
-    z_idx = list(z_indices) if z_indices is not None else list(range(mosaic.n_z))
+    params["_strategy"] = strategy_meta
 
     th, tw = mosaic.tile_shape
     flatfields = np.ones((len(z_idx), th, tw), dtype=np.float32)
@@ -419,6 +572,11 @@ def fit_mosaic(
         device=params.get("device"),
     )
     if use_batched_cuda and not _allow_batched_cuda_for_params(params):
+        if _batched_explicitly_desired(params, params["_strategy"]):
+            _record_batched_guard_downgrade(
+                params["_strategy"],
+                n_cuda_devices=len(cuda_devices) or 1,
+            )
         use_batched_cuda = False
     convergence_per_z: list[dict[str, Any]] | None = None
     if use_batched_cuda:
@@ -454,6 +612,15 @@ def fit_mosaic(
             convergence_per_z.append(result[2])
         flatfields[i, n_extra_rows:, :] = flatfield
         darkfields[i, n_extra_rows:, :] = darkfield
+
+    _finalize_strategy_execution_metadata(
+        params["_strategy"],
+        params=params,
+        n_z=len(z_idx),
+        cuda_devices=cuda_devices,
+        use_batched_cuda=use_batched_cuda,
+        use_cuda_fanout=use_cuda_fanout,
+    )
 
     if field_mode == "global":
         flatfields_out: np.ndarray = flatfields.mean(axis=0)

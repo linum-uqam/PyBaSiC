@@ -131,8 +131,31 @@ def _add_fit_subcommand(subs: argparse._SubParsersAction) -> None:  # type: igno
         help="'per-z': fit one field per z-level. 'global': average all per-z fields.",
     )
     alg.add_argument("--z-indices", metavar="Z", nargs="+", type=int, default=None, help="Z-levels to fit (default: all).")
+    alg.add_argument(
+        "--strategy",
+        choices=["auto", "sequential", "multi", "batched"],
+        default="auto",
+        help=(
+            "Execution strategy. 'auto' selects the path from workload shape and GPU count; "
+            "when auto picks a CUDA path the effective backend becomes torch unless --backend is set."
+        ),
+    )
 
-    _add_backend_args(p)
+    # Fit omits backend/device from basic_kwargs unless explicitly passed (default None),
+    # so strategy=auto can upgrade to torch for CUDA paths without clobbering by numpy default.
+    compute = p.add_argument_group("Compute")
+    compute.add_argument(
+        "--backend",
+        choices=["numpy", "torch", "auto"],
+        default=None,
+        help="Array backend for the ALM loop.  Omit to let strategy=auto choose (may select torch for CUDA).",
+    )
+    compute.add_argument(
+        "--device",
+        metavar="DEVICE",
+        default=None,
+        help="PyTorch device string (e.g. 'cuda:0', 'mps', 'cpu').  Ignored when --backend=numpy.",
+    )
     p.add_argument(
         "--n-jobs",
         metavar="N",
@@ -148,16 +171,17 @@ def _run_fit(args: argparse.Namespace) -> int:
     from linum_basic.mosaic import MosaicGrid
 
     mosaic = MosaicGrid.from_ome_zarr(str(args.input), overlap_fraction=args.overlap)
-    basic_kwargs: dict = {
-        "estimate_darkfield": args.estimate_darkfield,
-        "backend": args.backend,
-        "device": args.device,
-    }
+    basic_kwargs: dict = {"estimate_darkfield": args.estimate_darkfield}
+    if args.backend is not None:
+        basic_kwargs["backend"] = args.backend
+    if args.device is not None:
+        basic_kwargs["device"] = args.device
     fit = fit_mosaic(
         mosaic,
         z_indices=args.z_indices,
         field_mode=args.field_mode,
         basic_kwargs=basic_kwargs,
+        strategy=args.strategy,
         n_workers=args.n_jobs,
         verbose=args.verbose,
     )
@@ -174,6 +198,13 @@ def _run_fit(args: argparse.Namespace) -> int:
             print(f"Saved fields to '{args.save_fields}'.")
 
     if args.verbose:
+        strategy_meta = fit.params.get("_strategy", {})
+        execution_path = strategy_meta.get("execution_path")
+        reason_summary = strategy_meta.get("reason_summary")
+        if execution_path is not None:
+            print(f"Strategy execution path: {execution_path}")
+        if reason_summary:
+            print(f"Strategy reason: {reason_summary}")
         print(f"Saved corrected mosaic to '{args.output}'.")
 
     return 0

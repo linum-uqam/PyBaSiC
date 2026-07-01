@@ -47,6 +47,8 @@ _SKIP_OBJECTS: frozenset[str] = frozenset(
         "linum_basic.backend._torch_idctn",
         "linum_basic.backend.ArrayNamespace._numpy_dtype_to_torch",
         "linum_basic.viz.Panel.__init__",
+        "linum_basic.benchmark.strategies.WorkloadContext.__init__",
+        "linum_basic.benchmark.strategies.AutoStrategyResult.__init__",
     }
 )
 

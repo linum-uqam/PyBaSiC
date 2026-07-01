@@ -7,8 +7,10 @@ produce no side effects on the permanent filesystem.
 
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import cv2
@@ -247,6 +249,19 @@ class TestSubcommandHelp:
         for sub in ("correct", "fit", "tune", "preview"):
             assert sub in result.stdout, f"Sub-command '{sub}' missing from help"
 
+    def test_fit_help_shows_strategy(self) -> None:
+        """``basic fit --help`` documents ``--strategy`` and its choices."""
+        from linum_basic.cli import main
+
+        buf = io.StringIO()
+        with pytest.raises(SystemExit) as excinfo, redirect_stdout(buf):
+            main(["fit", "--help"])
+        assert excinfo.value.code == 0
+        help_text = buf.getvalue()
+        assert "--strategy" in help_text
+        for choice in ("auto", "sequential", "multi", "batched"):
+            assert choice in help_text
+
 
 # ---------------------------------------------------------------------------
 # Helpers for OME-Zarr-based tests (fit / tune)
@@ -325,6 +340,219 @@ class TestFitSubcommand:
         assert rc == 0
         assert (fields_dir / "flatfields.npy").exists()
         assert (fields_dir / "darkfields.npy").exists()
+
+    def test_fit_strategy_auto_smoke(self, tmp_path: Path) -> None:
+        """``--strategy auto`` completes on numpy CI (no CUDA)."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--strategy",
+                "auto",
+            ]
+        )
+        assert rc == 0
+        assert zarr_out.exists()
+
+    def test_fit_strategy_pass_through(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--strategy`` is forwarded to ``fit_mosaic``."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+
+        def _stub_fit(mosaic, **kwargs):
+            captured.update(kwargs)
+            th, tw = mosaic.tile_shape
+            return MosaicFit(
+                flatfields=np.ones((2, th, tw), dtype=np.float32),
+                darkfields=np.zeros((2, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=[0, 1],
+                params={},
+            )
+
+        monkeypatch.setattr("linum_basic.fit.fit_mosaic", _stub_fit)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--strategy",
+                "multi",
+            ]
+        )
+        assert rc == 0
+        assert captured.get("strategy") == "multi"
+
+    def test_fit_unknown_strategy_rejected(self, tmp_path: Path) -> None:
+        """Unknown ``--strategy`` values are rejected by argparse."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in)
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(
+                [
+                    "fit",
+                    "--input",
+                    str(zarr_in),
+                    "--output",
+                    str(zarr_out),
+                    "--strategy",
+                    "turbo",
+                ]
+            )
+        assert excinfo.value.code == 2
+
+    def test_fit_omits_backend_when_not_explicit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Omitting ``--backend`` leaves backend out of ``basic_kwargs`` for the resolver."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+
+        def _stub_fit(mosaic, **kwargs):
+            captured.update(kwargs)
+            th, tw = mosaic.tile_shape
+            return MosaicFit(
+                flatfields=np.ones((1, th, tw), dtype=np.float32),
+                darkfields=np.zeros((1, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=[0],
+                params={},
+            )
+
+        monkeypatch.setattr("linum_basic.fit.fit_mosaic", _stub_fit)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(["fit", "--input", str(zarr_in), "--output", str(zarr_out)])
+        assert rc == 0
+        basic_kwargs = captured.get("basic_kwargs") or {}
+        assert "backend" not in basic_kwargs
+
+    def test_fit_explicit_backend_passed_through(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Explicit ``--backend numpy`` is forwarded in ``basic_kwargs``."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+
+        def _stub_fit(mosaic, **kwargs):
+            captured.update(kwargs)
+            th, tw = mosaic.tile_shape
+            return MosaicFit(
+                flatfields=np.ones((1, th, tw), dtype=np.float32),
+                darkfields=np.zeros((1, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=[0],
+                params={},
+            )
+
+        monkeypatch.setattr("linum_basic.fit.fit_mosaic", _stub_fit)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--backend",
+                "numpy",
+            ]
+        )
+        assert rc == 0
+        basic_kwargs = captured.get("basic_kwargs") or {}
+        assert basic_kwargs.get("backend") == "numpy"
+
+    def test_fit_verbose_prints_strategy_summary(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+        """``--verbose`` prints resolved execution path and reason summary."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        def _stub_fit(mosaic, **kwargs):
+            th, tw = mosaic.tile_shape
+            return MosaicFit(
+                flatfields=np.ones((1, th, tw), dtype=np.float32),
+                darkfields=np.zeros((1, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=[0],
+                params={
+                    "_strategy": {
+                        "execution_path": "sequential",
+                        "reason_summary": "CPU fallback: no CUDA devices visible.",
+                    }
+                },
+            )
+
+        monkeypatch.setattr("linum_basic.fit.fit_mosaic", _stub_fit)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--verbose",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "sequential" in out
+        assert "CPU fallback: no CUDA devices visible." in out
 
 
 class TestTuneSubcommand:
