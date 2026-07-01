@@ -49,6 +49,10 @@ _SKIP_OBJECTS: frozenset[str] = frozenset(
         "linum_basic.viz.Panel.__init__",
         "linum_basic.benchmark.strategies.WorkloadContext.__init__",
         "linum_basic.benchmark.strategies.AutoStrategyResult.__init__",
+        "linum_basic.benchmark.audit.TraceabilityRow.__init__",
+        "linum_basic.benchmark.audit.AuditFinding.__init__",
+        "linum_basic.benchmark.audit.MicroBenchmarkResult.__init__",
+        "linum_basic.benchmark.audit.HotspotRecord.__init__",
     }
 )
 
