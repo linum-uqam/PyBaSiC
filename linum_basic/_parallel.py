@@ -13,7 +13,7 @@ Two important caveats are handled here:
   threads.  With ``cpu_count() - 2`` worker processes each spawning a full
   BLAS thread pool the machine thrashes.  :func:`parallel_map` pins inner
   threads to 1 per worker via :func:`joblib.parallel_config`.
-* **Single-GPU contention.**  On the PyTorch CUDA/MPS backend a single
+* **Single-GPU contention.**  On the PyTorch CUDA backend a single
   device is the bottleneck; fanning out processes would serialise on the
   device and multiply VRAM use.  :func:`resolve_workers` collapses the
   worker count to 1 for accelerator backends.
@@ -62,24 +62,24 @@ def is_gpu_backend(backend: str | None, device: str | None) -> bool:
     backend : str or None
         BaSiC backend string (``"numpy"``, ``"torch"`` or ``"auto"``).
     device : str or None
-        PyTorch device string (e.g. ``"cuda"``, ``"cuda:0"``, ``"mps"``).
+        PyTorch device string (e.g. ``"cuda"``, ``"cuda:0"``, ``"cpu"``).
 
     Returns
     -------
     bool
-        ``True`` when the backend may resolve to a CUDA/MPS accelerator.
+        ``True`` when the backend may resolve to a CUDA accelerator.
     """
     if backend not in {"torch", "auto"}:
         return False
     # Explicit device string wins
-    if (device or "").lower().startswith(("cuda", "mps")):
+    if (device or "").lower().startswith("cuda"):
         return True
     # "auto" with no explicit device: inspect the runtime to decide
     if backend == "auto":
         try:
             import torch
 
-            if torch.cuda.is_available() or torch.backends.mps.is_available():
+            if torch.cuda.is_available():
                 return True
         except ImportError:
             pass

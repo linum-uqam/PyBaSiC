@@ -505,8 +505,9 @@ def fit_mosaic(
         Number of worker processes used to fit z-levels in parallel. Each
         z-level is an independent BaSiC solve, so this scales nearly
         linearly on CPU. ``None`` (default) uses ``cpu_count() - 2``.
-        ``1`` runs sequentially. Forced to ``1`` on the PyTorch CUDA/MPS
-        backend (single-accelerator contention).
+        ``1`` runs sequentially. On a **single** CUDA device the worker count is
+        forced to ``1`` (single-accelerator contention). With multiple CUDA
+        devices, z-levels fan out across GPUs up to ``min(n_workers, n_gpus)``.
     verbose : bool
         Show a progress bar over z-levels.
 

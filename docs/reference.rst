@@ -8,6 +8,7 @@ Reference
    algorithm
    parameters
    tuning
+   parallelism
    gpu
    validation
    contributing

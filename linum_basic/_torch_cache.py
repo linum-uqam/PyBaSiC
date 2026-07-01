@@ -33,7 +33,13 @@ def _cuda_joblib_worker_init(
 
 
 def collect_cuda_worker_env() -> tuple[tuple[str, str], ...]:
-    """Snapshot fast-path env keys from the parent for loky worker initargs."""
+    """Snapshot fast-path env keys from the parent for loky worker initargs.
+
+    Returns
+    -------
+    tuple[tuple[str, str], ...]
+        Sorted ``(key, value)`` pairs for ``LINUM_BASIC_*`` and Inductor cache env vars.
+    """
     keys = sorted(
         key
         for key in os.environ

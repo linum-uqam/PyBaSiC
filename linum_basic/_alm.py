@@ -29,6 +29,24 @@ __all__ = ["inexact_alm_l1", "inexact_alm_l1_batched", "shrink"]
 # ---------------------------------------------------------------------------
 _ALM_STEP_CACHE: dict[tuple, Any] = {}
 last_compile_fallback: str | None = None
+_CONVERGENCE_WARNED: set[str] = set()
+_COMPILE_WARNED: set[str] = set()
+
+
+def _warn_convergence_once(key: str, msg: str) -> None:
+    """Emit a max-iteration convergence notice at most once per *key*."""
+    if key in _CONVERGENCE_WARNED:
+        return
+    _CONVERGENCE_WARNED.add(key)
+    warnings.warn(msg, UserWarning, stacklevel=3)
+
+
+def _warn_compile_fallback_once(key: str, msg: str) -> None:
+    """Emit a torch.compile fallback notice at most once per *key*."""
+    if key in _COMPILE_WARNED:
+        return
+    _COMPILE_WARNED.add(key)
+    warnings.warn(msg, UserWarning, stacklevel=3)
 
 
 def _read_alm_compile_mode() -> str:
@@ -242,10 +260,9 @@ def _build_alm_step(
         except Exception as exc:
             global last_compile_fallback
             last_compile_fallback = f"{type(exc).__name__}: {exc}"
-            warnings.warn(
+            _warn_compile_fallback_once(
+                "scalar",
                 f"torch.compile failed for ALM step cache_key={cache_key!r}: {last_compile_fallback}; falling back to eager",
-                UserWarning,
-                stacklevel=2,
             )
 
     _ALM_STEP_CACHE[cache_key] = fn
@@ -484,7 +501,10 @@ def inexact_alm_l1(
                 pbar.update()
 
     if iteration == max_iter:
-        print("Maximum ALM iterations reached without full convergence.")
+        _warn_convergence_once(
+            "scalar",
+            "Maximum ALM iterations reached without full convergence.",
+        )
     if pbar is not None:
         pbar.close()
 
@@ -638,11 +658,10 @@ def _build_alm_step_batched(
     except Exception as exc:
         global last_compile_fallback
         last_compile_fallback = f"{type(exc).__name__}: {exc}"
-        warnings.warn(
+        _warn_compile_fallback_once(
+            "batched",
             f"torch.compile failed for batched ALM step cache_key={cache_key!r}: "
             f"{last_compile_fallback}; falling back to eager",
-            UserWarning,
-            stacklevel=2,
         )
 
     _ALM_STEP_BATCHED_CACHE[cache_key] = fn
@@ -820,7 +839,10 @@ def inexact_alm_l1_batched(
                 pbar.update()
 
     if iteration == max_iter and float(xp.to_numpy(xp.sum(1.0 - converged)).item()) > 0.0:
-        print("Maximum batched ALM iterations reached without full convergence on all planes.")
+        _warn_convergence_once(
+            f"batched:z={z}",
+            "Maximum batched ALM iterations reached without full convergence on all planes.",
+        )
     if pbar is not None:
         pbar.close()
 

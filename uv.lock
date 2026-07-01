@@ -1397,7 +1397,6 @@ dependencies = [
     { name = "ome-zarr" },
     { name = "opencv-python" },
     { name = "optuna" },
-    { name = "sbh-simulator" },
     { name = "scipy" },
     { name = "tqdm" },
     { name = "zarr" },
@@ -1448,6 +1447,9 @@ notebooks = [
     { name = "notebook" },
     { name = "scienceplots" },
 ]
+validation = [
+    { name = "sbh-simulator" },
+]
 viz = [
     { name = "matplotlib" },
     { name = "matplotlib-scalebar" },
@@ -1485,7 +1487,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.1" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11" },
-    { name = "sbh-simulator", git = "https://github.com/linum-uqam/sbh_simulator.git?rev=master" },
+    { name = "sbh-simulator", marker = "extra == 'validation'", git = "https://github.com/linum-uqam/sbh_simulator.git?rev=master" },
     { name = "scienceplots", marker = "extra == 'dev'", specifier = ">=2.1" },
     { name = "scienceplots", marker = "extra == 'docs'", specifier = ">=2.1" },
     { name = "scienceplots", marker = "extra == 'notebooks'", specifier = ">=2.1" },
@@ -1505,7 +1507,7 @@ requires-dist = [
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a14" },
     { name = "zarr", specifier = ">=3" },
 ]
-provides-extras = ["gpu", "viz", "docs", "dev", "notebooks"]
+provides-extras = ["gpu", "viz", "docs", "validation", "dev", "notebooks"]
 
 [[package]]
 name = "locket"

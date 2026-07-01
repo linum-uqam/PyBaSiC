@@ -27,7 +27,7 @@ class Backend(enum.StrEnum):
     NUMPY : str
         Pure NumPy / SciPy on CPU.
     TORCH : str
-        PyTorch — CPU or any accelerator (CUDA, MPS, etc.).
+        PyTorch — CPU or CUDA GPU; MPS is not supported.
     """
 
     NUMPY = "numpy"
@@ -42,7 +42,7 @@ class ArrayNamespace:
     backend : Backend
         Which backend to use.
     device : str or None
-        PyTorch device string (e.g. ``"cuda"``, ``"mps"``, ``"cpu"``).
+        PyTorch device string (e.g. ``"cuda"``, ``"cpu"``).
         Ignored when *backend* is ``Backend.NUMPY``.
 
     Raises
@@ -876,8 +876,9 @@ def get_xp(backend: str | Backend, device: str | None = None) -> ArrayNamespace:
     ----------
     backend : str or Backend
         ``"numpy"``, ``"torch"``, or ``"auto"``.  ``"auto"`` selects the
-        Torch backend with CUDA or MPS when available, otherwise falls back
-        to NumPy.
+        Torch backend with CUDA when available, otherwise falls back
+        to NumPy.  MPS is not supported and raises
+        :exc:`NotImplementedError` when requested explicitly.
     device : str or None
         PyTorch device string (e.g. ``"cuda:0"``).  Ignored for NumPy.
 

@@ -22,7 +22,6 @@ dependencies = [
     "ome-zarr>=0.10",
     "optuna>=3.6",
     "joblib>=1.4",
-    "sbh-simulator @ git+https://github.com/linum-uqam/sbh_simulator.git@master",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +50,9 @@ docs = [
     "matplotlib>=3.10",
     "matplotlib-scalebar>=0.9",
     "scienceplots>=2.1",
+]
+validation = [
+    "sbh-simulator @ git+https://github.com/linum-uqam/sbh_simulator.git@master",
 ]
 dev = [
     "pytest>=8.4",
@@ -97,7 +99,7 @@ packages = ["linum_basic"]
 target-version = "py314"
 line-length = 127
 fix = true
-include = ["linum_basic*", "tests*", "scripts*"]
+include = ["linum_basic*", "tests*", "scripts/**/*.py"]
 exclude = ["tests/data", "linum_basic/data"]
 
 [tool.ruff.lint]

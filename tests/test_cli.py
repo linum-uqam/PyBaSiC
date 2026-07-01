@@ -78,6 +78,33 @@ class TestCliHelp:
         )
         assert result.returncode != 0
 
+    @pytest.mark.parametrize("sub", ["correct", "fit", "tune"])
+    def test_device_mps_rejected(self, tmp_path: Path, sub: str) -> None:
+        """``--device mps`` is rejected early with a clear stderr message."""
+        cmd = [
+            sys.executable,
+            "-m",
+            "linum_basic.cli",
+            sub,
+            "--device",
+            "mps",
+        ]
+        if sub == "correct":
+            cmd.extend(["--input", str(tmp_path), "--output", str(tmp_path / "out")])
+        elif sub == "fit":
+            cmd.extend(["--input", str(tmp_path / "in.ome.zarr"), "--output", str(tmp_path / "out.ome.zarr")])
+        else:  # tune
+            cmd.extend(["--input", str(tmp_path / "in.ome.zarr")])
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0
+        assert "mps" in result.stderr.lower()
+
 
 class TestCliEndToEnd:
     """End-to-end CLI tests against a temporary TIFF stack."""

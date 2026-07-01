@@ -9,6 +9,8 @@ When ``LINUM_BASIC_VIGNETTE_ARTIFACT_DIR`` is set, saves a 9-panel diagnostic PN
   Row 0: GT flat-field | Estimated flat-field | FF abs error
   Row 1: GT dark-field | Estimated dark-field | DF abs error
   Row 2: Sample tile clean | Sample tile corrupted | Sample tile BaSiC-corrected
+
+Skipped when the ``sbh-simulator`` package cannot be imported.
 """
 
 from __future__ import annotations
@@ -18,13 +20,25 @@ import random
 from pathlib import Path
 
 import numpy as np
-from sbh_simulator.simulator import (
-    generate_gaussian_darkfield,
-    generate_gaussian_vignette,
-)
+import pytest
 
 from linum_basic.core import BaSiC
 from linum_basic.data import load_sample_image
+
+try:
+    from sbh_simulator.simulator import (
+        generate_gaussian_darkfield,
+        generate_gaussian_vignette,
+    )
+
+    _SBH_SIMULATOR_AVAILABLE = True
+except ImportError:
+    _SBH_SIMULATOR_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(
+    not _SBH_SIMULATOR_AVAILABLE,
+    reason="sbh-simulator not installed. Install with: uv pip install sbh-simulator",
+)
 
 _TILE = 128
 _FF_CORRELATION_THRESHOLD = 0.85

@@ -100,8 +100,8 @@ class BaSiC:
         When ``backend="auto"`` and a GPU is available, the GPU is only used
         when ``N * working_size * working_size >= gpu_min_elements``.  Smaller
         stacks are routed to NumPy because JIT and kernel-launch overhead
-        dominates at low problem sizes.  Default :data:`GPU_MIN_ELEMENTS`
-        (1 000 000).  Set to ``0`` to always use the GPU, or to a very large
+        dominates at low problem sizes.  Default ``1_000_000``
+        (:attr:`~linum_basic.core.GPU_MIN_ELEMENTS`).  Set to ``0`` to always use the GPU, or to a very large
         value to always use NumPy.
 
     Attributes

@@ -197,6 +197,7 @@ suppress_warnings = [
     "ref.class",
     "ref.func",
     "ref.mod",
+    "ref.data",  # autoapi default-arg names (e.g. GPU_MIN_ELEMENTS in BaSiC signature)
     "ref.footnote",
     "docutils",
     "misc.highlighting_failure",

@@ -79,7 +79,7 @@ offsets (darkfield) from fluorescence, bright-field, and other modalities.
       :link: gpu
       :link-type: doc
 
-      Run BaSiC on CUDA/MPS hardware using the PyTorch backend.
+      Run BaSiC on CUDA hardware using the PyTorch backend (Apple MPS unsupported).
 
    .. grid-item-card:: Contributing
       :link: contributing

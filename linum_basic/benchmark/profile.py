@@ -1102,7 +1102,14 @@ def build_phase6_concurrency_verdict(
     git_commit: str | None = None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
-    """Build frozen Phase 6 concurrency verdict manifest for Phase 7 deploy (PERF-04)."""
+    """Build frozen Phase 6 concurrency verdict manifest for Phase 7 deploy (PERF-04).
+
+    Returns
+    -------
+    dict[str, Any]
+        Verdict manifest with ``recommended_max_forks``, ``gpu_allocation_map``,
+        ``selection_rationale``, and per-mode evidence rows.
+    """
     from datetime import UTC, datetime
 
     normalized_modes = [_normalize_concurrency_mode(mode) for mode in modes]
@@ -1141,7 +1148,14 @@ def build_phase6_concurrency_verdict(
 
 
 def diagnose_regression_triage(*, harness_overall: str, wallclock_regressed: bool) -> str:
-    """Classify regression source using harness verdict and wall-clock signal (D-23)."""
+    """Classify regression source using harness verdict and wall-clock signal (D-23).
+
+    Returns
+    -------
+    str
+        One of ``algorithm_or_env_drift``, ``pipeline_orchestration_issue``, or
+        ``no_regression``.
+    """
     if harness_overall == "reject":
         return "algorithm_or_env_drift"
     if harness_overall == "promote":
@@ -1153,7 +1167,14 @@ def diagnose_regression_triage(*, harness_overall: str, wallclock_regressed: boo
 
 
 def warn_git_commit_drift(*, manifest_git_commit: str | None, current_git_commit: str) -> str | None:
-    """Return a non-blocking drift warning when manifest and HEAD commits differ (D-08)."""
+    """Return a non-blocking drift warning when manifest and HEAD commits differ (D-08).
+
+    Returns
+    -------
+    str or None
+        Warning message when commits differ; ``None`` when they match or manifest
+        commit is unset.
+    """
     if manifest_git_commit is None or manifest_git_commit == current_git_commit:
         return None
     return f"phase5-fast-path git_commit {manifest_git_commit!r} differs from current HEAD {current_git_commit!r}"
@@ -1173,7 +1194,14 @@ def build_phase7_integration_summary(
     nextflow_wallclock_ms: float | None = None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
-    """Build Phase 7 integration summary manifest for env audit and regression triage (NFLO-01, NFLO-05)."""
+    """Build Phase 7 integration summary manifest for env audit and regression triage (NFLO-01, NFLO-05).
+
+    Returns
+    -------
+    dict[str, Any]
+        Integration summary with env snapshot, harness verdict, regression triage,
+        and optional Nextflow wall-clock timing.
+    """
     from datetime import UTC, datetime
 
     manifest: dict[str, Any] = {

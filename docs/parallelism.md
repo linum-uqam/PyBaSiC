@@ -4,7 +4,7 @@
 linum-basic parallelises the expensive per-z-level ALM solves across CPU
 cores using process-based parallelism (joblib / loky backend).  This page
 explains when and how parallelism is used, how to tune the worker count,
-and what to expect on CUDA/MPS hardware.
+and what to expect on CUDA hardware.
 
 ---
 
@@ -76,21 +76,31 @@ fit = fit_mosaic(mosaic, n_workers=1)
 
 ## GPU / accelerator behaviour
 
-On the PyTorch CUDA or MPS backend a single device is the bottleneck;
-spawning multiple worker processes would serialise access to the device
-and multiply VRAM consumption without benefit.
+On the PyTorch CUDA backend, worker parallelism follows a different model than
+the CPU process pool.
 
-linum-basic **automatically collapses the worker count to 1** when
-`backend="torch"` or `backend="auto"` is combined with a CUDA or MPS
-device, and emits a {class}`UserWarning`:
+**Single CUDA device:** linum-basic **collapses the worker count to 1** when
+`backend="torch"` or `backend="auto"` resolves to one GPU, and emits a
+{class}`UserWarning` if you request more workers:
 
 ```python
-# This will run with n_workers=1 (single GPU) regardless of n_workers=8
+# Runs with n_workers=1 regardless of n_workers=8
 fit = fit_mosaic(mosaic, n_workers=8, basic_kwargs={"backend": "torch", "device": "cuda:0"})
 ```
 
-To use both a GPU backend and multiple devices, pass a different `device`
-per z-batch manually — this is not yet automated.
+**Multiple CUDA devices:** when two or more GPUs are visible,
+{func}`~linum_basic.fit.fit_mosaic` fans out z-level fits across devices via
+{func}`~linum_basic._parallel.parallel_map_cuda_devices` — up to
+``min(n_workers, n_gpus)`` devices in round-robin order. Use
+``--strategy multi`` on the CLI, or let ``strategy="auto"`` select multi-GPU
+when hardware and workload policy allow.
+
+**Batched CUDA:** a separate path stacks multiple z-planes into one batched ALM
+solve on a single device. Select via ``--strategy batched`` or the auto-resolver
+when policy allows (see {doc}`gpu` and ``basic fit --strategy``).
+
+Apple Silicon MPS is not supported; use ``--backend numpy`` locally or
+``--device cuda:N`` on CUDA servers.
 
 ---
 

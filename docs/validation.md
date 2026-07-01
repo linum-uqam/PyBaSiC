@@ -12,10 +12,13 @@ vignette.
 | File | Purpose |
 |---|---|
 | `tests/test_alm_parity.py` | NumPy ↔ Torch parity for the ALM solver |
+| `tests/test_alm_compile_warning.py` | `torch.compile` fallback and ALM convergence `UserWarning` deduplication |
 | `tests/test_backend_parity.py` | NumPy ↔ Torch DCT/IDCT parity |
-| `tests/test_cli.py` | CLI smoke tests |
+| `tests/test_cli.py` | CLI smoke tests (including MPS rejection on all GPU subcommands) |
 | `tests/test_docstrings.py` | NumPy-style docstring quality checks via `numpydoc.validate` |
+| `tests/test_parallel.py` | Worker resolution, multi-GPU fan-out, and vectorised `apply_fit` paths |
 | `tests/test_vignette_validation.py` | Integration test: vignette recovery |
+| `tests/test_demo_fitting.py` | Demo fit with synthetic vignette (skipped without `validation` extra; excluded from default `make test`) |
 
 ---
 
@@ -39,18 +42,22 @@ The test passes when the correlation exceeds **0.85**.
 
 ### Prerequisites
 
-The test is automatically **skipped** when the `sbh-simulator` package
-cannot be imported. To run it:
+The vignette and demo fitting tests require the optional **`validation`**
+extra, which installs
+[sbh-simulator](https://github.com/linum-uqam/sbh_simulator). This dependency
+is **not** part of the default install — only the dedicated CI vignette job,
+the docs build (which executes `docs/notebooks/basic_usage.ipynb`), and local
+validation workflows need it.
 
 ```bash
-# Install sbh_simulator into the same environment
-pip install git+https://github.com/linum-uqam/sbh_simulator.git
+uv sync --extra dev --extra validation
+uv run pytest tests/test_vignette_validation.py -v
 ```
 
-Then:
+To run the demo fitting test as well (as in CI):
 
 ```bash
-uv run pytest tests/test_vignette_validation.py -v
+uv run pytest tests/test_vignette_validation.py tests/test_demo_fitting.py -v
 ```
 
 ### Visualisation artefacts
@@ -95,10 +102,14 @@ unconditionally — no GPU required.
 
 ## Running the full test suite
 
+The default test suite (via `make test` or CI core jobs) excludes
+`tests/test_demo_fitting.py`, which requires the validation extra. Core tests
+run without sbh-simulator:
+
 ```bash
 make test
 # or:
-uv run pytest -q
+uv run pytest -q --ignore=tests/test_demo_fitting.py
 ```
 
 For verbose output:

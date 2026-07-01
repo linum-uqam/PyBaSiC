@@ -16,10 +16,10 @@ format-check:
 	uv run ruff format --check
 
 typecheck:
-	uv run ty check
+	uv run ty check linum_basic/
 
 test:
-	uv run python -m pytest -q
+	uv run python -m pytest -q --ignore=tests/test_demo_fitting.py
 
 all: lint format-check typecheck test
 

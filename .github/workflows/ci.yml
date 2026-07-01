@@ -50,6 +50,24 @@ jobs:
       - name: ty check
         run: uv run ty check linum_basic/
 
+  docs:
+    name: "Docs (sphinx -W)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install docs extras
+        run: uv sync --extra docs --extra validation --frozen
+
+      - name: Build docs
+        run: uv run sphinx-build -W --keep-going -n -b html docs docs/_build/html
+
   test-cpu:
     name: "Tests — CPU (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
@@ -70,7 +88,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run tests
-        run: uv run python -m pytest tests/ -v --tb=short --cov=linum_basic --cov-report=term-missing --cov-report=xml
+        run: uv run python -m pytest tests/ -v --tb=short --cov=linum_basic --cov-report=term-missing --cov-report=xml --ignore=tests/test_demo_fitting.py
 
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest'
@@ -95,7 +113,7 @@ jobs:
         run: uv sync --extra dev --extra gpu
 
       - name: Run tests (including backend parity)
-        run: uv run pytest tests/ -v --tb=short -k "not cli"
+        run: uv run pytest tests/ -v --tb=short -k "not cli" --ignore=tests/test_demo_fitting.py
 
   test-vignette-validation:
     name: "Tests — vignette validation (sbh-simulator)"
@@ -113,7 +131,7 @@ jobs:
           enable-cache: true
 
       - name: Install linum-basic dev extras
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra validation --frozen
 
       - name: Run vignette validation tests
         run: |

@@ -14,7 +14,7 @@ build:
       - asdf global uv latest
       - uv venv "${READTHEDOCS_VIRTUALENV_PATH}"
     install:
-      - UV_PROJECT_ENVIRONMENT="${READTHEDOCS_VIRTUALENV_PATH}" uv sync --extra docs --frozen
+      - UV_PROJECT_ENVIRONMENT="${READTHEDOCS_VIRTUALENV_PATH}" uv sync --extra docs --extra validation --frozen
     build:
       html:
         - UV_PROJECT_ENVIRONMENT="${READTHEDOCS_VIRTUALENV_PATH}" uv run sphinx-build -T --keep-going -b html docs $READTHEDOCS_OUTPUT/html

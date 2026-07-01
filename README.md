@@ -84,8 +84,10 @@ uv sync --extra gpu
 ```
 
 This installs PyTorch alongside the core dependencies. On a machine with
-CUDA or Apple Silicon (MPS), the `--backend auto` flag will automatically
-select the accelerator.
+CUDA, the `--backend auto` flag selects the Torch+CUDA backend when the
+stack is large enough; otherwise it falls back to NumPy. Apple Silicon is
+not supported for GPU acceleration — use `--backend numpy` or `--backend auto`
+(NumPy fallback). See the [GPU docs](docs/gpu.md) for details.
 
 ### Development environment
 
@@ -128,7 +130,7 @@ options:
   --estimate-darkfield  Estimate the dark-field in addition to the flat-field.
   --backend {numpy,torch,auto}
                         Compute backend. 'auto' picks GPU when available.
-  --device DEVICE       PyTorch device string, e.g. 'cuda:0' or 'mps'.
+  --device DEVICE       PyTorch device string, e.g. 'cuda:0'.
   --verbose             Show progress bars.
 ```
 

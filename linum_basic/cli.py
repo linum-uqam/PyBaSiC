@@ -24,6 +24,17 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 
+def _validate_device(device: str | None) -> int | None:
+    """Reject unsupported MPS device strings before backend dispatch."""
+    if device and device.lower().startswith("mps"):
+        print(
+            "error: MPS is not supported for BaSiC fitting; use --backend numpy or --device cuda:0.",
+            file=sys.stderr,
+        )
+        return 1
+    return None
+
+
 def _add_backend_args(parser: argparse.ArgumentParser) -> None:
     """Add ``--backend`` and ``--device`` to *parser*."""
     g = parser.add_argument_group("Compute")
@@ -31,13 +42,13 @@ def _add_backend_args(parser: argparse.ArgumentParser) -> None:
         "--backend",
         choices=["numpy", "torch", "auto"],
         default="numpy",
-        help="Array backend for the ALM optimisation loop.  'auto' selects Torch with CUDA/MPS when available.",
+        help="Array backend for the ALM optimisation loop.  'auto' selects Torch with CUDA when available, else NumPy.",
     )
     g.add_argument(
         "--device",
         metavar="DEVICE",
         default=None,
-        help="PyTorch device string (e.g. 'cuda:0', 'mps', 'cpu').  Ignored when --backend=numpy.",
+        help="PyTorch device string (e.g. 'cuda:0', 'cpu').  Ignored when --backend=numpy.",
     )
 
 
@@ -71,6 +82,9 @@ def _add_correct_subcommand(subs: argparse._SubParsersAction) -> None:  # type: 
 
 
 def _run_correct(args: argparse.Namespace) -> int:
+    if (rc := _validate_device(args.device)) is not None:
+        return rc
+
     input_dir: Path = args.input
     output_dir: Path = args.output
 
@@ -154,7 +168,7 @@ def _add_fit_subcommand(subs: argparse._SubParsersAction) -> None:  # type: igno
         "--device",
         metavar="DEVICE",
         default=None,
-        help="PyTorch device string (e.g. 'cuda:0', 'mps', 'cpu').  Ignored when --backend=numpy.",
+        help="PyTorch device string (e.g. 'cuda:0', 'cpu').  Ignored when --backend=numpy.",
     )
     p.add_argument(
         "--n-jobs",
@@ -167,6 +181,9 @@ def _add_fit_subcommand(subs: argparse._SubParsersAction) -> None:  # type: igno
 
 
 def _run_fit(args: argparse.Namespace) -> int:
+    if (rc := _validate_device(args.device)) is not None:
+        return rc
+
     from linum_basic.fit import fit_mosaic, save_corrected
     from linum_basic.mosaic import MosaicGrid
 
@@ -270,6 +287,9 @@ def _add_tune_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ign
 
 
 def _run_tune(args: argparse.Namespace) -> int:
+    if (rc := _validate_device(args.device)) is not None:
+        return rc
+
     from linum_basic.mosaic import MosaicGrid
     from linum_basic.tuning import tune
 

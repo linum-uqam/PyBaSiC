@@ -45,7 +45,8 @@ def test_default_workers_is_cpu_count_minus_two() -> None:
     ("backend", "device", "expected"),
     [
         ("torch", "cuda:0", True),
-        ("auto", "mps", True),
+        ("auto", "mps", False),
+        ("torch", "mps", False),
         ("torch", "cuda", True),
         ("numpy", "cuda", False),
         ("torch", "cpu", False),
@@ -66,7 +67,8 @@ def test_resolve_workers_defaults_and_clamps() -> None:
 
 def test_resolve_workers_gpu_guard_forces_one() -> None:
     assert resolve_workers(4, "torch", "cpu") == 4
-    assert resolve_workers(4, "auto", "mps") == 1
+    assert resolve_workers(4, "auto", "mps") == 4
+    assert resolve_workers(None, "auto", "mps") == default_workers()
     with pytest.warns(UserWarning, match="sequentially"):
         assert resolve_workers(4, "torch", "cuda:0") == 1
 

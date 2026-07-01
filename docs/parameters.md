@@ -86,8 +86,9 @@ full details.
 | **Type** | `str \| None` |
 | **Default** | `None` |
 
-PyTorch device string, e.g. `"cuda:0"` or `"mps"`.  Ignored when
-`backend="numpy"`.
+PyTorch device string, e.g. `"cuda:0"`.  Apple MPS is not supported; on
+Apple Silicon use `backend="numpy"` or `backend="auto"`.  See
+{ref}`GPU Acceleration <gpu>`.  Ignored when `backend="numpy"`.
 
 ---
 
