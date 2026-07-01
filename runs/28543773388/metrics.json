@@ -1,0 +1,34 @@
+{
+  "vignette_recovery": {
+    "gaussian": {
+      "ff_r": 0.974,
+      "df_r": 0.693,
+      "passed": true
+    },
+    "zernike": {
+      "ff_r": 0.971,
+      "df_r": 0.883,
+      "passed": true
+    }
+  },
+  "no_darkfield": {
+    "gaussian": {
+      "ff_r": 0.872,
+      "passed": true
+    },
+    "zernike": {
+      "ff_r": 0.909,
+      "passed": true
+    }
+  },
+  "brightness_drift": {
+    "gaussian": {
+      "ff_r": 0.971,
+      "passed": true
+    },
+    "zernike": {
+      "ff_r": 0.963,
+      "passed": true
+    }
+  }
+}
