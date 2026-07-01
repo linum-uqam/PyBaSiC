@@ -34,7 +34,10 @@ from linum_basic.benchmark.profile import (
     build_phase5_fast_path,
     build_phase5_optimization_report,
     build_phase6_concurrency_verdict,
+    build_phase7_integration_summary,
     compute_stack_speed_ratio,
+    diagnose_regression_triage,
+    warn_git_commit_drift,
 )
 from linum_basic.benchmark.quality import (
     CALIBRATION_POLICY,
@@ -113,6 +116,7 @@ __all__ = [
     "build_phase5_fast_path",
     "build_phase5_optimization_report",
     "build_phase6_concurrency_verdict",
+    "build_phase7_integration_summary",
     "build_sweep_table",
     "calibrate_tolerances",
     "collect_compile_cache_info",
@@ -126,6 +130,7 @@ __all__ = [
     "compute_deltas",
     "compute_quality_report",
     "compute_stack_speed_ratio",
+    "diagnose_regression_triage",
     "evaluate_quality_gate",
     "evaluate_sweep_adoption",
     "load_overrides",
@@ -136,6 +141,7 @@ __all__ = [
     "run_with_phases",
     "slugify_label",
     "timed_call",
+    "warn_git_commit_drift",
     "write_artifact",
     "write_summary_table",
 ]

@@ -87,6 +87,7 @@ from linum_basic.benchmark.profile import (
     build_phase5_backlog,
     build_phase5_fast_path,
     build_phase6_concurrency_verdict,
+    build_phase7_integration_summary,
 )
 from linum_basic.benchmark.quality import (
     CALIBRATION_POLICY,
@@ -114,7 +115,9 @@ from linum_basic.fit import MosaicFit, fit_mosaic
 
 LARGE_RUN_Z_THRESHOLD = 8
 
-_HARNESS_SUBCOMMANDS = frozenset({"baseline", "candidate", "compare", "concurrency", "profile", "sweep", "optimize"})
+_HARNESS_SUBCOMMANDS = frozenset(
+    {"baseline", "candidate", "compare", "concurrency", "integration-check", "profile", "sweep", "optimize"}
+)
 
 
 def _cuda_available() -> bool:
@@ -371,6 +374,32 @@ def _build_subcommand_parser() -> argparse.ArgumentParser:
     compare.add_argument("--candidate", required=True, help="Path to candidate-artifact.json.")
     compare.add_argument("--output-dir", required=True, help="Directory for comparison summary.")
     compare.set_defaults(handler=cmd_compare)
+
+    integration_check = subparsers.add_parser(
+        "integration-check",
+        help="Run compare harness and write phase7-integration-summary.json.",
+    )
+    integration_check.add_argument("--baseline", required=True, help="Path to baseline-bundle.json.")
+    integration_check.add_argument("--candidate", required=True, help="Path to candidate-artifact.json.")
+    integration_check.add_argument("--output-dir", required=True, help="Directory for phase7 integration summary.")
+    integration_check.add_argument(
+        "--fast-path-ref",
+        default=None,
+        help="Path to phase5-fast-path.json for git-commit drift check (D-08).",
+    )
+    integration_check.add_argument(
+        "--nextflow-wallclock-ms",
+        type=float,
+        default=None,
+        help="Observed Nextflow wall-clock timing in milliseconds.",
+    )
+    integration_check.add_argument(
+        "--wallclock-baseline-ms",
+        type=float,
+        default=None,
+        help="Baseline wall-clock timing in milliseconds for regression comparison.",
+    )
+    integration_check.set_defaults(handler=cmd_integration_check)
 
     sweep = subparsers.add_parser(
         "sweep",
@@ -1298,6 +1327,98 @@ def cmd_compare(args: argparse.Namespace) -> int:
     )
 
     print(f"Wrote comparison summary to {output_dir} (overall={overall})")
+    for warning in warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+    return 1 if overall == "reject" else 0
+
+
+def _phase7_env_snapshot() -> dict[str, str]:
+    keys = ("LINUM_BASIC_DCT_KERNEL", "TORCHINDUCTOR_CACHE_DIR", "CUDA_VISIBLE_DEVICES")
+    return {key: os.environ.get(key, "") for key in keys}
+
+
+def _load_fast_path_git_commit(fast_path_ref: str | None) -> str | None:
+    if not fast_path_ref:
+        return None
+    fast_path = Path(fast_path_ref)
+    if not fast_path.is_file():
+        return None
+    try:
+        payload = json.loads(fast_path.read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError:
+        return None
+    raw_commit = payload.get("git_commit")
+    return str(raw_commit) if raw_commit is not None else None
+
+
+def cmd_integration_check(args: argparse.Namespace) -> int:
+    """Run compare harness and write phase7-integration-summary.json with triage metadata."""
+    baseline_path = Path(args.baseline)
+    candidate_path = Path(args.candidate)
+    output_dir = Path(args.output_dir)
+
+    if not baseline_path.is_file():
+        print(f"Baseline artifact not found: {baseline_path}", file=sys.stderr)
+        return 1
+    if not candidate_path.is_file():
+        print(f"Candidate artifact not found: {candidate_path}", file=sys.stderr)
+        return 1
+
+    baseline = read_artifact(baseline_path, BaselineBundle)
+    candidate = read_artifact(candidate_path, CandidateArtifact)
+
+    sidecar_path = baseline_path.parent / "tolerance-sidecar.json"
+    if not sidecar_path.is_file():
+        print(f"Tolerance sidecar not found beside baseline: {sidecar_path}", file=sys.stderr)
+        return 1
+    sidecar = read_artifact(sidecar_path, ToleranceSidecar)
+
+    try:
+        candidate_report = _quality_report_from_bundle(candidate)
+        candidate_telemetry = candidate.metadata.get("telemetry", {})
+        _summary, _speed, _quality, overall, warnings = _run_candidate_comparison(
+            baseline,
+            sidecar,
+            candidate_report,
+            candidate_telemetry,
+            candidate,
+        )
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    if args.nextflow_wallclock_ms is not None and args.wallclock_baseline_ms is not None:
+        wallclock_regressed = float(args.nextflow_wallclock_ms) > float(args.wallclock_baseline_ms)
+    else:
+        wallclock_regressed = False
+
+    strategy_raw = candidate.metadata.get("_strategy")
+    strategy_metadata = strategy_raw if isinstance(strategy_raw, dict) else None
+
+    current_git_commit = collect_git_commit()
+    fast_path_git_commit = _load_fast_path_git_commit(args.fast_path_ref)
+
+    integration_summary = build_phase7_integration_summary(
+        baseline_id=baseline.baseline_id,
+        phase5_fast_path_ref=args.fast_path_ref or "",
+        harness_compare_overall=overall,
+        wallclock_regressed=wallclock_regressed,
+        env_snapshot=_phase7_env_snapshot(),
+        current_git_commit=current_git_commit,
+        evidence_artifact_ids=[baseline.baseline_id, candidate.candidate_id],
+        fast_path_git_commit=fast_path_git_commit,
+        strategy_metadata=strategy_metadata,
+        nextflow_wallclock_ms=args.nextflow_wallclock_ms,
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = output_dir / "phase7-integration-summary.json"
+    summary_path.write_text(json.dumps(integration_summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    print(f"Wrote phase7 integration summary to {output_dir} (overall={overall})")
+    drift_warning = integration_summary.get("git_commit_drift_warning")
+    if drift_warning:
+        print(f"Warning: {drift_warning}", file=sys.stderr)
     for warning in warnings:
         print(f"Warning: {warning}", file=sys.stderr)
     return 1 if overall == "reject" else 0

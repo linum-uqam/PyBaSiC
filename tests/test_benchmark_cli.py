@@ -1273,6 +1273,116 @@ class TestCompareSubcommand:
         assert rc != 0
 
 
+class TestIntegrationCheckSubcommand:
+    @staticmethod
+    def _baseline_and_candidate(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[Path, Path, str]:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        out_dir = tmp_path / "artifacts"
+        baseline_id = _run_stubbed_baseline(tmp_path, monkeypatch)
+        baseline_path = next((out_dir / baseline_id).glob("*bundle*.json"))
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        monkeypatch.setattr(bench, "fit_mosaic", _stub_fit_factory())
+        monkeypatch.setattr(bench, "_cuda_available", lambda: False)
+
+        rc = bench.main(
+            [
+                "candidate",
+                "--input",
+                str(zarr_in),
+                "--baseline-id",
+                baseline_id,
+                "--output-dir",
+                str(out_dir),
+                "--subject-id",
+                "syn",
+                "--strategy",
+                "batched",
+                "--batched-z-chunk-size",
+                "8",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "1",
+            ]
+        )
+        assert rc == 0
+        candidate_path = next(out_dir.glob("candidate-*/candidate-artifact.json"))
+        return baseline_path, candidate_path, baseline_id
+
+    def test_integration_check_writes_summary_with_git_drift_warning(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from linum_basic.benchmark.metadata import collect_git_commit
+
+        baseline_path, candidate_path, _baseline_id = self._baseline_and_candidate(tmp_path, monkeypatch)
+
+        fast_path = tmp_path / "phase5-fast-path.json"
+        fast_path.write_text(
+            json.dumps({"schema_version": "1", "git_commit": "deadbeef0000"}) + "\n",
+            encoding="utf-8",
+        )
+
+        out = tmp_path / "integration-drift"
+        rc = bench.main(
+            [
+                "integration-check",
+                "--baseline",
+                str(baseline_path),
+                "--candidate",
+                str(candidate_path),
+                "--output-dir",
+                str(out),
+                "--fast-path-ref",
+                str(fast_path),
+            ]
+        )
+        assert rc in (0, 1)
+        summary_path = out / "phase7-integration-summary.json"
+        assert summary_path.exists()
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        assert summary["regression_triage"] in {
+            "algorithm_or_env_drift",
+            "pipeline_orchestration_issue",
+            "no_regression",
+        }
+        assert summary["git_commit_drift_warning"]
+        assert summary["git_commit"] == collect_git_commit()
+        assert "env_snapshot" in summary
+        assert not (out / "compare-summary.json").exists()
+
+    def test_integration_check_without_fast_path_ref_has_no_drift_warning(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        baseline_path, candidate_path, _baseline_id = self._baseline_and_candidate(tmp_path, monkeypatch)
+
+        out = tmp_path / "integration-no-drift"
+        rc = bench.main(
+            [
+                "integration-check",
+                "--baseline",
+                str(baseline_path),
+                "--candidate",
+                str(candidate_path),
+                "--output-dir",
+                str(out),
+            ]
+        )
+        assert rc in (0, 1)
+        summary = json.loads((out / "phase7-integration-summary.json").read_text(encoding="utf-8"))
+        assert summary["git_commit_drift_warning"] is None
+
+
 class TestSweepSubcommand:
     def test_sweep_writes_table_and_verdict_without_fit(
         self,

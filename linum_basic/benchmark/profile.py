@@ -42,7 +42,10 @@ __all__ = [
     "build_phase5_fast_path",
     "build_phase5_optimization_report",
     "build_phase6_concurrency_verdict",
+    "build_phase7_integration_summary",
     "compute_stack_speed_ratio",
+    "diagnose_regression_triage",
+    "warn_git_commit_drift",
 ]
 
 _LEVER_DEFINITIONS: tuple[tuple[str, str, str, str], ...] = (
@@ -1134,4 +1137,66 @@ def build_phase6_concurrency_verdict(
         manifest["git_commit"] = git_commit
     if selection_rationale is not None:
         manifest["selection_rationale"] = selection_rationale
+    return manifest
+
+
+def diagnose_regression_triage(*, harness_overall: str, wallclock_regressed: bool) -> str:
+    """Classify regression source using harness verdict and wall-clock signal (D-23)."""
+    if harness_overall == "reject":
+        return "algorithm_or_env_drift"
+    if harness_overall == "promote":
+        if wallclock_regressed:
+            return "pipeline_orchestration_issue"
+        return "no_regression"
+    msg = f"unexpected harness_overall value: {harness_overall!r}; expected 'promote' or 'reject'"
+    raise ValueError(msg)
+
+
+def warn_git_commit_drift(*, manifest_git_commit: str | None, current_git_commit: str) -> str | None:
+    """Return a non-blocking drift warning when manifest and HEAD commits differ (D-08)."""
+    if manifest_git_commit is None or manifest_git_commit == current_git_commit:
+        return None
+    return f"phase5-fast-path git_commit {manifest_git_commit!r} differs from current HEAD {current_git_commit!r}"
+
+
+def build_phase7_integration_summary(
+    *,
+    baseline_id: str,
+    phase5_fast_path_ref: str,
+    harness_compare_overall: str,
+    wallclock_regressed: bool,
+    env_snapshot: dict[str, str],
+    current_git_commit: str,
+    evidence_artifact_ids: Sequence[str],
+    fast_path_git_commit: str | None = None,
+    strategy_metadata: dict[str, Any] | None = None,
+    nextflow_wallclock_ms: float | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Build Phase 7 integration summary manifest for env audit and regression triage (NFLO-01, NFLO-05)."""
+    from datetime import UTC, datetime
+
+    manifest: dict[str, Any] = {
+        "schema_version": "1",
+        "baseline_id": baseline_id,
+        "timestamp": timestamp or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "phase5_fast_path_ref": phase5_fast_path_ref,
+        "env_snapshot": dict(env_snapshot),
+        "git_commit": current_git_commit,
+        "git_commit_drift_warning": warn_git_commit_drift(
+            manifest_git_commit=fast_path_git_commit,
+            current_git_commit=current_git_commit,
+        ),
+        "harness_compare_overall": harness_compare_overall,
+        "wallclock_regressed": wallclock_regressed,
+        "regression_triage": diagnose_regression_triage(
+            harness_overall=harness_compare_overall,
+            wallclock_regressed=wallclock_regressed,
+        ),
+        "evidence_artifact_ids": list(evidence_artifact_ids),
+    }
+    if strategy_metadata is not None:
+        manifest["strategy_metadata"] = dict(strategy_metadata)
+    if nextflow_wallclock_ms is not None:
+        manifest["nextflow_wallclock_ms"] = nextflow_wallclock_ms
     return manifest

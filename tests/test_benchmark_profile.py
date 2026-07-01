@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from linum_basic.benchmark.profile import (
     BOTTLENECK_CHUNKING,
@@ -19,6 +20,9 @@ from linum_basic.benchmark.profile import (
     build_phase5_backlog,
     build_phase5_fast_path,
     build_phase6_concurrency_verdict,
+    build_phase7_integration_summary,
+    diagnose_regression_triage,
+    warn_git_commit_drift,
 )
 from linum_basic.core import BaSiC
 
@@ -753,6 +757,140 @@ class TestBuildPhase6ConcurrencyVerdict:
         assert "winner" in manifest
         assert "recommended_max_forks" in manifest
         assert "gpu_allocation_map" in manifest
+
+
+class TestRegression_triage:
+    def test_reject_with_wallclock_regressed_is_algorithm_or_env_drift(self) -> None:
+        assert diagnose_regression_triage(harness_overall="reject", wallclock_regressed=True) == "algorithm_or_env_drift"
+
+    def test_reject_without_wallclock_regressed_is_algorithm_or_env_drift(self) -> None:
+        assert diagnose_regression_triage(harness_overall="reject", wallclock_regressed=False) == "algorithm_or_env_drift"
+
+    def test_promote_with_wallclock_regressed_is_pipeline_orchestration_issue(self) -> None:
+        assert (
+            diagnose_regression_triage(harness_overall="promote", wallclock_regressed=True) == "pipeline_orchestration_issue"
+        )
+
+    def test_promote_without_wallclock_regressed_is_no_regression(self) -> None:
+        assert diagnose_regression_triage(harness_overall="promote", wallclock_regressed=False) == "no_regression"
+
+    def test_invalid_harness_overall_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="harness_overall"):
+            diagnose_regression_triage(harness_overall="unknown", wallclock_regressed=False)
+
+
+class TestGit_commit_drift:
+    def test_none_manifest_commit_returns_none(self) -> None:
+        assert warn_git_commit_drift(manifest_git_commit=None, current_git_commit="abc1234") is None
+
+    def test_matching_commits_returns_none(self) -> None:
+        assert warn_git_commit_drift(manifest_git_commit="abc1234", current_git_commit="abc1234") is None
+
+    def test_differing_commits_returns_warning_with_both_hashes(self) -> None:
+        warning = warn_git_commit_drift(manifest_git_commit="oldcommit", current_git_commit="newcommit")
+        assert warning is not None
+        assert "oldcommit" in warning
+        assert "newcommit" in warning
+
+
+class TestPhase7_integration_summary:
+    _BASELINE = "baseline-20260701T020128-be1e880-sub-22"
+    _FAST_PATH = "/scratch/ws128-opt/27/phase5-fast-path.json"
+
+    @staticmethod
+    def _env() -> dict[str, str]:
+        return {
+            "LINUM_BASIC_DCT_KERNEL": "scipy",
+            "TORCHINDUCTOR_CACHE_DIR": "/tmp/inductor",
+            "CUDA_VISIBLE_DEVICES": "0",
+        }
+
+    @staticmethod
+    def _evidence() -> list[str]:
+        return [
+            TestPhase7_integration_summary._BASELINE,
+            "candidate-integration",
+        ]
+
+    def test_required_schema_keys_present(self) -> None:
+        manifest = build_phase7_integration_summary(
+            baseline_id=self._BASELINE,
+            phase5_fast_path_ref=self._FAST_PATH,
+            harness_compare_overall="promote",
+            wallclock_regressed=False,
+            env_snapshot=self._env(),
+            current_git_commit="current123",
+            evidence_artifact_ids=self._evidence(),
+            fast_path_git_commit="current123",
+            timestamp="2026-07-01T12:00:00Z",
+        )
+        assert manifest["schema_version"] == "1"
+        assert manifest["baseline_id"] == self._BASELINE
+        assert manifest["timestamp"] == "2026-07-01T12:00:00Z"
+        assert manifest["phase5_fast_path_ref"] == self._FAST_PATH
+        assert manifest["env_snapshot"] == self._env()
+        assert manifest["git_commit"] == "current123"
+        assert manifest["git_commit_drift_warning"] is None
+        assert manifest["harness_compare_overall"] == "promote"
+        assert manifest["wallclock_regressed"] is False
+        assert manifest["regression_triage"] == "no_regression"
+        assert manifest["evidence_artifact_ids"] == self._evidence()
+        assert "strategy_metadata" not in manifest
+        assert "nextflow_wallclock_ms" not in manifest
+
+    def test_env_snapshot_is_defensive_copy(self) -> None:
+        env = self._env()
+        manifest = build_phase7_integration_summary(
+            baseline_id=self._BASELINE,
+            phase5_fast_path_ref=self._FAST_PATH,
+            harness_compare_overall="promote",
+            wallclock_regressed=False,
+            env_snapshot=env,
+            current_git_commit="current123",
+            evidence_artifact_ids=self._evidence(),
+            timestamp="2026-07-01T12:00:00Z",
+        )
+        assert manifest["env_snapshot"] == env
+        assert manifest["env_snapshot"] is not env
+        env["LINUM_BASIC_DCT_KERNEL"] = "mutated"
+        assert manifest["env_snapshot"]["LINUM_BASIC_DCT_KERNEL"] == "scipy"
+
+    def test_optional_fields_present_when_provided(self) -> None:
+        strategy = {"strategy": "batched", "fork_model": "maxForks_1"}
+        manifest = build_phase7_integration_summary(
+            baseline_id=self._BASELINE,
+            phase5_fast_path_ref=self._FAST_PATH,
+            harness_compare_overall="promote",
+            wallclock_regressed=True,
+            env_snapshot=self._env(),
+            current_git_commit="current123",
+            evidence_artifact_ids=self._evidence(),
+            strategy_metadata=strategy,
+            nextflow_wallclock_ms=1500.0,
+            timestamp="2026-07-01T12:00:00Z",
+        )
+        assert manifest["strategy_metadata"] == strategy
+        assert manifest["nextflow_wallclock_ms"] == 1500.0
+        assert manifest["regression_triage"] == "pipeline_orchestration_issue"
+
+    def test_git_commit_drift_warning_matches_helper(self) -> None:
+        manifest = build_phase7_integration_summary(
+            baseline_id=self._BASELINE,
+            phase5_fast_path_ref=self._FAST_PATH,
+            harness_compare_overall="reject",
+            wallclock_regressed=False,
+            env_snapshot=self._env(),
+            current_git_commit="current123",
+            evidence_artifact_ids=self._evidence(),
+            fast_path_git_commit="frozen456",
+            timestamp="2026-07-01T12:00:00Z",
+        )
+        expected = warn_git_commit_drift(manifest_git_commit="frozen456", current_git_commit="current123")
+        assert manifest["git_commit_drift_warning"] == expected
+        assert manifest["regression_triage"] == diagnose_regression_triage(
+            harness_overall="reject",
+            wallclock_regressed=False,
+        )
 
 
 class TestTileSubsampleRatio:
