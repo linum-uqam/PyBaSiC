@@ -56,6 +56,7 @@ from typing import Any, cast
 
 import numpy as np
 
+from linum_basic._torch_cache import warm_policy_passes
 from linum_basic.benchmark.artifacts import (
     BaselineBundle,
     CandidateArtifact,
@@ -67,7 +68,7 @@ from linum_basic.benchmark.artifacts import (
     write_artifact,
     write_summary_table,
 )
-from linum_basic.benchmark.metadata import RunMetadata, collect_run_metadata
+from linum_basic.benchmark.metadata import RunMetadata, collect_git_commit, collect_run_metadata
 from linum_basic.benchmark.profile import (
     BottleneckReport,
     LeverAttemptTable,
@@ -76,6 +77,7 @@ from linum_basic.benchmark.profile import (
     build_lever_attempt_table,
     build_phase3_handoff_config,
     build_phase5_backlog,
+    build_phase5_fast_path,
 )
 from linum_basic.benchmark.quality import (
     CALIBRATION_POLICY,
@@ -143,6 +145,26 @@ def _precision_metadata() -> dict[str, Any]:
     from linum_basic._alm import last_compile_fallback
 
     return collect_precision_metadata(compile_fallback_reason=last_compile_fallback)
+
+
+def _operator_timing_metadata(
+    telemetry: TelemetryRecord,
+    *,
+    n_z: int,
+    n_tiles: int,
+) -> dict[str, Any]:
+    """Serialize operator-facing per-z fit wall-clock derived from steady_state_ms."""
+    end_to_end_ms = telemetry.steady_state_ms
+    if n_z > 0 and end_to_end_ms is not None:
+        per_z_ms: float | None = end_to_end_ms / float(n_z)
+    else:
+        per_z_ms = None
+    return {
+        "end_to_end_ms": end_to_end_ms,
+        "per_z_ms": per_z_ms,
+        "n_z": n_z,
+        "n_tiles": n_tiles,
+    }
 
 
 def _convergence_metadata(
@@ -533,6 +555,10 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         captured_fits.append(fit)
         return fit
 
+    inductor_warm_passes = warm_policy_passes()
+    for _ in range(inductor_warm_passes):
+        _fit_once()
+
     try:
         telemetry = run_with_phases(
             _fit_once,
@@ -549,7 +575,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
         fit_mod.should_use_batched_cuda = original_batched
 
-    measured_fits = captured_fits[args.warmup :]
+    measured_fits = captured_fits[args.warmup + inductor_warm_passes :]
     if not measured_fits:
         print("fit_mosaic did not produce measured repeats", file=sys.stderr)
         return 1
@@ -580,9 +606,15 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "cuda_available": run_meta.cuda_available,
         "cuda_devices": run_meta.cuda_devices,
         "cache_mode": run_meta.cache_mode,
+        "inductor_warm_passes": inductor_warm_passes,
         "inductor_cache_path": run_meta.inductor_cache_path,
         "fx_graph_cache_enabled": run_meta.fx_graph_cache_enabled,
         "telemetry": _telemetry_metadata(telemetry, run_meta),
+        "operator_timing": _operator_timing_metadata(
+            telemetry,
+            n_z=len(z_indices),
+            n_tiles=mosaic.n_tiles,
+        ),
         "precision": _precision_metadata(),
         "release_gate": strategy.release_gate,
     }
@@ -1021,6 +1053,10 @@ def cmd_candidate(args: argparse.Namespace) -> int:
         captured_fits.append(fit)
         return fit
 
+    inductor_warm_passes = warm_policy_passes()
+    for _ in range(inductor_warm_passes):
+        _fit_once()
+
     try:
         telemetry = run_with_phases(
             _fit_once,
@@ -1037,7 +1073,7 @@ def cmd_candidate(args: argparse.Namespace) -> int:
 
         fit_mod.should_use_batched_cuda = original_batched
 
-    measured_fits = captured_fits[args.warmup :]
+    measured_fits = captured_fits[args.warmup + inductor_warm_passes :]
     if not measured_fits:
         print("fit_mosaic did not produce measured repeats", file=sys.stderr)
         return 1
@@ -1126,9 +1162,15 @@ def cmd_candidate(args: argparse.Namespace) -> int:
             "cuda_available": run_meta.cuda_available,
             "cuda_devices": run_meta.cuda_devices,
             "cache_mode": run_meta.cache_mode,
+            "inductor_warm_passes": inductor_warm_passes,
             "inductor_cache_path": run_meta.inductor_cache_path,
             "fx_graph_cache_enabled": run_meta.fx_graph_cache_enabled,
             "telemetry": candidate_telemetry,
+            "operator_timing": _operator_timing_metadata(
+                telemetry,
+                n_z=len(z_indices),
+                n_tiles=mosaic.n_tiles,
+            ),
             "precision": _precision_metadata(),
             "convergence": convergence_meta,
             "speed_verdict": speed_verdict,
@@ -1337,6 +1379,32 @@ def _ranked_levers_from_report(payload: dict[str, Any]) -> tuple[RankedLever, ..
     return tuple(levers)
 
 
+def _resolve_code_path_flags() -> dict[str, Any]:
+    """Read active code-path lever env flags for the fast-path manifest."""
+    from linum_basic.backend import read_dct_kernel_mode
+
+    raw_compile = os.environ.get("LINUM_BASIC_ALM_COMPILE_MODE", "default").strip().lower()
+    compile_mode = "default" if raw_compile in ("", "default") else raw_compile
+    return {
+        "dct_kernel": read_dct_kernel_mode(),
+        "compile_mode": compile_mode,
+        "inductor_warm_passes": warm_policy_passes(),
+    }
+
+
+def _promoted_lever_stack(attempt_table: LeverAttemptTable) -> list[str]:
+    """Return ordered promoted lever ids from an attempt table."""
+    return [row.lever_id for row in attempt_table.rows if row.overall == "promote"]
+
+
+def _fast_path_end_to_end_ms(attempt_table: LeverAttemptTable) -> float | None:
+    """Return steady-state ms for the last promoted lever attempt, if any."""
+    promoted_rows = [row for row in attempt_table.rows if row.overall == "promote"]
+    if not promoted_rows:
+        return None
+    return promoted_rows[-1].steady_state_ms
+
+
 def cmd_optimize(args: argparse.Namespace) -> int:
     """Aggregate lever candidate artifacts into D-10 JSON deliverables without fit."""
     output_dir = Path(args.output_dir)
@@ -1400,20 +1468,36 @@ def cmd_optimize(args: argparse.Namespace) -> int:
         attempt_table.stacked_overrides,
         baseline_id=baseline.baseline_id,
     )
+    lever_stack = _promoted_lever_stack(attempt_table)
+    evidence_ids = [baseline.baseline_id]
+    evidence_ids.extend(row.artifact_id for row in attempt_table.rows if row.overall == "promote")
+    fast_path = build_phase5_fast_path(
+        attempt_table.stacked_overrides,
+        baseline_id=baseline.baseline_id,
+        lever_stack=lever_stack,
+        code_path_flags=_resolve_code_path_flags(),
+        evidence_artifact_ids=evidence_ids,
+        git_commit=collect_git_commit(),
+        stack_speed_ratio=attempt_table.stack_speed_ratio,
+        end_to_end_ms=_fast_path_end_to_end_ms(attempt_table),
+    )
 
     table_path = output_dir / "lever-attempt-table.json"
     backlog_path = output_dir / "phase5-backlog.json"
     handoff_path = output_dir / "phase3-handoff-config.json"
+    fast_path_path = output_dir / "phase5-fast-path.json"
     table_path.write_text(
         json.dumps(_lever_attempt_table_to_dict(attempt_table), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     backlog_path.write_text(json.dumps(backlog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     handoff_path.write_text(json.dumps(handoff, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    fast_path_path.write_text(json.dumps(fast_path, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
         f"Wrote lever artifacts to {output_dir} "
         f"(rows={len(attempt_table.rows)}, backlog={len(backlog['entries'])}, "
-        f"promoted_keys={len(handoff['stacked_overrides'])})"
+        f"promoted_keys={len(handoff['stacked_overrides'])}, "
+        f"no_optimization={fast_path['no_optimization']})"
     )
     return 0
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__all__ = ["configure_torch_inductor_cache", "enable_fx_graph_cache"]
+__all__ = ["configure_torch_inductor_cache", "enable_fx_graph_cache", "warm_policy_passes"]
 
 
 def configure_torch_inductor_cache(cache_dir: str | Path | None = None) -> Path:
@@ -37,6 +37,27 @@ def configure_torch_inductor_cache(cache_dir: str | Path | None = None) -> Path:
     os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(path))
     os.environ.setdefault("TORCHINDUCTOR_FX_GRAPH_CACHE", "1")
     return path
+
+
+def warm_policy_passes() -> int:
+    """Return extra untimed warm fits before measured benchmark repeats.
+
+    Reads ``LINUM_BASIC_INDUCTOR_WARM_PASSES`` once per call. Unset or invalid
+    values default to ``0`` (current production behavior).
+
+    Returns
+    -------
+    int
+        Number of extra warm fits to run before timed repeats.
+    """
+    raw = os.environ.get("LINUM_BASIC_INDUCTOR_WARM_PASSES", "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return max(0, value)
 
 
 def enable_fx_graph_cache() -> None:

@@ -30,6 +30,9 @@ from linum_basic.benchmark.profile import (
     build_lever_attempt_table,
     build_phase3_handoff_config,
     build_phase5_backlog,
+    build_phase5_fast_path,
+    build_phase5_optimization_report,
+    compute_stack_speed_ratio,
 )
 from linum_basic.benchmark.quality import (
     CALIBRATION_POLICY,
@@ -103,6 +106,8 @@ __all__ = [
     "build_lever_attempt_table",
     "build_phase3_handoff_config",
     "build_phase5_backlog",
+    "build_phase5_fast_path",
+    "build_phase5_optimization_report",
     "build_sweep_table",
     "calibrate_tolerances",
     "collect_compile_cache_info",
@@ -113,6 +118,7 @@ __all__ = [
     "collect_torch_cuda_info",
     "compute_deltas",
     "compute_quality_report",
+    "compute_stack_speed_ratio",
     "evaluate_quality_gate",
     "evaluate_sweep_adoption",
     "load_overrides",

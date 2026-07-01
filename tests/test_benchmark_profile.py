@@ -17,6 +17,7 @@ from linum_basic.benchmark.profile import (
     build_lever_attempt_table,
     build_phase3_handoff_config,
     build_phase5_backlog,
+    build_phase5_fast_path,
 )
 from linum_basic.core import BaSiC
 
@@ -198,6 +199,92 @@ class TestBuildLeverAttemptTable:
         assert table.stacked_overrides == {"convergence_check_every": 20}
 
 
+class TestStackSpeedRatio:
+    def test_stack_speed_ratio_against_phase5_baseline(self) -> None:
+        from linum_basic.benchmark.artifacts import (
+            SCHEMA_VERSION,
+            BaselineBundle,
+            CandidateArtifact,
+        )
+        from linum_basic.benchmark.quality import METRIC_DEFINITION_VERSION
+
+        baseline_id = "baseline-20260630T163351-e7c47a4-sub-22"
+        baseline = BaselineBundle(
+            baseline_id=baseline_id,
+            uuid="550e8400-e29b-41d4-a716-446655440000",
+            schema_version=SCHEMA_VERSION,
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            subject_id="sub22",
+            run_label="production",
+            input_fingerprint="sha256:deadbeef",
+            z_indices=[0, 1],
+            array_shape=[2, 64, 64],
+            tile_shape=[64, 64],
+            strategy_params={"working_size": 128},
+            metrics_rows=[{"z": 0, "seam_l1": 0.1, "seam_curvature": 0.02}],
+            metrics_aggregates={"seam_l1": 0.1, "seam_curvature": 0.02},
+            repeats=1,
+            metadata={"telemetry": {"steady_state_ms": 200.0}},
+            timestamp="2026-06-30T16:33:51Z",
+        )
+
+        def _candidate(
+            *, candidate_id: str, overall: str, overrides: dict[str, object], steady_state_ms: float
+        ) -> CandidateArtifact:
+            return CandidateArtifact(
+                candidate_id=candidate_id,
+                baseline_id=baseline_id,
+                schema_version=SCHEMA_VERSION,
+                metric_definition_version=METRIC_DEFINITION_VERSION,
+                subject_id="sub22",
+                run_label=candidate_id,
+                input_fingerprint="sha256:deadbeef",
+                z_indices=[0, 1],
+                array_shape=[2, 64, 64],
+                tile_shape=[64, 64],
+                strategy_params={"working_size": 128, **overrides},
+                metrics_rows=[{"z": 0, "seam_l1": 0.1, "seam_curvature": 0.02}],
+                metrics_aggregates={"seam_l1": 0.1, "seam_curvature": 0.02},
+                repeats=1,
+                metadata={
+                    "telemetry": {"steady_state_ms": steady_state_ms},
+                    "quality_verdict": {"passed": overall == "promote", "failures": []},
+                    "overall": overall,
+                    "overrides_applied": overrides,
+                },
+                environment={},
+                timestamp="2026-06-30T17:00:00Z",
+            )
+
+        candidates = [
+            _candidate(
+                candidate_id="candidate-sync",
+                overall="promote",
+                overrides={"convergence_check_every": 20},
+                steady_state_ms=100.0,
+            ),
+        ]
+        ranked_levers = (RankedLever("sync-cadence", "linum_basic/_alm.py", 1, "medium", "notes"),)
+        stacked_overrides = {"convergence_check_every": 20}
+        stack_candidate = _candidate(
+            candidate_id="candidate-stack",
+            overall="promote",
+            overrides=stacked_overrides,
+            steady_state_ms=80.0,
+        )
+
+        table = build_lever_attempt_table(
+            baseline,
+            candidates,
+            ranked_levers=ranked_levers,
+            stack_candidate=stack_candidate,
+        )
+
+        assert table.baseline_id == baseline_id
+        assert table.stacked_overrides == stacked_overrides
+        assert table.stack_speed_ratio == 200.0 / 80.0
+
+
 class TestBuildPhase5Backlog:
     def test_all_reject_table_returns_non_empty_backlog_with_deferred_inductor(self) -> None:
         from linum_basic.benchmark.artifacts import (
@@ -277,11 +364,162 @@ class TestBuildPhase5Backlog:
         rejected_ids = {entry["lever_id"] for entry in backlog["entries"] if entry["status"] == "rejected"}
         assert "sync-cadence" in rejected_ids
         assert "reweighting-tolerance" in rejected_ids
-        deferred = [entry for entry in backlog["entries"] if entry["lever_id"] == "inductor-cache-warm-policy"]
-        assert len(deferred) == 1
-        assert deferred[0]["status"] == "deferred"
-        assert deferred[0]["deferral_reason"]
-        assert "Phase 5" in deferred[0]["deferral_reason"]
+        deferred_ids = {entry["lever_id"] for entry in backlog["entries"] if entry["status"] == "deferred"}
+        assert "inductor-cache-warm-policy" not in deferred_ids
+
+
+class TestCodePathLeverCatalog:
+    def test_code_path_levers_registered_with_target_files(self) -> None:
+        from linum_basic.benchmark.profile import _LEVER_DEFINITIONS
+
+        catalog = {lever_id: (target, description) for lever_id, target, _cost, description in _LEVER_DEFINITIONS}
+        assert catalog["dct-kernel-tuning"] == (
+            "linum_basic/backend.py",
+            "Optimize DCT matmul path inside compiled ALM step.",
+        )
+        assert catalog["compile-shape-stability"][0] == "linum_basic/_alm.py"
+        assert catalog["compile-shape-stability"][1]
+        assert catalog["inductor-cache-warm-policy"] == (
+            "linum_basic/_torch_cache.py",
+            "Extra untimed warm fits before measured benchmark repeats for steady-state timing.",
+        )
+
+
+class TestBuildPhase5OptimizationReport:
+    def test_ranked_report_includes_per_lever_and_stack_metrics(self) -> None:
+        from linum_basic.benchmark import build_phase5_optimization_report
+        from linum_basic.benchmark.artifacts import (
+            SCHEMA_VERSION,
+            BaselineBundle,
+            CandidateArtifact,
+        )
+        from linum_basic.benchmark.quality import METRIC_DEFINITION_VERSION
+
+        baseline_id = "baseline-20260630T163351-e7c47a4-sub-22"
+        baseline = BaselineBundle(
+            baseline_id=baseline_id,
+            uuid="550e8400-e29b-41d4-a716-446655440000",
+            schema_version=SCHEMA_VERSION,
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            subject_id="sub22",
+            run_label="production",
+            input_fingerprint="sha256:deadbeef",
+            z_indices=[0, 1],
+            array_shape=[2, 64, 64],
+            tile_shape=[64, 64],
+            strategy_params={"working_size": 128},
+            metrics_rows=[{"z": 0, "seam_l1": 0.1, "seam_curvature": 0.02}],
+            metrics_aggregates={"seam_l1": 0.1, "seam_curvature": 0.02},
+            repeats=1,
+            metadata={"telemetry": {"steady_state_ms": 200.0}},
+            timestamp="2026-06-30T16:33:51Z",
+        )
+
+        def _candidate(
+            *,
+            candidate_id: str,
+            overall: str,
+            overrides: dict[str, object],
+            steady_state_ms: float,
+            failures: list[str] | None = None,
+        ) -> CandidateArtifact:
+            return CandidateArtifact(
+                candidate_id=candidate_id,
+                baseline_id=baseline_id,
+                schema_version=SCHEMA_VERSION,
+                metric_definition_version=METRIC_DEFINITION_VERSION,
+                subject_id="sub22",
+                run_label=candidate_id,
+                input_fingerprint="sha256:deadbeef",
+                z_indices=[0, 1],
+                array_shape=[2, 64, 64],
+                tile_shape=[64, 64],
+                strategy_params={"working_size": 128, **overrides},
+                metrics_rows=[{"z": 0, "seam_l1": 0.1, "seam_curvature": 0.02}],
+                metrics_aggregates={"seam_l1": 0.1, "seam_curvature": 0.02},
+                repeats=1,
+                metadata={
+                    "telemetry": {"steady_state_ms": steady_state_ms},
+                    "quality_verdict": {
+                        "passed": overall == "promote",
+                        "failures": failures or [],
+                    },
+                    "overall": overall,
+                    "overrides_applied": overrides,
+                },
+                environment={},
+                timestamp="2026-06-30T17:00:00Z",
+            )
+
+        candidates = [
+            _candidate(
+                candidate_id="candidate-sync",
+                overall="promote",
+                overrides={"convergence_check_every": 20},
+                steady_state_ms=100.0,
+            ),
+            _candidate(
+                candidate_id="candidate-reweight",
+                overall="reject",
+                overrides={"reweighting_tolerance": 0.005},
+                steady_state_ms=150.0,
+                failures=["seam_l1"],
+            ),
+        ]
+        ranked_levers = (
+            RankedLever("sync-cadence", "linum_basic/_alm.py", 1, "medium", "sync gate notes"),
+            RankedLever("reweighting-tolerance", "linum_basic/core.py", 2, "medium", "reweight notes"),
+        )
+        stack_candidate = _candidate(
+            candidate_id="candidate-stack",
+            overall="promote",
+            overrides={"convergence_check_every": 20},
+            steady_state_ms=80.0,
+        )
+        table = build_lever_attempt_table(
+            baseline,
+            candidates,
+            ranked_levers=ranked_levers,
+            stack_candidate=stack_candidate,
+        )
+        bottleneck = build_bottleneck_report({"key_averages": [{"name": "aten::mm", "self_cuda_time_total": 500.0}]})
+
+        report = build_phase5_optimization_report(
+            table,
+            bottleneck_report=bottleneck,
+        )
+
+        assert report["schema_version"] == "1"
+        assert report["baseline_id"] == baseline_id
+        assert report["stack_speed_ratio"] == 200.0 / 80.0
+        assert report["stacked_overrides"] == {"convergence_check_every": 20}
+        assert "entry_class_coverage" in report
+        assert set(report["entry_class_coverage"]) >= {
+            "convergence-policy",
+            "sync-cadence",
+            "tile-subsampling",
+            "precision-tf32",
+            "chunking",
+            "compile-shape",
+        }
+
+        entries = report["entries"]
+        assert len(entries) == 2
+        assert entries[0]["lever_id"] == "sync-cadence"
+        assert entries[0]["target_file"] == "linum_basic/_alm.py"
+        assert entries[0]["speed_ratio"] == 2.0
+        assert entries[0]["quality_passed"] is True
+        assert entries[0]["seam_l1_passed"] is True
+        assert entries[0]["seam_curvature_passed"] is True
+        assert entries[0]["overall"] == "promote"
+        assert entries[0]["bottleneck_evidence"]
+
+        reject_entry = entries[1]
+        assert reject_entry["lever_id"] == "reweighting-tolerance"
+        assert reject_entry["overall"] == "reject"
+        assert reject_entry["quality_passed"] is False
+        assert reject_entry["seam_l1_passed"] is False
+        assert reject_entry["reject_rationale"]
 
 
 class TestBuildPhase3HandoffConfig:
@@ -298,6 +536,65 @@ class TestBuildPhase3HandoffConfig:
             "reweighting_tolerance": 0.005,
         }
         assert config["timestamp"] == "2026-06-30T18:00:00Z"
+
+
+class TestBuildPhase5FastPath:
+    def test_promote_case_carries_stack_and_code_path_flags(self) -> None:
+        manifest = build_phase5_fast_path(
+            {"convergence_check_every": 20},
+            baseline_id="baseline-20260630T163351-e7c47a4-sub-22",
+            lever_stack=["sync-cadence"],
+            code_path_flags={
+                "dct_kernel": "tuned",
+                "compile_mode": "reduce-overhead",
+                "inductor_warm_passes": 2,
+            },
+            evidence_artifact_ids=[
+                "baseline-20260630T163351-e7c47a4-sub-22",
+                "candidate-sync",
+            ],
+            git_commit="abc1234",
+            stack_speed_ratio=2.0,
+            end_to_end_ms=100.0,
+            timestamp="2026-06-30T18:00:00Z",
+        )
+        assert manifest["schema_version"] == "1"
+        assert manifest["working_size"] == 128
+        assert manifest["baseline_id"] == "baseline-20260630T163351-e7c47a4-sub-22"
+        assert manifest["stacked_overrides"] == {"convergence_check_every": 20}
+        assert manifest["lever_stack"] == ["sync-cadence"]
+        assert manifest["code_path_flags"] == {
+            "dct_kernel": "tuned",
+            "compile_mode": "reduce-overhead",
+            "inductor_warm_passes": 2,
+        }
+        assert manifest["evidence_artifact_ids"] == [
+            "baseline-20260630T163351-e7c47a4-sub-22",
+            "candidate-sync",
+        ]
+        assert manifest["git_commit"] == "abc1234"
+        assert manifest["stack_speed_ratio"] == 2.0
+        assert manifest["end_to_end_ms"] == 100.0
+        assert manifest["no_optimization"] is False
+        assert manifest["timestamp"] == "2026-06-30T18:00:00Z"
+
+    def test_zero_promote_fallback_uses_production_defaults(self) -> None:
+        manifest = build_phase5_fast_path(
+            {},
+            baseline_id="baseline-20260630T163351-e7c47a4-sub-22",
+            lever_stack=[],
+            code_path_flags=None,
+            evidence_artifact_ids=["baseline-20260630T163351-e7c47a4-sub-22"],
+            timestamp="2026-06-30T18:00:00Z",
+        )
+        assert manifest["stacked_overrides"] == {}
+        assert manifest["lever_stack"] == []
+        assert manifest["no_optimization"] is True
+        assert manifest["code_path_flags"] == {
+            "dct_kernel": "default",
+            "compile_mode": "default",
+            "inductor_warm_passes": 0,
+        }
 
 
 class TestTileSubsampleRatio:

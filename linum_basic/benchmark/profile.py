@@ -39,6 +39,9 @@ __all__ = [
     "build_lever_attempt_table",
     "build_phase3_handoff_config",
     "build_phase5_backlog",
+    "build_phase5_fast_path",
+    "build_phase5_optimization_report",
+    "compute_stack_speed_ratio",
 ]
 
 _LEVER_DEFINITIONS: tuple[tuple[str, str, str, str], ...] = (
@@ -67,6 +70,18 @@ _LEVER_DEFINITIONS: tuple[tuple[str, str, str, str], ...] = (
         "Optimize DCT matmul path inside compiled ALM step.",
     ),
     (
+        "compile-shape-stability",
+        "linum_basic/_alm.py",
+        "medium",
+        "Stabilize torch.compile guards and mu tensor shape to avoid recompile storms.",
+    ),
+    (
+        "inductor-cache-warm-policy",
+        "linum_basic/_torch_cache.py",
+        "low",
+        "Extra untimed warm fits before measured benchmark repeats for steady-state timing.",
+    ),
+    (
         "tile-subsampling",
         "linum_basic/tuning.py",
         "high",
@@ -77,8 +92,10 @@ _LEVER_DEFINITIONS: tuple[tuple[str, str, str, str], ...] = (
 _PRIMARY_LEVER_ORDER: dict[BottleneckClass, tuple[str, ...]] = {
     BOTTLENECK_COMPUTE: (
         "dct-kernel-tuning",
+        "inductor-cache-warm-policy",
         "sync-cadence",
         "compile-surfacing",
+        "compile-shape-stability",
         "reweighting-tolerance",
         "tile-subsampling",
     ),
@@ -86,18 +103,24 @@ _PRIMARY_LEVER_ORDER: dict[BottleneckClass, tuple[str, ...]] = {
         "sync-cadence",
         "reweighting-tolerance",
         "dct-kernel-tuning",
+        "inductor-cache-warm-policy",
         "compile-surfacing",
+        "compile-shape-stability",
         "tile-subsampling",
     ),
     BOTTLENECK_MEMORY_BANDWIDTH: (
         "tile-subsampling",
         "sync-cadence",
         "dct-kernel-tuning",
+        "inductor-cache-warm-policy",
         "compile-surfacing",
+        "compile-shape-stability",
         "reweighting-tolerance",
     ),
     BOTTLENECK_COMPILE_SHAPE: (
         "compile-surfacing",
+        "compile-shape-stability",
+        "inductor-cache-warm-policy",
         "sync-cadence",
         "dct-kernel-tuning",
         "reweighting-tolerance",
@@ -107,7 +130,9 @@ _PRIMARY_LEVER_ORDER: dict[BottleneckClass, tuple[str, ...]] = {
         "tile-subsampling",
         "sync-cadence",
         "dct-kernel-tuning",
+        "inductor-cache-warm-policy",
         "compile-surfacing",
+        "compile-shape-stability",
         "reweighting-tolerance",
     ),
 }
@@ -419,6 +444,8 @@ class LeverAttemptRow:
         Baseline steady-state ms divided by candidate steady-state ms.
     overrides_applied : dict
         Allowlisted overrides applied for this lever attempt.
+    quality_failures : tuple of str
+        First-class quality metrics that failed the gate for this attempt.
     """
 
     lever_id: str
@@ -430,6 +457,7 @@ class LeverAttemptRow:
     steady_state_ms: float
     speed_ratio: float
     overrides_applied: dict[str, Any]
+    quality_failures: tuple[str, ...]
 
     def __init__(
         self,
@@ -442,6 +470,7 @@ class LeverAttemptRow:
         steady_state_ms: float,
         speed_ratio: float,
         overrides_applied: dict[str, Any],
+        quality_failures: tuple[str, ...] = (),
     ) -> None:
         """Initialise one lever attempt row."""
         object.__setattr__(self, "lever_id", lever_id)
@@ -453,6 +482,7 @@ class LeverAttemptRow:
         object.__setattr__(self, "steady_state_ms", steady_state_ms)
         object.__setattr__(self, "speed_ratio", speed_ratio)
         object.__setattr__(self, "overrides_applied", dict(overrides_applied))
+        object.__setattr__(self, "quality_failures", quality_failures)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -469,12 +499,15 @@ class LeverAttemptTable:
         Attempt rows ordered by ``ranked_levers`` priority.
     stacked_overrides : dict
         Cumulative overrides from promoted attempts (D-11 prep).
+    stack_speed_ratio : float or None
+        Cumulative stack speed ratio vs baseline when a stack candidate is supplied (D-04).
     """
 
     schema_version: str
     baseline_id: str
     rows: tuple[LeverAttemptRow, ...]
     stacked_overrides: dict[str, Any]
+    stack_speed_ratio: float | None
 
     def __init__(
         self,
@@ -482,12 +515,14 @@ class LeverAttemptTable:
         baseline_id: str,
         rows: tuple[LeverAttemptRow, ...],
         stacked_overrides: dict[str, Any],
+        stack_speed_ratio: float | None = None,
     ) -> None:
         """Initialise a lever attempt table."""
         object.__setattr__(self, "schema_version", schema_version)
         object.__setattr__(self, "baseline_id", baseline_id)
         object.__setattr__(self, "rows", rows)
         object.__setattr__(self, "stacked_overrides", dict(stacked_overrides))
+        object.__setattr__(self, "stack_speed_ratio", stack_speed_ratio)
 
 
 def _lever_attempt_steady_state_ms(metadata: dict[str, Any], *, artifact_label: str) -> float:
@@ -505,6 +540,55 @@ def _lever_attempt_speed_ratio(*, baseline_ms: float, candidate_ms: float) -> fl
     if candidate_ms <= 0:
         return float("inf") if baseline_ms > 0 else 1.0
     return baseline_ms / candidate_ms
+
+
+def compute_stack_speed_ratio(*, baseline_ms: float, candidate_ms: float) -> float:
+    """Compute cumulative stack speed ratio (baseline_ms / stack_candidate_ms).
+
+    Uses the same convention as per-lever ``speed_ratio`` in ``LeverAttemptRow``.
+
+    Parameters
+    ----------
+    baseline_ms : float
+        Steady-state baseline wall time in milliseconds.
+    candidate_ms : float
+        Steady-state stack-candidate wall time in milliseconds.
+
+    Returns
+    -------
+    float
+        Ratio ``baseline_ms / candidate_ms`` (values above 1.0 mean faster).
+    """
+    return _lever_attempt_speed_ratio(baseline_ms=baseline_ms, candidate_ms=candidate_ms)
+
+
+def compute_stack_speed_ratio_for_artifacts(
+    baseline: BaselineBundle,
+    stack_candidate: CandidateArtifact,
+) -> float:
+    """Compute stack speed ratio for a stack candidate against a baseline bundle.
+
+    Parameters
+    ----------
+    baseline : BaselineBundle
+        Reference baseline artifact bundle.
+    stack_candidate : CandidateArtifact
+        Stack candidate whose ``baseline_id`` must match *baseline*.
+
+    Returns
+    -------
+    float
+        Cumulative stack speed ratio from steady-state telemetry metadata.
+    """
+    if stack_candidate.baseline_id != baseline.baseline_id:
+        msg = f"stack candidate baseline_id {stack_candidate.baseline_id!r} does not match baseline {baseline.baseline_id!r}"
+        raise ValueError(msg)
+    baseline_ms = _lever_attempt_steady_state_ms(baseline.metadata, artifact_label=baseline.baseline_id)
+    stack_ms = _lever_attempt_steady_state_ms(
+        stack_candidate.metadata,
+        artifact_label=stack_candidate.candidate_id,
+    )
+    return compute_stack_speed_ratio(baseline_ms=baseline_ms, candidate_ms=stack_ms)
 
 
 def _resolve_overrides_applied(
@@ -531,6 +615,7 @@ def build_lever_attempt_table(
     *,
     ranked_levers: Sequence[RankedLever],
     speed_ratio_threshold: float = SPEED_RATIO_THRESHOLD,
+    stack_candidate: CandidateArtifact | None = None,
 ) -> LeverAttemptTable:
     """Build a ranked lever attempt table from saved candidate artifacts.
 
@@ -544,11 +629,13 @@ def build_lever_attempt_table(
         Ranked levers from the bottleneck report; paired by index with *candidates*.
     speed_ratio_threshold : float, optional
         Minimum speed ratio for ``speed_passed`` (default 1.30).
+    stack_candidate : CandidateArtifact or None, optional
+        Combined promoted-override stack candidate for cumulative speed ratio (D-04).
 
     Returns
     -------
     LeverAttemptTable
-        Promote/reject rows and cumulative stacked overrides.
+        Promote/reject rows, cumulative stacked overrides, and optional stack speed ratio.
     """
     if len(candidates) != len(ranked_levers):
         msg = f"candidate count ({len(candidates)}) must match ranked_levers count ({len(ranked_levers)})"
@@ -574,6 +661,8 @@ def build_lever_attempt_table(
         )
         speed_ratio = _lever_attempt_speed_ratio(baseline_ms=baseline_ms, candidate_ms=steady_state_ms)
         overrides_applied = _resolve_overrides_applied(baseline, candidate)
+        raw_failures = quality_verdict.get("failures", ())
+        quality_failures = tuple(str(metric) for metric in raw_failures) if isinstance(raw_failures, list) else ()
 
         rows.append(
             LeverAttemptRow(
@@ -586,27 +675,28 @@ def build_lever_attempt_table(
                 steady_state_ms=steady_state_ms,
                 speed_ratio=speed_ratio,
                 overrides_applied=overrides_applied,
+                quality_failures=quality_failures,
             )
         )
         if str(overall) == "promote":
             stacked_overrides.update(overrides_applied)
+
+    stack_speed_ratio: float | None = None
+    if stack_candidate is not None:
+        stack_speed_ratio = compute_stack_speed_ratio_for_artifacts(baseline, stack_candidate)
 
     return LeverAttemptTable(
         schema_version="1",
         baseline_id=baseline.baseline_id,
         rows=tuple(rows),
         stacked_overrides=stacked_overrides,
+        stack_speed_ratio=stack_speed_ratio,
     )
 
 
-PHASE5_DEFERRED_LEVER_IDS: frozenset[str] = frozenset({"inductor-cache-warm-policy"})
+PHASE5_DEFERRED_LEVER_IDS: frozenset[str] = frozenset()
 
-PHASE5_DEFERRAL_REASONS: dict[str, str] = {
-    "inductor-cache-warm-policy": (
-        "Deferred to Phase 5 ALGO-01: inductor cache warm-start policy was not "
-        "attempted in Phase 3 (RESEARCH priority 5 unless profiler re-ranks)."
-    ),
-}
+PHASE5_DEFERRAL_REASONS: dict[str, str] = {}
 
 
 def _backlog_rationale_for_row(row: LeverAttemptRow) -> str:
@@ -684,6 +774,113 @@ def build_phase5_backlog(
     }
 
 
+ALGO05_ENTRY_CLASSES: dict[str, tuple[str, ...]] = {
+    "convergence-policy": ("reweighting-tolerance",),
+    "sync-cadence": ("sync-cadence",),
+    "tile-subsampling": ("tile-subsampling",),
+    "precision-tf32": ("compile-surfacing",),
+    "chunking": ("tile-subsampling",),
+    "compile-shape": (
+        "dct-kernel-tuning",
+        "compile-shape-stability",
+        "compile-surfacing",
+        "inductor-cache-warm-policy",
+    ),
+}
+
+
+def _lever_target_file(lever_id: str) -> str:
+    catalog = {entry[0]: entry[1] for entry in _LEVER_DEFINITIONS}
+    return catalog[lever_id]
+
+
+def _metric_gate_passed(failures: tuple[str, ...], metric: str) -> bool:
+    return metric not in failures
+
+
+def _bottleneck_evidence_for_lever(lever_id: str, report: BottleneckReport) -> str | None:
+    for lever in report.ranked_levers:
+        if lever.lever_id == lever_id:
+            return f"primary_limit={report.primary_limit}; ranked priority {lever.priority}; {lever.gate_notes}"
+    return None
+
+
+def _algo05_entry_class_coverage(attempted_ids: set[str]) -> dict[str, dict[str, Any]]:
+    coverage: dict[str, dict[str, Any]] = {}
+    for entry_class, lever_ids in ALGO05_ENTRY_CLASSES.items():
+        attempted = [lever_id for lever_id in lever_ids if lever_id in attempted_ids]
+        coverage[entry_class] = {
+            "lever_ids": list(lever_ids),
+            "attempted": attempted,
+            "carried_from_backlog": [lever_id for lever_id in lever_ids if lever_id not in attempted_ids],
+        }
+    return coverage
+
+
+def build_phase5_optimization_report(
+    attempt_table: LeverAttemptTable,
+    *,
+    bottleneck_report: BottleneckReport | None = None,
+    stack_speed_ratio: float | None = None,
+) -> dict[str, Any]:
+    """Build ALGO-01 ranked optimization report from a lever attempt table.
+
+    Parameters
+    ----------
+    attempt_table : LeverAttemptTable
+        Promote/reject rows from GPU lever attempts.
+    bottleneck_report : BottleneckReport or None, optional
+        Refreshed profiler bottleneck report for promoted-row evidence (D-16).
+    stack_speed_ratio : float or None, optional
+        Cumulative stack ratio override; defaults to ``attempt_table.stack_speed_ratio``.
+
+    Returns
+    -------
+    dict
+        Ranked per-lever optimization evidence with quality and speed metrics.
+    """
+    resolved_stack_ratio = stack_speed_ratio
+    if resolved_stack_ratio is None:
+        resolved_stack_ratio = attempt_table.stack_speed_ratio
+
+    attempted_ids = {row.lever_id for row in attempt_table.rows}
+    entries: list[dict[str, Any]] = []
+
+    for rank, row in enumerate(attempt_table.rows, start=1):
+        overall = row.overall
+        if overall == "promote" and not row.quality_passed:
+            overall = "reject"
+
+        entry: dict[str, Any] = {
+            "rank": rank,
+            "lever_id": row.lever_id,
+            "target_file": _lever_target_file(row.lever_id),
+            "artifact_id": row.artifact_id,
+            "speed_ratio": row.speed_ratio,
+            "steady_state_ms": row.steady_state_ms,
+            "quality_passed": row.quality_passed,
+            "seam_l1_passed": _metric_gate_passed(row.quality_failures, "seam_l1"),
+            "seam_curvature_passed": _metric_gate_passed(row.quality_failures, "seam_curvature"),
+            "speed_passed": row.speed_passed,
+            "overall": overall,
+            "overrides_applied": dict(row.overrides_applied),
+        }
+        if overall == "promote" and bottleneck_report is not None:
+            entry["bottleneck_evidence"] = _bottleneck_evidence_for_lever(row.lever_id, bottleneck_report)
+        if overall != "promote":
+            entry["reject_rationale"] = _backlog_rationale_for_row(row)
+        entries.append(entry)
+
+    return {
+        "schema_version": "1",
+        "baseline_id": attempt_table.baseline_id,
+        "stack_speed_ratio": resolved_stack_ratio,
+        "stacked_overrides": dict(attempt_table.stacked_overrides),
+        "entry_class_coverage": _algo05_entry_class_coverage(attempted_ids),
+        "entries": entries,
+    }
+
+
 def build_phase3_handoff_config(
     promoted_overrides: dict[str, Any],
     *,
@@ -715,3 +912,78 @@ def build_phase3_handoff_config(
         "timestamp": timestamp or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "stacked_overrides": dict(promoted_overrides),
     }
+
+
+DEFAULT_CODE_PATH_FLAGS: dict[str, Any] = {
+    "dct_kernel": "default",
+    "compile_mode": "default",
+    "inductor_warm_passes": 0,
+}
+
+
+def build_phase5_fast_path(
+    promoted_overrides: dict[str, Any],
+    *,
+    baseline_id: str,
+    lever_stack: Sequence[str],
+    code_path_flags: dict[str, Any] | None = None,
+    evidence_artifact_ids: Sequence[str],
+    git_commit: str | None = None,
+    stack_speed_ratio: float | None = None,
+    end_to_end_ms: float | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Build frozen Phase 5 fast-path manifest for Phase 6/7 deploy (ALGO-04).
+
+    Parameters
+    ----------
+    promoted_overrides : dict
+        Cumulative allowlisted overrides from promoted lever attempts.
+    baseline_id : str
+        Phase 1 ws=128 baseline bundle identifier (D-12).
+    lever_stack : sequence of str
+        Ordered promoted lever ids from the winning stack (D-13).
+    code_path_flags : dict or None, optional
+        Active code-path lever settings; production defaults when omitted.
+    evidence_artifact_ids : sequence of str
+        Baseline and candidate artifact ids for audit traceability (D-14).
+    git_commit : str or None, optional
+        Git commit hash captured at manifest freeze time.
+    stack_speed_ratio : float or None, optional
+        Cumulative stack speed ratio vs baseline when measured.
+    end_to_end_ms : float or None, optional
+        End-to-end steady-state timing for the winning stack candidate.
+    timestamp : str or None, optional
+        ISO-8601 timestamp; defaults to current UTC when omitted.
+
+    Returns
+    -------
+    dict
+        ``phase5-fast-path.json`` payload with params, code-path flags, and
+        ``no_optimization=true`` when no levers promoted.
+    """
+    from datetime import UTC, datetime
+
+    no_optimization = not promoted_overrides and not lever_stack
+    resolved_flags = dict(DEFAULT_CODE_PATH_FLAGS)
+    if code_path_flags is not None:
+        resolved_flags.update(code_path_flags)
+
+    manifest: dict[str, Any] = {
+        "schema_version": "1",
+        "working_size": 128,
+        "baseline_id": baseline_id,
+        "timestamp": timestamp or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "stacked_overrides": dict(promoted_overrides),
+        "lever_stack": list(lever_stack),
+        "code_path_flags": resolved_flags,
+        "evidence_artifact_ids": list(evidence_artifact_ids),
+        "no_optimization": no_optimization,
+    }
+    if git_commit is not None:
+        manifest["git_commit"] = git_commit
+    if stack_speed_ratio is not None:
+        manifest["stack_speed_ratio"] = stack_speed_ratio
+    if end_to_end_ms is not None:
+        manifest["end_to_end_ms"] = end_to_end_ms
+    return manifest

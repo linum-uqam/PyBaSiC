@@ -7,6 +7,8 @@ acceptable tolerance.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import numpy as np
 import pytest
 
@@ -150,3 +152,38 @@ class TestConvergenceCheckEvery:
         model.convergence_check_every = 20
         model.run()
         assert captured.get("convergence_check_every") == 20
+
+
+class TestDctKernelTuningLever:
+    @pytest.fixture(autouse=True)
+    def _clear_alm_step_cache(self) -> Iterator[None]:
+        from linum_basic._alm import _ALM_STEP_CACHE
+
+        _ALM_STEP_CACHE.clear()
+        yield
+        _ALM_STEP_CACHE.clear()
+
+    def test_dct_kernel_tuning_matches_default_within_tolerance(
+        self,
+        synthetic_stack: tuple[np.ndarray, np.ndarray],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        pytest.importorskip("torch")
+        import torch
+
+        from linum_basic._alm import _ALM_STEP_CACHE
+
+        monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
+
+        stack, _ = synthetic_stack
+        xp = get_xp(Backend.TORCH, "cpu")
+
+        Ib_default, Ir_default, D_default, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=10, xp=xp)
+
+        monkeypatch.setenv("LINUM_BASIC_DCT_KERNEL", "tuned")
+        _ALM_STEP_CACHE.clear()
+        Ib_tuned, Ir_tuned, D_tuned, _ = inexact_alm_l1(stack, l_s=0.5, l_d=0.2, max_iter=10, xp=xp)
+
+        np.testing.assert_allclose(Ib_default, Ib_tuned, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(Ir_default, Ir_tuned, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(D_default, D_tuned, rtol=1e-4, atol=1e-4)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import enum
 import math
+import os
 from typing import Any
 
 import numpy as np
@@ -662,6 +663,22 @@ _IDCT_TWIDDLE_CACHE: dict[tuple, tuple] = {}
 # DCT.  Used by _build_alm_step to replace FFT-based DCT inside torch.compile
 # regions (Torchinductor cannot generate Triton code for complex ops).
 _DCT_MATRIX_CACHE: dict[tuple, Any] = {}
+
+
+def read_dct_kernel_mode() -> str:
+    """Return DCT matmul layout mode for the compiled ALM step (default-off lever).
+
+    ``LINUM_BASIC_DCT_KERNEL`` selects the matmul path inside ``_build_alm_step``.
+    Only ``"tuned"`` enables the contiguous-layout variant; any other value (including
+    unset) preserves the production default.
+
+    Returns
+    -------
+    str
+        ``"tuned"`` when the env var is set to ``tuned``; otherwise ``"default"``.
+    """
+    raw = os.environ.get("LINUM_BASIC_DCT_KERNEL", "default").strip().lower()
+    return "tuned" if raw == "tuned" else "default"
 
 
 def _get_dct_matrix(n: int, device: Any) -> Any:

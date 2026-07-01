@@ -462,6 +462,98 @@ def _write_sidecar_per_z_outlier_fixtures(artifacts_dir: Path) -> dict[str, obje
     }
 
 
+def _make_telemetry_record(*, steady_state_ms: float):
+    from linum_basic.benchmark.telemetry import TelemetryRecord
+
+    return TelemetryRecord(
+        warmup_ms=10.0,
+        cold_cache_ms=steady_state_ms,
+        warm_cache_ms=steady_state_ms,
+        steady_state_ms=steady_state_ms,
+        max_memory_allocated_bytes=None,
+        max_memory_reserved_bytes=None,
+        chunk_size=None,
+        compile_status="disabled",
+        inductor_cache_path=None,
+        device=None,
+        backend="numpy",
+    )
+
+
+class TestOperatorTimingMetadata:
+    def test_operator_timing_metadata_derives_fields(self) -> None:
+        telemetry = _make_telemetry_record(steady_state_ms=600_000.0)
+
+        result = bench._operator_timing_metadata(telemetry, n_z=2, n_tiles=4)
+
+        assert result["end_to_end_ms"] == 600_000.0
+        assert result["per_z_ms"] == 300_000.0
+        assert result["n_z"] == 2
+        assert result["n_tiles"] == 4
+
+    def test_operator_timing_per_z_none_when_n_z_zero(self) -> None:
+        telemetry = _make_telemetry_record(steady_state_ms=100.0)
+
+        result = bench._operator_timing_metadata(telemetry, n_z=0, n_tiles=4)
+
+        assert result["per_z_ms"] is None
+        assert result["n_z"] == 0
+        assert result["n_tiles"] == 4
+        assert result["end_to_end_ms"] == 100.0
+
+    def test_candidate_artifact_contains_operator_timing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        out_dir = tmp_path / "artifacts"
+        baseline_id = _run_stubbed_baseline(tmp_path, monkeypatch)
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        monkeypatch.setattr(bench, "fit_mosaic", _stub_fit_factory())
+        monkeypatch.setattr(bench, "_cuda_available", lambda: False)
+
+        rc = bench.main(
+            [
+                "candidate",
+                "--input",
+                str(zarr_in),
+                "--baseline-id",
+                baseline_id,
+                "--output-dir",
+                str(out_dir),
+                "--subject-id",
+                "syn",
+                "--strategy",
+                "batched",
+                "--batched-z-chunk-size",
+                "8",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "1",
+            ]
+        )
+        assert rc == 0
+
+        candidate_path = next(out_dir.glob("candidate-*/candidate-artifact.json"))
+        data = json.loads(candidate_path.read_text(encoding="utf-8"))
+        meta = data["metadata"]
+        assert "telemetry" in meta
+        assert "steady_state_ms" in meta["telemetry"]
+        operator_timing = meta["operator_timing"]
+        assert isinstance(operator_timing["end_to_end_ms"], (int, float))
+        assert operator_timing["n_z"] == len(data["z_indices"])
+        from linum_basic.mosaic import MosaicGrid
+
+        mosaic = MosaicGrid.from_ome_zarr(str(zarr_in))
+        assert operator_timing["n_tiles"] == mosaic.n_tiles
+
+
 class TestCandidateSubcommand:
     def test_candidate_writes_verdict_artifact(
         self,
@@ -1439,8 +1531,93 @@ class TestOptimizeSubcommand:
         assert (out_dir / "lever-attempt-table.json").exists()
         assert (out_dir / "phase5-backlog.json").exists()
         assert (out_dir / "phase3-handoff-config.json").exists()
+        assert (out_dir / "phase5-fast-path.json").exists()
         handoff = json.loads((out_dir / "phase3-handoff-config.json").read_text(encoding="utf-8"))
         assert handoff["stacked_overrides"] == {"convergence_check_every": 20}
+        fast_path = json.loads((out_dir / "phase5-fast-path.json").read_text(encoding="utf-8"))
+        assert fast_path["schema_version"] == "1"
+        assert fast_path["baseline_id"] == baseline_id
+        assert fast_path["stacked_overrides"] == {"convergence_check_every": 20}
+        assert fast_path["code_path_flags"] == {
+            "dct_kernel": "default",
+            "compile_mode": "default",
+            "inductor_warm_passes": 0,
+        }
+        assert fast_path["no_optimization"] is False
         backlog = json.loads((out_dir / "phase5-backlog.json").read_text(encoding="utf-8"))
-        deferred = [entry for entry in backlog["entries"] if entry["lever_id"] == "inductor-cache-warm-policy"]
-        assert deferred and deferred[0]["status"] == "deferred"
+        deferred_ids = {entry["lever_id"] for entry in backlog["entries"] if entry["status"] == "deferred"}
+        assert "inductor-cache-warm-policy" not in deferred_ids
+
+
+class TestInductorWarmPolicy:
+    def test_warm_policy_passes_reads_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from linum_basic._torch_cache import warm_policy_passes
+
+        monkeypatch.delenv("LINUM_BASIC_INDUCTOR_WARM_PASSES", raising=False)
+        assert warm_policy_passes() == 0
+
+        monkeypatch.setenv("LINUM_BASIC_INDUCTOR_WARM_PASSES", "3")
+        assert warm_policy_passes() == 3
+
+        monkeypatch.setenv("LINUM_BASIC_INDUCTOR_WARM_PASSES", "-2")
+        assert warm_policy_passes() == 0
+
+    def test_baseline_records_inductor_warm_passes_and_extra_fits(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        out_dir = tmp_path / "artifacts"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=3, n_rows=2, n_cols=2, tile=8)
+
+        fit_calls = 0
+
+        def _stub_fit(mosaic, **kwargs):
+            nonlocal fit_calls
+            fit_calls += 1
+            z_indices = kwargs.get("z_indices") or list(range(mosaic.n_z))
+            th, tw = mosaic.tile_shape
+            n = len(z_indices)
+            return MosaicFit(
+                flatfields=np.ones((n, th, tw), dtype=np.float32),
+                darkfields=np.zeros((n, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=list(z_indices),
+                params=dict(kwargs.get("basic_kwargs") or {}),
+            )
+
+        monkeypatch.setattr(bench, "fit_mosaic", _stub_fit)
+        monkeypatch.setattr(bench, "_cuda_available", lambda: False)
+        monkeypatch.setenv("LINUM_BASIC_INDUCTOR_WARM_PASSES", "2")
+
+        rc = bench.main(
+            [
+                "baseline",
+                "--input",
+                str(zarr_in),
+                "--subject-id",
+                "syn",
+                "--output-dir",
+                str(out_dir),
+                "--z-sample",
+                "2",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "1",
+            ]
+        )
+        assert rc == 0
+        assert fit_calls == 4
+
+        baseline_dirs = list(out_dir.glob("baseline-*"))
+        bundle_path = next(baseline_dirs[0].glob("*bundle*.json"))
+        bundle_data = json.loads(bundle_path.read_text(encoding="utf-8"))
+        assert bundle_data["metadata"]["inductor_warm_passes"] == 2

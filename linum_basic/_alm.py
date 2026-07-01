@@ -8,6 +8,7 @@ so the same code can run on CPU (NumPy) or GPU (PyTorch).
 
 from __future__ import annotations
 
+import os
 import warnings
 from typing import Any
 
@@ -28,6 +29,18 @@ __all__ = ["inexact_alm_l1", "inexact_alm_l1_batched", "shrink"]
 # ---------------------------------------------------------------------------
 _ALM_STEP_CACHE: dict[tuple, Any] = {}
 last_compile_fallback: str | None = None
+
+
+def _read_alm_compile_mode() -> str:
+    """Return ``torch.compile`` mode for the ALM step (default-off compile-shape lever).
+
+    ``LINUM_BASIC_ALM_COMPILE_MODE`` selects the compile mode passed to
+    ``torch.compile``. Unset or ``"default"`` preserves production behavior.
+    """
+    raw = os.environ.get("LINUM_BASIC_ALM_COMPILE_MODE", "default").strip().lower()
+    if raw in ("", "default"):
+        return "default"
+    return raw
 
 
 def shrink[ArrayT](xp: ArrayNamespace, theta: ArrayT, epsilon: float = 1e-3) -> ArrayT:
@@ -78,6 +91,10 @@ def _build_alm_step(
     across different :class:`~linum_basic.core.BaSiC` instances that share
     the same problem shape and regularisation weight.
     """
+    from linum_basic.backend import read_dct_kernel_mode
+
+    dct_kernel_mode = read_dct_kernel_mode()
+    compile_mode = _read_alm_compile_mode()
     device_key = str(getattr(xp, "_device", ""))
     cache_key = (
         xp._backend.value,
@@ -88,6 +105,8 @@ def _build_alm_step(
         l_s,
         estimate_darkfield,
         l_d,
+        dct_kernel_mode,
+        compile_mode,
     )
     if cache_key in _ALM_STEP_CACHE:
         return _ALM_STEP_CACHE[cache_key]
@@ -105,14 +124,25 @@ def _build_alm_step(
         _device = getattr(xp, "_device", "cpu")
         _Ap = _gcm(p, _device).float()  # (p, p) f32, orthonormal DCT-II
         _Aq = _gcm(q, _device).float()  # (q, q) f32, orthonormal DCT-II
+        if dct_kernel_mode == "tuned":
+            _Ap = _Ap.contiguous()
+            _Aq = _Aq.contiguous()
 
-        def _dctn2(x: Any) -> Any:
-            # 2-D DCT-II: Y = A_p @ X @ A_q.T
-            return _Ap @ x @ _Aq.T
+            def _dctn2(x: Any) -> Any:
+                # 2-D DCT-II with contiguous layout for Inductor kernel selection.
+                return _Ap @ x.contiguous() @ _Aq.T
 
-        def _idctn2(x: Any) -> Any:
-            # 2-D DCT-III (inverse DCT-II): X = A_p.T @ Y @ A_q
-            return _Ap.T @ x @ _Aq
+            def _idctn2(x: Any) -> Any:
+                return _Ap.T @ x.contiguous() @ _Aq
+        else:
+
+            def _dctn2(x: Any) -> Any:
+                # 2-D DCT-II: Y = A_p @ X @ A_q.T
+                return _Ap @ x @ _Aq.T
+
+            def _idctn2(x: Any) -> Any:
+                # 2-D DCT-III (inverse DCT-II): X = A_p.T @ Y @ A_q
+                return _Ap.T @ x @ _Aq
 
     else:
         # NumPy path: delegate to scipy via ArrayNamespace
@@ -203,7 +233,12 @@ def _build_alm_step(
                 # Enable TF32 for float32 matmul: faster on Ampere+ GPUs with
                 # negligible precision loss for the iterative ALM solver.
                 _torch.set_float32_matmul_precision("high")
-                fn = _torch.compile(_alm_core_step, mode="default", fullgraph=False)
+                compile_kwargs: dict[str, Any] = {"fullgraph": False}
+                if compile_mode != "default":
+                    compile_kwargs["mode"] = compile_mode
+                else:
+                    compile_kwargs["mode"] = "default"
+                fn = _torch.compile(_alm_core_step, **compile_kwargs)
         except Exception as exc:
             global last_compile_fallback
             last_compile_fallback = f"{type(exc).__name__}: {exc}"
