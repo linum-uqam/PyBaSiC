@@ -65,6 +65,40 @@ class TestAlmCompileWarning:
 
         assert callable(step_fn)
 
+    def test_build_alm_step_compile_fallback_warns_once_per_scalar_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("torch")
+        import torch
+
+        monkeypatch.setattr(torch, "compile", _compile_raises)
+        xp = get_xp(Backend.TORCH, "cpu")
+
+        with pytest.warns(UserWarning, match="torch.compile failed"):
+            _build_alm_step(xp, n=4, p=8, q=8, l_s=0.1)
+
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            _build_alm_step(xp, n=5, p=8, q=8, l_s=0.1)
+
+        matching = [w for w in rec if issubclass(w.category, UserWarning) and "torch.compile failed" in str(w.message)]
+        assert len(matching) == 0
+
+    def test_build_alm_step_batched_compile_fallback_warns_once_per_batched_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("torch")
+        import torch
+
+        monkeypatch.setattr(torch, "compile", _compile_raises)
+        xp = get_xp(Backend.TORCH, "cpu")
+
+        with pytest.warns(UserWarning, match="torch.compile failed"):
+            _build_alm_step_batched(xp, z=2, n=4, p=8, q=8)
+
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            _build_alm_step_batched(xp, z=3, n=4, p=8, q=8)
+
+        matching = [w for w in rec if issubclass(w.category, UserWarning) and "torch.compile failed" in str(w.message)]
+        assert len(matching) == 0
+
 
 class TestAlmConvergenceWarning:
     def test_alm_max_iter_warns_once(self) -> None:
