@@ -25,6 +25,8 @@ import os
 import warnings
 from collections.abc import Callable, Sequence
 
+from linum_basic._torch_cache import _cuda_joblib_worker_init, collect_cuda_worker_env
+
 __all__ = [
     "default_workers",
     "is_gpu_backend",
@@ -261,7 +263,15 @@ def parallel_map_cuda_devices[T, R](
     from joblib import Parallel, delayed, parallel_config
 
     n_jobs = min(len(devs), len(items))
-    with parallel_config(backend="loky", inner_max_num_threads=1, n_jobs=n_jobs):
+    cache_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    env_items = collect_cuda_worker_env()
+    with parallel_config(
+        backend="loky",
+        inner_max_num_threads=1,
+        n_jobs=n_jobs,
+        initializer=_cuda_joblib_worker_init,
+        initargs=(cache_dir, env_items),
+    ):
         pairs: list[tuple[int, R]] = Parallel(verbose=10 if verbose else 0)(
             delayed(_task)(i, item, devs[i % len(devs)]) for i, item in enumerate(items)
         )

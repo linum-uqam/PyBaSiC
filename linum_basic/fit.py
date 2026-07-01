@@ -374,12 +374,22 @@ def _fit_mosaic_batched_cuda(
 
     from joblib import Parallel, delayed, parallel_config
 
+    from linum_basic._torch_cache import _cuda_joblib_worker_init, collect_cuda_worker_env
+
     def _task(index: int, chunk: list[np.ndarray], device: str) -> tuple[int, list[tuple[np.ndarray, np.ndarray]]]:
         gpu_ix = device.rsplit(":", 1)[-1]
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu_ix
         return _run_chunk((index, chunk), "cuda:0")
 
-    with parallel_config(backend="loky", inner_max_num_threads=1, n_jobs=n_jobs):
+    cache_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    env_items = collect_cuda_worker_env()
+    with parallel_config(
+        backend="loky",
+        inner_max_num_threads=1,
+        n_jobs=n_jobs,
+        initializer=_cuda_joblib_worker_init,
+        initargs=(cache_dir, env_items),
+    ):
         pairs: list[tuple[int, list[tuple[np.ndarray, np.ndarray]]]] = Parallel(verbose=10 if verbose else 0)(
             delayed(_task)(start, chunk, cuda_devices[i % len(cuda_devices)]) for i, (start, chunk) in enumerate(chunks)
         )

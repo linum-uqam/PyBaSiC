@@ -15,6 +15,7 @@ from linum_basic.benchmark.artifacts import (
 from linum_basic.benchmark.metadata import (
     RunMetadata,
     collect_compile_cache_info,
+    collect_concurrency_metadata,
     collect_git_commit,
     collect_host_info,
     collect_run_metadata,
@@ -32,6 +33,7 @@ from linum_basic.benchmark.profile import (
     build_phase5_backlog,
     build_phase5_fast_path,
     build_phase5_optimization_report,
+    build_phase6_concurrency_verdict,
     compute_stack_speed_ratio,
 )
 from linum_basic.benchmark.quality import (
@@ -68,6 +70,8 @@ from linum_basic.benchmark.telemetry import (
     TelemetryRecord,
     TimingPhase,
     collect_memory_stats,
+    collect_multi_gpu_memory_stats,
+    peak_single_gpu_vram_bytes,
     run_with_phases,
     timed_call,
 )
@@ -108,12 +112,15 @@ __all__ = [
     "build_phase5_backlog",
     "build_phase5_fast_path",
     "build_phase5_optimization_report",
+    "build_phase6_concurrency_verdict",
     "build_sweep_table",
     "calibrate_tolerances",
     "collect_compile_cache_info",
+    "collect_concurrency_metadata",
     "collect_git_commit",
     "collect_host_info",
     "collect_memory_stats",
+    "collect_multi_gpu_memory_stats",
     "collect_run_metadata",
     "collect_torch_cuda_info",
     "compute_deltas",
@@ -123,6 +130,7 @@ __all__ = [
     "evaluate_sweep_adoption",
     "load_overrides",
     "make_baseline_id",
+    "peak_single_gpu_vram_bytes",
     "read_artifact",
     "resolve_strategy",
     "run_with_phases",

@@ -18,6 +18,7 @@ from linum_basic.benchmark.telemetry import collect_precision_metadata
 __all__ = [
     "RunMetadata",
     "collect_compile_cache_info",
+    "collect_concurrency_metadata",
     "collect_git_commit",
     "collect_host_info",
     "collect_precision_metadata",
@@ -214,6 +215,62 @@ def collect_compile_cache_info(*, configure: bool = False) -> dict[str, Any]:
     return {
         "inductor_cache_path": cache_path,
         "fx_graph_cache_enabled": fx_enabled,
+    }
+
+
+_STRATEGY_FORK_MODELS: dict[str, str] = {
+    "multi": "maxForks_2_scalar_per_gpu",
+    "batched": "maxForks_1_batched_multi_gpu",
+}
+
+
+def collect_concurrency_metadata(
+    *,
+    strategy: str,
+    fork_model: str | None,
+    n_gpus: int,
+    gpu_map: dict[str, str],
+    inductor_cache_path: str | None,
+    compile_status: str | None = None,
+    quality_verdict: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the D-15 concurrency metadata block for a benchmark candidate.
+
+    Parameters
+    ----------
+    strategy : str
+        Concurrency strategy label (``multi`` or ``batched``).
+    fork_model : str or None
+        Explicit fork-model label; derived from ``strategy`` when omitted.
+    n_gpus : int
+        Number of GPUs used for the run.
+    gpu_map : dict[str, str]
+        Mapping from device strings to worker or allocation labels.
+    inductor_cache_path : str or None
+        Shared Inductor cache directory; resolved from the environment when omitted.
+    compile_status : str or None, optional
+        ``torch.compile`` / Inductor status label.
+    quality_verdict : dict or None, optional
+        Quality gate verdict payload for the mode.
+
+    Returns
+    -------
+    dict
+        JSON-serializable D-15 concurrency metadata block.
+    """
+    resolved_fork_model = fork_model if fork_model is not None else _STRATEGY_FORK_MODELS.get(strategy, strategy)
+    resolved_cache_path = inductor_cache_path
+    if resolved_cache_path is None:
+        resolved_cache_path = collect_compile_cache_info(configure=False)["inductor_cache_path"]
+
+    return {
+        "strategy": strategy,
+        "fork_model": resolved_fork_model,
+        "n_gpus": n_gpus,
+        "gpu_map": dict(gpu_map),
+        "inductor_cache_path": resolved_cache_path,
+        "compile_status": compile_status,
+        "quality_verdict": quality_verdict,
     }
 
 

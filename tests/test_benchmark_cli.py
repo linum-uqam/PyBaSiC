@@ -623,6 +623,65 @@ class TestCandidateSubcommand:
         assert convergence["max_reweighting_iterations"] == 15
         assert convergence["reweight_iterations_per_z"] == {"0": 2, "2": 2}
 
+    def test_candidate_emits_d15_concurrency_metadata(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        out_dir = tmp_path / "artifacts"
+        baseline_id = _run_stubbed_baseline(tmp_path, monkeypatch)
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        captured_kwargs: list[dict] = []
+
+        def _capturing_fit(mosaic, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            return _stub_fit_factory()(mosaic, **kwargs)
+
+        monkeypatch.setattr(bench, "fit_mosaic", _capturing_fit)
+        monkeypatch.setattr(bench, "_cuda_available", lambda: False)
+
+        rc = bench.main(
+            [
+                "candidate",
+                "--input",
+                str(zarr_in),
+                "--baseline-id",
+                baseline_id,
+                "--output-dir",
+                str(out_dir),
+                "--subject-id",
+                "syn",
+                "--strategy",
+                "batched",
+                "--batched-z-chunk-size",
+                "8",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "1",
+            ]
+        )
+        assert rc == 0
+        assert captured_kwargs
+        assert captured_kwargs[-1].get("strategy") == "batched"
+
+        candidate_dirs = list(out_dir.glob("candidate-*"))
+        assert len(candidate_dirs) == 1
+        data = json.loads((candidate_dirs[0] / "candidate-artifact.json").read_text(encoding="utf-8"))
+        meta = data["metadata"]
+        concurrency = meta["concurrency"]
+        assert concurrency["strategy"] == "batched"
+        assert concurrency["fork_model"] == "maxForks_1_batched_multi_gpu"
+        assert "n_gpus" in concurrency
+        assert "gpu_map" in concurrency
+        assert meta["operator_timing"]["end_to_end_ms"] is not None
+        assert meta["telemetry"]["steady_state_ms"] is not None
+
     def test_regressed_candidate_rejects_with_nonzero_exit(
         self,
         tmp_path: Path,
@@ -1547,6 +1606,172 @@ class TestOptimizeSubcommand:
         backlog = json.loads((out_dir / "phase5-backlog.json").read_text(encoding="utf-8"))
         deferred_ids = {entry["lever_id"] for entry in backlog["entries"] if entry["status"] == "deferred"}
         assert "inductor-cache-warm-policy" not in deferred_ids
+
+
+def _write_concurrency_candidate_fixture(
+    path: Path,
+    *,
+    candidate_id: str,
+    baseline_id: str,
+    strategy: str,
+    fork_model: str,
+    end_to_end_ms: float,
+    steady_state_ms: float,
+    quality_passed: bool,
+    peak_vram_bytes: int = 0,
+) -> None:
+    """Write a candidate-artifact.json with D-15 concurrency metadata for cmd_concurrency tests."""
+    from linum_basic.benchmark.artifacts import SCHEMA_VERSION
+    from linum_basic.benchmark.quality import METRIC_DEFINITION_VERSION
+
+    per_z_ms = end_to_end_ms / 5.0
+    gpu_map = (
+        {"cuda:0": "worker-0", "cuda:1": "worker-1"} if strategy == "multi" else {"cuda:0": "batched", "cuda:1": "batched"}
+    )
+    path.write_text(
+        json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "baseline_id": baseline_id,
+                "schema_version": SCHEMA_VERSION,
+                "metric_definition_version": METRIC_DEFINITION_VERSION,
+                "subject_id": "sub22",
+                "run_label": candidate_id,
+                "input_fingerprint": "sha256:deadbeef",
+                "z_indices": [0, 1, 2, 3, 4],
+                "array_shape": [5, 64, 64],
+                "tile_shape": [64, 64],
+                "strategy_params": {"working_size": 128},
+                "metrics_rows": [{"z": 0, "seam_l1": 0.1, "seam_curvature": 0.02}],
+                "metrics_aggregates": {"seam_l1": 0.1, "seam_curvature": 0.02},
+                "repeats": 1,
+                "metadata": {
+                    "telemetry": {
+                        "steady_state_ms": steady_state_ms,
+                        "max_memory_allocated_bytes": peak_vram_bytes,
+                    },
+                    "operator_timing": {
+                        "end_to_end_ms": end_to_end_ms,
+                        "per_z_ms": per_z_ms,
+                        "n_z": 5,
+                        "n_tiles": 4,
+                    },
+                    "quality_verdict": {"passed": quality_passed, "failures": []},
+                    "concurrency": {
+                        "strategy": strategy,
+                        "fork_model": fork_model,
+                        "n_gpus": 2,
+                        "gpu_map": gpu_map,
+                        "inductor_cache_path": "/tmp/inductor-cache",
+                        "compile_status": "enabled",
+                        "quality_verdict": {"passed": quality_passed, "failures": []},
+                    },
+                },
+                "environment": {},
+                "timestamp": "2026-07-01T12:00:00Z",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+class TestConcurrencySubcommand:
+    def test_concurrency_writes_verdict_from_candidate_fixtures(self, tmp_path: Path) -> None:
+        from linum_basic.benchmark.artifacts import (
+            SCHEMA_VERSION,
+            BaselineBundle,
+            ToleranceSidecar,
+            write_artifact,
+        )
+        from linum_basic.benchmark.quality import CALIBRATION_POLICY, METRIC_DEFINITION_VERSION
+
+        out_dir = tmp_path / "conc-out"
+        out_dir.mkdir()
+        baseline_id = "baseline-20260701T020128-be1e880-sub-22"
+        baseline = BaselineBundle(
+            baseline_id=baseline_id,
+            uuid="550e8400-e29b-41d4-a716-446655440000",
+            schema_version=SCHEMA_VERSION,
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            subject_id="sub22",
+            run_label="production",
+            input_fingerprint="sha256:deadbeef",
+            z_indices=[0, 1, 2, 3, 4],
+            array_shape=[5, 64, 64],
+            tile_shape=[64, 64],
+            strategy_params={"working_size": 128},
+            metrics_rows=[{"z": 0, "seam_l1": 0.1, "seam_curvature": 0.02}],
+            metrics_aggregates={"seam_l1": 0.1, "seam_curvature": 0.02},
+            repeats=1,
+            metadata={"telemetry": {"steady_state_ms": 200.0}},
+            timestamp="2026-07-01T02:01:28Z",
+        )
+        sidecar = ToleranceSidecar(
+            baseline_id=baseline_id,
+            schema_version=SCHEMA_VERSION,
+            metric_definition_version=METRIC_DEFINITION_VERSION,
+            calibration_policy=CALIBRATION_POLICY,
+            sigma=3.0,
+            min_abs=1e-6,
+            tolerances={
+                "seam_l1": {"mean": 0.1, "std": 0.001, "abs_tol": 0.01, "rel_tol": 0.1},
+                "seam_curvature": {"mean": 0.02, "std": 0.001, "abs_tol": 0.01, "rel_tol": 0.1},
+            },
+        )
+        bundle_dir = out_dir / baseline_id
+        bundle_dir.mkdir()
+        write_artifact(bundle_dir / "baseline-bundle.json", baseline)
+        write_artifact(bundle_dir / "tolerance-sidecar.json", sidecar)
+
+        multi_path = out_dir / "candidate-multi.json"
+        batched_path = out_dir / "candidate-batched.json"
+        _write_concurrency_candidate_fixture(
+            multi_path,
+            candidate_id="candidate-multi",
+            baseline_id=baseline_id,
+            strategy="multi",
+            fork_model="maxForks_2_scalar_per_gpu",
+            end_to_end_ms=120.0,
+            steady_state_ms=108.0,
+            quality_passed=True,
+            peak_vram_bytes=8_000_000_000,
+        )
+        _write_concurrency_candidate_fixture(
+            batched_path,
+            candidate_id="candidate-batched",
+            baseline_id=baseline_id,
+            strategy="batched",
+            fork_model="maxForks_1_batched_multi_gpu",
+            end_to_end_ms=100.0,
+            steady_state_ms=90.0,
+            quality_passed=True,
+            peak_vram_bytes=4_000_000_000,
+        )
+
+        rc = bench.main(
+            [
+                "concurrency",
+                "--output-dir",
+                str(out_dir),
+                "--baseline-id",
+                baseline_id,
+                "--candidate",
+                str(multi_path),
+                "--candidate",
+                str(batched_path),
+                "--fast-path-ref",
+                str(out_dir / "phase5-fast-path.json"),
+            ]
+        )
+        assert rc == 0
+        verdict_path = out_dir / "phase6-concurrency-verdict.json"
+        assert verdict_path.exists()
+        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+        assert verdict["winner"]["strategy"] == "batched"
+        assert verdict["recommended_max_forks"] in (1, 2)
+        assert verdict["baseline_id"] == baseline_id
 
 
 class TestInductorWarmPolicy:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import statistics
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -14,7 +14,9 @@ __all__ = [
     "TelemetryRecord",
     "TimingPhase",
     "collect_memory_stats",
+    "collect_multi_gpu_memory_stats",
     "collect_precision_metadata",
+    "peak_single_gpu_vram_bytes",
     "run_with_phases",
     "timed_call",
 ]
@@ -191,6 +193,63 @@ def collect_memory_stats(device: str | None) -> MemoryStats | None:
         max_memory_allocated_bytes=int(torch.cuda.max_memory_allocated(device)),
         max_memory_reserved_bytes=int(torch.cuda.max_memory_reserved(device)),
     )
+
+
+def collect_multi_gpu_memory_stats(devices: Sequence[str]) -> dict[str, MemoryStats]:
+    """Return peak memory counters for each CUDA device string.
+
+    Parameters
+    ----------
+    devices : sequence of str
+        PyTorch device strings (for example ``["cuda:0", "cuda:1"]``).
+
+    Returns
+    -------
+    dict[str, MemoryStats]
+        Per-device peak counters when CUDA is available; otherwise ``{}``.
+    """
+    if not devices:
+        return {}
+    try:
+        import torch
+    except ImportError:
+        return {}
+    if not torch.cuda.is_available():
+        return {}
+
+    stats: dict[str, MemoryStats] = {}
+    for device in devices:
+        if not device.lower().startswith("cuda"):
+            continue
+        if device == "cuda":
+            index = 0
+        elif device.startswith("cuda:"):
+            index = int(device.split(":", 1)[1])
+        else:
+            continue
+        stats[device] = MemoryStats(
+            max_memory_allocated_bytes=int(torch.cuda.max_memory_allocated(index)),
+            max_memory_reserved_bytes=int(torch.cuda.max_memory_reserved(index)),
+        )
+    return stats
+
+
+def peak_single_gpu_vram_bytes(stats_by_device: dict[str, MemoryStats]) -> int:
+    """Return the highest peak allocated VRAM across visible devices (D-16 tie-break).
+
+    Parameters
+    ----------
+    stats_by_device : dict[str, MemoryStats]
+        Output of :func:`collect_multi_gpu_memory_stats`.
+
+    Returns
+    -------
+    int
+        Maximum ``max_memory_allocated_bytes`` across devices, or ``0`` when empty.
+    """
+    if not stats_by_device:
+        return 0
+    return max(entry.max_memory_allocated_bytes for entry in stats_by_device.values())
 
 
 def collect_precision_metadata(*, compile_fallback_reason: str | None = None) -> dict[str, Any]:

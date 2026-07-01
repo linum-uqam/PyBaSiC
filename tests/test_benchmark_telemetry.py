@@ -277,3 +277,64 @@ class TestCollectPrecisionMetadata:
         assert result["allow_tf32_cudnn"] is False
         assert result["compile_requested"] is True
         assert result["compile_fallback_reason"] == "inductor OOM"
+
+
+class TestCollectMultiGpuMemoryStats:
+    def test_collect_multi_gpu_memory_stats_cpu_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delitem(sys.modules, "torch", raising=False)
+        from linum_basic.benchmark import telemetry
+
+        assert telemetry.collect_multi_gpu_memory_stats(["cuda:0", "cuda:1"]) == {}
+
+
+class TestCollectConcurrencyMetadata:
+    _D15_KEYS = (
+        "strategy",
+        "fork_model",
+        "n_gpus",
+        "gpu_map",
+        "inductor_cache_path",
+        "compile_status",
+        "quality_verdict",
+    )
+
+    def test_collect_concurrency_metadata_fork_model_mapping(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from linum_basic.benchmark import metadata
+
+        monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "/tmp/inductor-cache")
+
+        multi = metadata.collect_concurrency_metadata(
+            strategy="multi",
+            fork_model=None,
+            n_gpus=2,
+            gpu_map={"cuda:0": "worker-0", "cuda:1": "worker-1"},
+            inductor_cache_path=None,
+            compile_status="enabled",
+            quality_verdict={"passed": True},
+        )
+        batched = metadata.collect_concurrency_metadata(
+            strategy="batched",
+            fork_model=None,
+            n_gpus=2,
+            gpu_map={"cuda:0": "batched", "cuda:1": "batched"},
+            inductor_cache_path="/custom/cache",
+            compile_status="enabled",
+            quality_verdict={"passed": True},
+        )
+        custom = metadata.collect_concurrency_metadata(
+            strategy="experimental",
+            fork_model="custom_fork_label",
+            n_gpus=1,
+            gpu_map={"cuda:0": "solo"},
+            inductor_cache_path="/custom/cache",
+        )
+
+        for block in (multi, batched, custom):
+            for key in self._D15_KEYS:
+                assert key in block
+
+        assert multi["fork_model"] == "maxForks_2_scalar_per_gpu"
+        assert batched["fork_model"] == "maxForks_1_batched_multi_gpu"
+        assert custom["fork_model"] == "custom_fork_label"
+        assert multi["inductor_cache_path"] == "/tmp/inductor-cache"
+        assert batched["inductor_cache_path"] == "/custom/cache"

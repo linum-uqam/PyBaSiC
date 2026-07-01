@@ -10,7 +10,36 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__all__ = ["configure_torch_inductor_cache", "enable_fx_graph_cache", "warm_policy_passes"]
+__all__ = [
+    "_cuda_joblib_worker_init",
+    "collect_cuda_worker_env",
+    "configure_torch_inductor_cache",
+    "enable_fx_graph_cache",
+    "warm_policy_passes",
+]
+
+
+def _cuda_joblib_worker_init(
+    cache_dir: str | None,
+    env_items: tuple[tuple[str, str], ...],
+) -> None:
+    """Configure shared Inductor cache and fast-path env in a loky worker.
+
+    Must run **before** the first ``torch`` import in the worker process.
+    """
+    for key, value in env_items:
+        os.environ[key] = value
+    configure_torch_inductor_cache(cache_dir)
+
+
+def collect_cuda_worker_env() -> tuple[tuple[str, str], ...]:
+    """Snapshot fast-path env keys from the parent for loky worker initargs."""
+    keys = sorted(
+        key
+        for key in os.environ
+        if key == "LINUM_BASIC_DCT_KERNEL" or key.startswith("LINUM_BASIC_") or key == "TORCHINDUCTOR_FX_GRAPH_CACHE"
+    )
+    return tuple((key, os.environ[key]) for key in keys)
 
 
 def configure_torch_inductor_cache(cache_dir: str | Path | None = None) -> Path:

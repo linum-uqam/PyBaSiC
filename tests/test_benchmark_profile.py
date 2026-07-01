@@ -18,6 +18,7 @@ from linum_basic.benchmark.profile import (
     build_phase3_handoff_config,
     build_phase5_backlog,
     build_phase5_fast_path,
+    build_phase6_concurrency_verdict,
 )
 from linum_basic.core import BaSiC
 
@@ -595,6 +596,163 @@ class TestBuildPhase5FastPath:
             "compile_mode": "default",
             "inductor_warm_passes": 0,
         }
+
+
+def _mode(
+    *,
+    strategy: str,
+    end_to_end_ms: float,
+    quality_passed: bool,
+    peak_vram_bytes: int = 0,
+    fork_model: str | None = None,
+    artifact_id: str = "candidate-test",
+) -> dict:
+    fork_models = {
+        "multi": "maxForks_2_scalar_per_gpu",
+        "batched": "maxForks_1_batched_multi_gpu",
+    }
+    return {
+        "strategy": strategy,
+        "fork_model": fork_model or fork_models.get(strategy, strategy),
+        "end_to_end_ms": end_to_end_ms,
+        "per_z_ms": end_to_end_ms / 5,
+        "steady_state_ms": end_to_end_ms * 0.9,
+        "quality_verdict": {"passed": quality_passed, "failures": ()},
+        "artifact_id": artifact_id,
+        "peak_vram_bytes": peak_vram_bytes,
+        "gpu_map": {"cuda:0": "worker-0", "cuda:1": "worker-1"},
+    }
+
+
+class TestBuildPhase6ConcurrencyVerdict:
+    _BASELINE = "baseline-20260701T020128-be1e880-sub-22"
+    _FAST_PATH = "/scratch/ws128-opt/27/phase5-fast-path.json"
+
+    @staticmethod
+    def _evidence() -> list[str]:
+        return [
+            TestBuildPhase6ConcurrencyVerdict._BASELINE,
+            "candidate-multi",
+            "candidate-batched",
+        ]
+
+    def test_lowest_end_to_end_ms_wins_among_passing_modes(self) -> None:
+        manifest = build_phase6_concurrency_verdict(
+            [
+                _mode(strategy="multi", end_to_end_ms=120.0, quality_passed=True, artifact_id="candidate-multi"),
+                _mode(
+                    strategy="batched",
+                    end_to_end_ms=100.0,
+                    quality_passed=True,
+                    artifact_id="candidate-batched",
+                ),
+            ],
+            baseline_id=self._BASELINE,
+            phase5_fast_path_ref=self._FAST_PATH,
+            evidence_artifact_ids=self._evidence(),
+            timestamp="2026-07-01T12:00:00Z",
+        )
+        assert manifest["winner"] == {
+            "strategy": "batched",
+            "fork_model": "maxForks_1_batched_multi_gpu",
+            "rationale": "lowest end_to_end_ms among quality-passing modes",
+        }
+        assert manifest["recommended_max_forks"] == 1
+
+    def test_fastest_mode_excluded_when_quality_fails(self) -> None:
+        manifest = build_phase6_concurrency_verdict(
+            [
+                _mode(strategy="multi", end_to_end_ms=80.0, quality_passed=False, artifact_id="candidate-multi"),
+                _mode(
+                    strategy="batched",
+                    end_to_end_ms=110.0,
+                    quality_passed=True,
+                    artifact_id="candidate-batched",
+                ),
+            ],
+            baseline_id=self._BASELINE,
+            phase5_fast_path_ref=self._FAST_PATH,
+            evidence_artifact_ids=self._evidence(),
+            timestamp="2026-07-01T12:00:00Z",
+        )
+        assert manifest["winner"]["strategy"] == "batched"
+        assert manifest["recommended_max_forks"] == 1
+
+    def test_equal_end_to_end_ms_tie_breaks_on_peak_vram(self) -> None:
+        manifest = build_phase6_concurrency_verdict(
+            [
+                _mode(
+                    strategy="multi",
+                    end_to_end_ms=100.0,
+                    quality_passed=True,
+                    peak_vram_bytes=8_000_000_000,
+                    artifact_id="candidate-multi",
+                ),
+                _mode(
+                    strategy="batched",
+                    end_to_end_ms=100.0,
+                    quality_passed=True,
+                    peak_vram_bytes=4_000_000_000,
+                    artifact_id="candidate-batched",
+                ),
+            ],
+            baseline_id=self._BASELINE,
+            phase5_fast_path_ref=self._FAST_PATH,
+            evidence_artifact_ids=self._evidence(),
+            timestamp="2026-07-01T12:00:00Z",
+        )
+        assert manifest["winner"]["strategy"] == "batched"
+        assert "peak_vram" in manifest["winner"]["rationale"].lower() or "vram" in manifest["winner"]["rationale"].lower()
+
+    def test_all_modes_fail_quality_yields_no_winner(self) -> None:
+        manifest = build_phase6_concurrency_verdict(
+            [
+                _mode(strategy="multi", end_to_end_ms=80.0, quality_passed=False),
+                _mode(strategy="batched", end_to_end_ms=90.0, quality_passed=False),
+            ],
+            baseline_id=self._BASELINE,
+            phase5_fast_path_ref=self._FAST_PATH,
+            evidence_artifact_ids=self._evidence(),
+            timestamp="2026-07-01T12:00:00Z",
+        )
+        assert manifest["winner"] is None
+        assert manifest["recommended_max_forks"] is None
+        assert "all modes failed" in manifest["selection_rationale"].lower()
+
+    def test_required_schema_keys_present(self) -> None:
+        manifest = build_phase6_concurrency_verdict(
+            [
+                _mode(strategy="multi", end_to_end_ms=100.0, quality_passed=True),
+            ],
+            baseline_id=self._BASELINE,
+            phase5_fast_path_ref=self._FAST_PATH,
+            evidence_artifact_ids=self._evidence(),
+            git_commit="abc1234",
+            timestamp="2026-07-01T12:00:00Z",
+        )
+        assert manifest["schema_version"] == "1"
+        assert manifest["baseline_id"] == self._BASELINE
+        assert manifest["timestamp"] == "2026-07-01T12:00:00Z"
+        assert manifest["phase5_fast_path_ref"] == self._FAST_PATH
+        assert manifest["evidence_artifact_ids"] == self._evidence()
+        assert manifest["git_commit"] == "abc1234"
+        assert isinstance(manifest["modes"], list)
+        assert len(manifest["modes"]) == 1
+        mode = manifest["modes"][0]
+        for key in (
+            "strategy",
+            "fork_model",
+            "end_to_end_ms",
+            "per_z_ms",
+            "steady_state_ms",
+            "quality_verdict",
+            "artifact_id",
+            "peak_vram_bytes",
+        ):
+            assert key in mode
+        assert "winner" in manifest
+        assert "recommended_max_forks" in manifest
+        assert "gpu_allocation_map" in manifest
 
 
 class TestTileSubsampleRatio:

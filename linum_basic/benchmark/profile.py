@@ -41,6 +41,7 @@ __all__ = [
     "build_phase5_backlog",
     "build_phase5_fast_path",
     "build_phase5_optimization_report",
+    "build_phase6_concurrency_verdict",
     "compute_stack_speed_ratio",
 ]
 
@@ -986,4 +987,151 @@ def build_phase5_fast_path(
         manifest["stack_speed_ratio"] = stack_speed_ratio
     if end_to_end_ms is not None:
         manifest["end_to_end_ms"] = end_to_end_ms
+    return manifest
+
+
+_END_TO_END_MS_TOLERANCE = 1e-9
+
+_STRATEGY_FORK_MODELS: dict[str, str] = {
+    "multi": "maxForks_2_scalar_per_gpu",
+    "batched": "maxForks_1_batched_multi_gpu",
+}
+
+_STRATEGY_MAX_FORKS: dict[str, int] = {
+    "multi": 2,
+    "batched": 1,
+}
+
+
+def _quality_passes(quality_verdict: Any) -> bool:
+    if quality_verdict is None:
+        return False
+    if isinstance(quality_verdict, dict):
+        return bool(quality_verdict.get("passed"))
+    passed = getattr(quality_verdict, "passed", None)
+    if passed is not None:
+        return bool(passed)
+    return bool(quality_verdict)
+
+
+def _normalize_concurrency_mode(mode: dict[str, Any] | Any) -> dict[str, Any]:
+    if isinstance(mode, dict):
+        raw = mode
+    else:
+        raw = {
+            "strategy": getattr(mode, "strategy", None),
+            "fork_model": getattr(mode, "fork_model", None),
+            "end_to_end_ms": getattr(mode, "end_to_end_ms", None),
+            "per_z_ms": getattr(mode, "per_z_ms", None),
+            "steady_state_ms": getattr(mode, "steady_state_ms", None),
+            "quality_verdict": getattr(mode, "quality_verdict", None),
+            "artifact_id": getattr(mode, "artifact_id", None),
+            "peak_vram_bytes": getattr(mode, "peak_vram_bytes", None),
+            "gpu_map": getattr(mode, "gpu_map", None),
+        }
+
+    strategy = str(raw["strategy"])
+    fork_model = raw.get("fork_model") or _STRATEGY_FORK_MODELS.get(strategy, strategy)
+    peak_vram = raw.get("peak_vram_bytes")
+    if peak_vram is None:
+        peak_vram = raw.get("peak_vram")
+    raw_gpu_map = raw.get("gpu_map")
+    gpu_map: dict[str, str] | None = (
+        {str(key): str(value) for key, value in raw_gpu_map.items()} if isinstance(raw_gpu_map, dict) else None
+    )
+
+    end_to_end_ms = raw["end_to_end_ms"]
+    per_z_ms = raw["per_z_ms"]
+    steady_state_ms = raw["steady_state_ms"]
+    artifact_id = raw["artifact_id"]
+    if end_to_end_ms is None or per_z_ms is None or steady_state_ms is None or artifact_id is None:
+        msg = "concurrency mode requires end_to_end_ms, per_z_ms, steady_state_ms, and artifact_id"
+        raise ValueError(msg)
+
+    return {
+        "strategy": strategy,
+        "fork_model": str(fork_model),
+        "end_to_end_ms": float(end_to_end_ms),
+        "per_z_ms": float(per_z_ms),
+        "steady_state_ms": float(steady_state_ms),
+        "quality_verdict": raw["quality_verdict"],
+        "artifact_id": str(artifact_id),
+        "peak_vram_bytes": int(peak_vram or 0),
+        "_gpu_map": gpu_map,
+    }
+
+
+def _select_concurrency_winner(
+    modes: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str | None]:
+    passing = [mode for mode in modes if _quality_passes(mode["quality_verdict"])]
+    if not passing:
+        return None, "all modes failed quality gate"
+
+    def sort_key(mode: dict[str, Any]) -> tuple[float, int]:
+        return (mode["end_to_end_ms"], mode["peak_vram_bytes"])
+
+    winner = min(passing, key=sort_key)
+    rationale = "lowest end_to_end_ms among quality-passing modes"
+
+    tied = [mode for mode in passing if abs(mode["end_to_end_ms"] - winner["end_to_end_ms"]) <= _END_TO_END_MS_TOLERANCE]
+    if len(tied) > 1:
+        vram_values = {mode["peak_vram_bytes"] for mode in tied}
+        if len(vram_values) > 1:
+            rationale = "tied end_to_end_ms; selected lowest peak_vram_bytes for single-GPU VRAM headroom (D-16)"
+
+    return (
+        {
+            "strategy": winner["strategy"],
+            "fork_model": winner["fork_model"],
+            "rationale": rationale,
+        },
+        None,
+    )
+
+
+def build_phase6_concurrency_verdict(
+    modes: Sequence[dict[str, Any] | Any],
+    *,
+    baseline_id: str,
+    phase5_fast_path_ref: str,
+    evidence_artifact_ids: Sequence[str],
+    git_commit: str | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Build frozen Phase 6 concurrency verdict manifest for Phase 7 deploy (PERF-04)."""
+    from datetime import UTC, datetime
+
+    normalized_modes = [_normalize_concurrency_mode(mode) for mode in modes]
+    winner, no_winner_rationale = _select_concurrency_winner(normalized_modes)
+
+    recommended_max_forks: int | None
+    gpu_allocation_map: dict[str, str] | None
+    selection_rationale: str | None = no_winner_rationale
+
+    if winner is None:
+        recommended_max_forks = None
+        gpu_allocation_map = None
+    else:
+        recommended_max_forks = _STRATEGY_MAX_FORKS.get(winner["strategy"])
+        winner_mode = next(mode for mode in normalized_modes if mode["strategy"] == winner["strategy"])
+        gpu_allocation_map = winner_mode.get("_gpu_map")
+
+    public_modes = [{k: v for k, v in mode.items() if not k.startswith("_")} for mode in normalized_modes]
+
+    manifest: dict[str, Any] = {
+        "schema_version": "1",
+        "baseline_id": baseline_id,
+        "timestamp": timestamp or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "modes": public_modes,
+        "winner": winner,
+        "recommended_max_forks": recommended_max_forks,
+        "gpu_allocation_map": gpu_allocation_map,
+        "phase5_fast_path_ref": phase5_fast_path_ref,
+        "evidence_artifact_ids": list(evidence_artifact_ids),
+    }
+    if git_commit is not None:
+        manifest["git_commit"] = git_commit
+    if selection_rationale is not None:
+        manifest["selection_rationale"] = selection_rationale
     return manifest

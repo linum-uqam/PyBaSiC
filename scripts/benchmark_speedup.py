@@ -22,6 +22,9 @@ candidate
     quality, and overall promote/reject verdicts.
 compare
     Recompute promote/reject summary from saved baseline and candidate artifacts.
+concurrency
+    Canonical Phase 6 multi vs batched A/B aggregator; legacy ``--mode`` parser
+    is retained for reference without deprecation warnings.
 
 Example (production-like params on the server)::
 
@@ -52,7 +55,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 
@@ -68,7 +71,12 @@ from linum_basic.benchmark.artifacts import (
     write_artifact,
     write_summary_table,
 )
-from linum_basic.benchmark.metadata import RunMetadata, collect_git_commit, collect_run_metadata
+from linum_basic.benchmark.metadata import (
+    RunMetadata,
+    collect_concurrency_metadata,
+    collect_git_commit,
+    collect_run_metadata,
+)
 from linum_basic.benchmark.profile import (
     BottleneckReport,
     LeverAttemptTable,
@@ -78,6 +86,7 @@ from linum_basic.benchmark.profile import (
     build_phase3_handoff_config,
     build_phase5_backlog,
     build_phase5_fast_path,
+    build_phase6_concurrency_verdict,
 )
 from linum_basic.benchmark.quality import (
     CALIBRATION_POLICY,
@@ -96,14 +105,16 @@ from linum_basic.benchmark.sweep import SPEED_RATIO_THRESHOLD, build_sweep_table
 from linum_basic.benchmark.telemetry import (
     TelemetryRecord,
     collect_memory_stats,
+    collect_multi_gpu_memory_stats,
     collect_precision_metadata,
+    peak_single_gpu_vram_bytes,
     run_with_phases,
 )
 from linum_basic.fit import MosaicFit, fit_mosaic
 
 LARGE_RUN_Z_THRESHOLD = 8
 
-_HARNESS_SUBCOMMANDS = frozenset({"baseline", "candidate", "compare", "profile", "sweep", "optimize"})
+_HARNESS_SUBCOMMANDS = frozenset({"baseline", "candidate", "compare", "concurrency", "profile", "sweep", "optimize"})
 
 
 def _cuda_available() -> bool:
@@ -427,6 +438,29 @@ def _build_subcommand_parser() -> argparse.ArgumentParser:
         help="Path to candidate-artifact.json (repeatable, ordered by ranked_levers).",
     )
     optimize.set_defaults(handler=cmd_optimize)
+
+    concurrency = subparsers.add_parser(
+        "concurrency",
+        help="Aggregate multi vs batched candidate artifacts into phase6-concurrency-verdict.json (canonical).",
+    )
+    concurrency.add_argument("--output-dir", required=True, help="Directory for phase6-concurrency-verdict.json.")
+    concurrency.add_argument(
+        "--baseline-id",
+        required=True,
+        help="Saved baseline bundle id referenced by the candidate artifacts.",
+    )
+    concurrency.add_argument(
+        "--candidate",
+        action="append",
+        required=True,
+        help="Path to candidate-artifact.json (repeatable; exactly two: multi and batched arms).",
+    )
+    concurrency.add_argument(
+        "--fast-path-ref",
+        default="",
+        help="Path or commit of phase5-fast-path.json frozen for this A/B (D-13).",
+    )
+    concurrency.set_defaults(handler=cmd_concurrency)
 
     return parser
 
@@ -1047,6 +1081,7 @@ def cmd_candidate(args: argparse.Namespace) -> int:
             mosaic,
             z_indices=z_indices,
             basic_kwargs=strategy.basic_kwargs,
+            strategy=cast(Literal["auto", "sequential", "multi", "batched"], strategy.name),
             n_workers=1,
             verbose=False,
         )
@@ -1134,6 +1169,24 @@ def cmd_candidate(args: argparse.Namespace) -> int:
     )
     all_warnings = [*warnings, *comparison_warnings]
 
+    visible_devices = list(run_meta.cuda_devices)
+    gpu_map = _gpu_map_for_strategy(strategy.name, visible_devices)
+    serialized_quality = _serialize_quality_verdict(quality_verdict)
+    multi_gpu_stats = collect_multi_gpu_memory_stats(visible_devices)
+    peak_vram_bytes = peak_single_gpu_vram_bytes(multi_gpu_stats)
+    if peak_vram_bytes == 0:
+        peak_vram_bytes = int(candidate_telemetry.get("max_memory_allocated_bytes") or 0)
+    concurrency_meta = collect_concurrency_metadata(
+        strategy=strategy.name,
+        fork_model=None,
+        n_gpus=len(visible_devices),
+        gpu_map=gpu_map,
+        inductor_cache_path=run_meta.inductor_cache_path,
+        compile_status=compile_status,
+        quality_verdict=serialized_quality,
+    )
+    concurrency_meta["peak_vram_bytes"] = peak_vram_bytes
+
     candidate_artifact = CandidateArtifact(
         candidate_id=candidate_id,
         baseline_id=baseline.baseline_id,
@@ -1173,6 +1226,7 @@ def cmd_candidate(args: argparse.Namespace) -> int:
             ),
             "precision": _precision_metadata(),
             "convergence": convergence_meta,
+            "concurrency": concurrency_meta,
             "speed_verdict": speed_verdict,
             "quality_verdict": _serialize_quality_verdict(quality_verdict),
             "overall": overall,
@@ -1498,6 +1552,104 @@ def cmd_optimize(args: argparse.Namespace) -> int:
         f"(rows={len(attempt_table.rows)}, backlog={len(backlog['entries'])}, "
         f"promoted_keys={len(handoff['stacked_overrides'])}, "
         f"no_optimization={fast_path['no_optimization']})"
+    )
+    return 0
+
+
+def _gpu_map_for_strategy(strategy_name: str, devices: list[str]) -> dict[str, str]:
+    """Map visible CUDA devices to worker or batched allocation labels (D-08)."""
+    if strategy_name == "batched":
+        return dict.fromkeys(devices, "batched")
+    return {device: f"worker-{index}" for index, device in enumerate(devices)}
+
+
+def _concurrency_mode_from_candidate(candidate: CandidateArtifact) -> dict[str, Any]:
+    """Extract a build_phase6_concurrency_verdict mode record from a candidate artifact."""
+    meta = candidate.metadata
+    concurrency = meta.get("concurrency") or {}
+    operator_timing = meta.get("operator_timing") or {}
+    telemetry = meta.get("telemetry") or {}
+
+    strategy = concurrency.get("strategy")
+    if not strategy:
+        msg = f"Candidate {candidate.candidate_id} missing concurrency.strategy metadata"
+        raise ValueError(msg)
+
+    end_to_end_ms = operator_timing.get("end_to_end_ms")
+    per_z_ms = operator_timing.get("per_z_ms")
+    steady_state_ms = telemetry.get("steady_state_ms")
+    if end_to_end_ms is None or per_z_ms is None or steady_state_ms is None:
+        msg = (
+            f"Candidate {candidate.candidate_id} missing operator_timing or telemetry "
+            "fields required for concurrency verdict aggregation"
+        )
+        raise ValueError(msg)
+
+    peak_vram = concurrency.get("peak_vram_bytes")
+    if peak_vram is None:
+        peak_vram = telemetry.get("max_memory_allocated_bytes", 0)
+
+    return {
+        "strategy": str(strategy),
+        "fork_model": concurrency.get("fork_model"),
+        "end_to_end_ms": float(end_to_end_ms),
+        "per_z_ms": float(per_z_ms),
+        "steady_state_ms": float(steady_state_ms),
+        "quality_verdict": meta.get("quality_verdict"),
+        "artifact_id": candidate.candidate_id,
+        "peak_vram_bytes": int(peak_vram or 0),
+        "gpu_map": concurrency.get("gpu_map"),
+    }
+
+
+def cmd_concurrency(args: argparse.Namespace) -> int:
+    """Aggregate multi and batched candidate artifacts into phase6-concurrency-verdict.json."""
+    output_dir = Path(args.output_dir)
+    if not output_dir.is_dir():
+        print(f"--output-dir must be a directory: {output_dir}", file=sys.stderr)
+        return 1
+
+    candidate_paths = [Path(path) for path in args.candidate]
+    if len(candidate_paths) != 2:
+        print(
+            f"concurrency requires exactly 2 --candidate paths, got {len(candidate_paths)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    candidates: list[CandidateArtifact] = []
+    for path in candidate_paths:
+        if not path.is_file():
+            print(f"Candidate artifact not found: {path}", file=sys.stderr)
+            return 1
+        try:
+            candidates.append(read_artifact(path, CandidateArtifact))
+        except (ValueError, KeyError, TypeError) as exc:
+            print(f"Failed to read candidate {path}: {exc}", file=sys.stderr)
+            return 1
+
+    try:
+        modes = [_concurrency_mode_from_candidate(candidate) for candidate in candidates]
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    evidence_ids = [args.baseline_id, *[candidate.candidate_id for candidate in candidates]]
+    verdict = build_phase6_concurrency_verdict(
+        modes,
+        baseline_id=args.baseline_id,
+        phase5_fast_path_ref=args.fast_path_ref or "",
+        evidence_artifact_ids=evidence_ids,
+        git_commit=collect_git_commit(),
+    )
+
+    verdict_path = output_dir / "phase6-concurrency-verdict.json"
+    verdict_path.write_text(json.dumps(verdict, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    winner = verdict.get("winner")
+    winner_strategy = winner.get("strategy") if isinstance(winner, dict) else None
+    print(
+        f"Wrote phase6 concurrency verdict to {verdict_path} "
+        f"(winner={winner_strategy}, recommended_max_forks={verdict.get('recommended_max_forks')})"
     )
     return 0
 

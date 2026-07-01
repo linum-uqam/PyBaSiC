@@ -12,8 +12,10 @@ from linum_basic._parallel import (
     is_gpu_backend,
     list_cuda_devices,
     parallel_map,
+    parallel_map_cuda_devices,
     resolve_workers,
 )
+from linum_basic._torch_cache import _cuda_joblib_worker_init
 from linum_basic.fit import MosaicFit, apply_fit, fit_mosaic
 from linum_basic.mosaic import MosaicGrid
 
@@ -115,6 +117,50 @@ def test_parallel_map_parallel_preserves_order() -> None:
 
 def test_parallel_map_empty() -> None:
     assert parallel_map(_square, [], 2) == []
+
+
+# ---------------------------------------------------------------------------
+# CUDA joblib worker initializer
+# ---------------------------------------------------------------------------
+
+
+def test_cuda_joblib_worker_init_sets_env_and_cache(tmp_path) -> None:
+    for key in ("TORCHINDUCTOR_CACHE_DIR", "TORCHINDUCTOR_FX_GRAPH_CACHE", "LINUM_BASIC_DCT_KERNEL"):
+        os.environ.pop(key, None)
+    cache_dir = tmp_path / "inductor-cache"
+    _cuda_joblib_worker_init(str(cache_dir), (("LINUM_BASIC_DCT_KERNEL", "tuned"),))
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(cache_dir.resolve())
+    assert os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] == "1"
+    assert os.environ["LINUM_BASIC_DCT_KERNEL"] == "tuned"
+
+
+def test_cuda_joblib_worker_init_none_cache_dir_is_safe() -> None:
+    for key in ("TORCHINDUCTOR_CACHE_DIR", "TORCHINDUCTOR_FX_GRAPH_CACHE"):
+        os.environ.pop(key, None)
+    _cuda_joblib_worker_init(None, ())
+    assert "TORCHINDUCTOR_FX_GRAPH_CACHE" in os.environ
+
+
+def _read_torchinductor_cache_dir(_item: int, _device: str) -> str | None:
+    """Module-level worker returning the Inductor cache dir env var."""
+    return os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+
+
+def test_parallel_map_cuda_devices_worker_sees_cache_env(tmp_path, monkeypatch) -> None:
+    try:
+        from joblib import parallel_config  # noqa: F401
+    except ImportError:
+        pytest.skip("joblib not installed")
+    cache_dir = tmp_path / "shared-inductor"
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(cache_dir))
+    results = parallel_map_cuda_devices(
+        _read_torchinductor_cache_dir,
+        [0, 1],
+        ["cuda:0", "cuda:1"],
+    )
+    expected = str(cache_dir.resolve())
+    assert len(results) == 2
+    assert all(value == expected for value in results)
 
 
 # ---------------------------------------------------------------------------
