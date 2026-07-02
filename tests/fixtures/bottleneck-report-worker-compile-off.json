@@ -1,0 +1,15 @@
+{
+  "hotspots": [],
+  "primary_limit": "compile-shape",
+  "ranked_levers": [
+    {
+      "expected_risk": "low",
+      "gate_notes": "Set LINUM_BASIC_ALM_COMPILE_MODE=off in CUDA joblib workers (511c88c); validate seam_l1 quality gates before Phase 11 promotion.",
+      "lever_id": "worker-compile-off",
+      "priority": 1,
+      "target_file": "linum_basic/_parallel.py"
+    }
+  ],
+  "schema_version": "1",
+  "working_size": 128
+}

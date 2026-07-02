@@ -75,6 +75,14 @@ notebooks = [
     "ipykernel>=6.29",
     "ipywidgets>=8.0",
 ]
+# Supplementary BaSiCPy reference comparison for harness sidecars (D-09); not required for core fitting.
+basicpy = ["basicpy>=2.0"]
+
+[tool.uv]
+# basicpy 2.0.0 pins scipy<1.13; linum-basic requires scipy>=1.15. Override only for BaSiCPy resolution.
+override-dependencies = [
+    { package = { name = "basicpy" }, dependencies = ["scipy>=1.15"] },
+]
 
 [project.scripts]
 basic = "linum_basic.cli:main"

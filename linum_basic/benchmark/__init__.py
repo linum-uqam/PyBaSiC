@@ -40,6 +40,7 @@ from linum_basic.benchmark.profile import (
     LeverAttemptTable,
     RankedLever,
     build_bottleneck_report,
+    build_forensics_bottleneck_report,
     build_lever_attempt_table,
     build_phase3_handoff_config,
     build_phase5_backlog,
@@ -49,6 +50,7 @@ from linum_basic.benchmark.profile import (
     build_phase7_integration_summary,
     compute_stack_speed_ratio,
     diagnose_regression_triage,
+    load_historical_baselines_from_harness_candidate,
     warn_git_commit_drift,
 )
 from linum_basic.benchmark.quality import (
@@ -126,6 +128,7 @@ __all__ = [
     "assert_comparable",
     "build_audit_report",
     "build_bottleneck_report",
+    "build_forensics_bottleneck_report",
     "build_lever_attempt_table",
     "build_phase3_handoff_config",
     "build_phase5_backlog",
@@ -150,6 +153,7 @@ __all__ = [
     "diagnose_regression_triage",
     "evaluate_quality_gate",
     "evaluate_sweep_adoption",
+    "load_historical_baselines_from_harness_candidate",
     "load_overrides",
     "make_baseline_id",
     "make_handrolled_stack",

@@ -863,6 +863,26 @@ def build_overall_verdict(speed_verdict: dict[str, Any], quality_verdict: Qualit
     return "promote" if quality_verdict.passed else "reject"
 
 
+def build_phase11_promotion_verdict(
+    speed_verdict: dict[str, Any],
+    quality_verdict: QualityVerdict,
+    *,
+    threshold: float = SPEED_RATIO_THRESHOLD,
+) -> dict[str, Any]:
+    """Return Phase 11 promotion eligibility from quality and steady_state speed ratio."""
+    ratio = speed_verdict.get("ratio")
+    quality_passed = quality_verdict.passed
+    speed_passed = ratio is not None and float(ratio) >= threshold
+    return {
+        "speed_passed": speed_passed,
+        "quality_passed": quality_passed,
+        "promotion_eligible": quality_passed and speed_passed,
+        "speed_ratio": ratio,
+        "threshold": threshold,
+        "metric": "steady_state_ms",
+    }
+
+
 def _make_candidate_id(*, commit: str, subject_id: str, timestamp: str) -> str:
     short_commit = commit[:7]
     subject_slug = slugify_label(subject_id)
@@ -901,6 +921,37 @@ def _probe_candidate(
     )
 
 
+def _build_timing_report(
+    *,
+    candidate_telemetry: dict[str, Any],
+    baseline_telemetry: dict[str, Any],
+    candidate_metadata: dict[str, Any],
+    baseline_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Report steady_state (primary) and end_to_end timing for operator context."""
+    candidate_operator = candidate_metadata.get("operator_timing") or {}
+    baseline_operator = baseline_metadata.get("operator_timing") or {}
+    return {
+        "primary_metric": "steady_state_ms",
+        "candidate_steady_state_ms": candidate_telemetry.get("steady_state_ms"),
+        "baseline_steady_state_ms": baseline_telemetry.get("steady_state_ms"),
+        "candidate_end_to_end_ms": candidate_operator.get("end_to_end_ms"),
+        "baseline_end_to_end_ms": baseline_operator.get("end_to_end_ms"),
+    }
+
+
+def _format_phase11_promotion_line(promotion_verdict: dict[str, Any]) -> str:
+    ratio = promotion_verdict["speed_ratio"]
+    ratio_text = "n/a" if ratio is None else f"{float(ratio):.2f}"
+    threshold = float(promotion_verdict["threshold"])
+    return (
+        f"Phase 11 promotion eligibility: metric={promotion_verdict['metric']} "
+        f"ratio={ratio_text} threshold={threshold:.2f} "
+        f"quality_passed={promotion_verdict['quality_passed']} "
+        f"promotion_eligible={promotion_verdict['promotion_eligible']}"
+    )
+
+
 def _build_comparison_summary(
     *,
     baseline: BaselineBundle,
@@ -908,6 +959,8 @@ def _build_comparison_summary(
     deltas: dict[str, Any],
     speed_verdict: dict[str, Any],
     quality_verdict: QualityVerdict,
+    promotion_verdict: dict[str, Any],
+    timing_report: dict[str, Any],
     overall: str,
     warnings: list[str],
 ) -> dict[str, Any]:
@@ -917,6 +970,8 @@ def _build_comparison_summary(
         "overall": overall,
         "speed_verdict": speed_verdict,
         "quality_verdict": _serialize_quality_verdict(quality_verdict),
+        "promotion_verdict": promotion_verdict,
+        "timing_report": timing_report,
         "deltas": _serialize_deltas(deltas),
         "warnings": warnings,
         "worst_z": quality_verdict.worst_z,
@@ -975,12 +1030,21 @@ def _run_candidate_comparison(
     baseline_telemetry = baseline.metadata.get("telemetry", {})
     speed_verdict = compute_speed_verdict(candidate_telemetry, baseline_telemetry)
     overall = build_overall_verdict(speed_verdict, quality_verdict)
+    promotion_verdict = build_phase11_promotion_verdict(speed_verdict, quality_verdict)
+    timing_report = _build_timing_report(
+        candidate_telemetry=candidate_telemetry,
+        baseline_telemetry=baseline_telemetry,
+        candidate_metadata=candidate_artifact.metadata,
+        baseline_metadata=baseline.metadata,
+    )
     summary = _build_comparison_summary(
         baseline=baseline,
         candidate=candidate_artifact,
         deltas=deltas,
         speed_verdict=speed_verdict,
         quality_verdict=quality_verdict,
+        promotion_verdict=promotion_verdict,
+        timing_report=timing_report,
         overall=overall,
         warnings=warnings,
     )
@@ -1327,6 +1391,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     )
 
     print(f"Wrote comparison summary to {output_dir} (overall={overall})")
+    print(_format_phase11_promotion_line(summary["promotion_verdict"]))
     for warning in warnings:
         print(f"Warning: {warning}", file=sys.stderr)
     return 1 if overall == "reject" else 0

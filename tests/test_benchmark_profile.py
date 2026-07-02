@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -19,6 +20,7 @@ from linum_basic.benchmark.profile import (
     LeverAttemptTable,
     RankedLever,
     build_bottleneck_report,
+    build_forensics_bottleneck_report,
     build_forensics_change_attribution,
     build_forensics_recovery_levers,
     build_forensics_report,
@@ -31,6 +33,7 @@ from linum_basic.benchmark.profile import (
     build_regression_triage_result,
     diagnose_regression_triage,
     is_fast_era,
+    load_historical_baselines_from_harness_candidate,
     load_historical_baselines_from_iteration_ab,
     warn_git_commit_drift,
     write_forensics_report_bundle,
@@ -612,6 +615,28 @@ class TestBuildPhase5FastPath:
             "inductor_warm_passes": 0,
         }
 
+    def test_phase5_fast_path_worker_compile_off_promotion_manifest(self) -> None:
+        manifest = build_phase5_fast_path(
+            {},
+            baseline_id="baseline-20260630T163351-e7c47a4-sub-22",
+            lever_stack=["dct-kernel-tuning", "worker-compile-off"],
+            code_path_flags={
+                "dct_kernel": "tuned",
+                "compile_mode": "off",
+                "inductor_warm_passes": 0,
+            },
+            evidence_artifact_ids=[
+                "baseline-20260630T163351-e7c47a4-sub-22",
+                "candidate-worker-compile-off",
+            ],
+            timestamp="2026-07-02T12:00:00Z",
+        )
+        assert manifest["working_size"] == 128
+        assert manifest["lever_stack"] == ["dct-kernel-tuning", "worker-compile-off"]
+        assert manifest["code_path_flags"]["compile_mode"] == "off"
+        assert manifest["code_path_flags"]["dct_kernel"] == "tuned"
+        assert manifest["no_optimization"] is False
+
 
 def _mode(
     *,
@@ -963,6 +988,84 @@ class TestLoadIterationAbBaselines:
             load_historical_baselines_from_iteration_ab(bad, current_steady_state_ms=100.0)
 
 
+def _write_harness_candidate_fixtures(
+    tmp_path: Path,
+    *,
+    candidate_payload: dict[str, object] | None = None,
+    compare_payload: dict[str, object] | None = None,
+) -> tuple[Path, Path]:
+    candidate = candidate_payload or {
+        "candidate_id": "candidate-20260702-511c88c-sub-22",
+        "metadata": {
+            "git_commit": "511c88c",
+            "telemetry": {
+                "steady_state_ms": 5000.0,
+                "end_to_end_ms": 6000.0,
+            },
+        },
+    }
+    compare = compare_payload or {
+        "candidate_id": candidate["candidate_id"],
+        "overall": "promote",
+        "speed_verdict": {"ratio": 45.8, "label": "faster"},
+    }
+    candidate_path = tmp_path / "candidate-artifact.json"
+    compare_path = tmp_path / "compare-summary.json"
+    candidate_path.write_text(json.dumps(candidate, indent=2), encoding="utf-8")
+    compare_path.write_text(json.dumps(compare, indent=2), encoding="utf-8")
+    return candidate_path, compare_path
+
+
+class TestHistoricalBaselinesFromHarness:
+    def test_historical_baselines_from_harness_candidate_row_fields(self, tmp_path: Path) -> None:
+        candidate_path, compare_path = _write_harness_candidate_fixtures(tmp_path)
+        rows = load_historical_baselines_from_harness_candidate(
+            candidate_path,
+            compare_path,
+            current_steady_state_ms=229_000.0,
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.git_commit == "511c88c"
+        assert row.steady_state_ms == 5000.0
+        assert row.end_to_end_ms == 6000.0
+        assert row.artifact_id == "candidate-20260702-511c88c-sub-22"
+        assert row.change_class == "torch_compile_inductor"
+        assert row.is_fast_era is True
+
+    def test_historical_baselines_from_harness_candidate_missing_telemetry_raises(self, tmp_path: Path) -> None:
+        candidate_path, compare_path = _write_harness_candidate_fixtures(
+            tmp_path,
+            candidate_payload={
+                "candidate_id": "candidate-bad",
+                "metadata": {"git_commit": "511c88c"},
+            },
+        )
+        with pytest.raises(ValueError, match=r"candidate-artifact\.json"):
+            load_historical_baselines_from_harness_candidate(
+                candidate_path,
+                compare_path,
+                current_steady_state_ms=229_000.0,
+            )
+
+    def test_historical_baselines_from_harness_candidate_integrates_with_forensics_report(self, tmp_path: Path) -> None:
+        candidate_path, compare_path = _write_harness_candidate_fixtures(tmp_path)
+        rows = load_historical_baselines_from_harness_candidate(
+            candidate_path,
+            compare_path,
+            current_steady_state_ms=229_000.0,
+        )
+        report = build_forensics_report(
+            slice_id=27,
+            historical_baselines=rows,
+            current_steady_state_ms=229_000.0,
+            current_git_commit="511c88c",
+            evidence_artifact_ids=[rows[0].artifact_id],
+        )
+        assert report["historical_baselines"]
+        assert report["historical_baselines"][0]["change_class"] == "torch_compile_inductor"
+
+
 class TestForensicsRecoveryLevers:
     def test_recovery_levers_ordered_with_required_fields(self) -> None:
         levers = build_forensics_recovery_levers()
@@ -1000,6 +1103,26 @@ class TestForensicsRecoveryLevers:
         assert "torch_compile_inductor" in classes
         assert "linumpy_config" in classes
         assert all("evidence_summary" in entry for entry in attribution)
+
+
+class TestForensicsBottleneckReport:
+    _FIXTURE = Path(__file__).resolve().parent / "fixtures" / "bottleneck-report-worker-compile-off.json"
+
+    def test_forensics_bottleneck_report_single_worker_compile_off(self) -> None:
+        report = build_forensics_bottleneck_report()
+        assert report["schema_version"] == "1"
+        assert report["working_size"] == 128
+        assert report["primary_limit"] == BOTTLENECK_COMPILE_SHAPE
+        assert report["hotspots"] == []
+        levers = report["ranked_levers"]
+        assert len(levers) == 1
+        assert levers[0]["lever_id"] == "worker-compile-off"
+        assert levers[0]["priority"] == 1
+        assert {"lever_id", "target_file", "priority", "expected_risk", "gate_notes"} <= set(levers[0])
+
+    def test_forensics_bottleneck_report_fixture_matches_helper_serialisation(self) -> None:
+        expected = json.dumps(build_forensics_bottleneck_report(), indent=2, sort_keys=True)
+        assert self._FIXTURE.read_text(encoding="utf-8") == expected
 
 
 class TestForensicsReport:

@@ -462,6 +462,97 @@ def _write_sidecar_per_z_outlier_fixtures(artifacts_dir: Path) -> dict[str, obje
     }
 
 
+def _write_promotion_eligible_fixtures(artifacts_dir: Path) -> dict[str, object]:
+    """Write baseline/candidate artifacts that pass quality and exceed the speed threshold."""
+    from linum_basic.benchmark.artifacts import (
+        SCHEMA_VERSION,
+        BaselineBundle,
+        CandidateArtifact,
+        ToleranceSidecar,
+        write_artifact,
+    )
+    from linum_basic.benchmark.quality import METRIC_DEFINITION_VERSION
+
+    baseline_id = "baseline-20260101-abc1234-syn"
+    bundle_dir = artifacts_dir / baseline_id
+    bundle_dir.mkdir(parents=True)
+
+    z_indices = [0, 2]
+    baseline_rows = [
+        {"z": 0, "seam_l1": 0.1, "seam_curvature": 0.02},
+        {"z": 2, "seam_l1": 0.05, "seam_curvature": 0.02},
+    ]
+    baseline = BaselineBundle(
+        baseline_id=baseline_id,
+        uuid="550e8400-e29b-41d4-a716-446655440000",
+        schema_version=SCHEMA_VERSION,
+        metric_definition_version=METRIC_DEFINITION_VERSION,
+        subject_id="syn",
+        run_label="test",
+        input_fingerprint="sha256:deadbeef",
+        z_indices=z_indices,
+        array_shape=[3, 16, 16],
+        tile_shape=[16, 16],
+        strategy_params={"working_size": 128},
+        metrics_rows=baseline_rows,
+        metrics_aggregates={"seam_l1": 0.1, "seam_curvature": 0.02},
+        repeats=1,
+        metadata={
+            "git_commit": "abc1234567890abcdef",
+            "telemetry": {"steady_state_ms": 100.0},
+            "operator_timing": {"end_to_end_ms": 120.0},
+        },
+        timestamp="2026-01-01T12:00:00Z",
+    )
+    sidecar = ToleranceSidecar(
+        baseline_id=baseline_id,
+        schema_version=SCHEMA_VERSION,
+        metric_definition_version=METRIC_DEFINITION_VERSION,
+        calibration_policy="mean+3std",
+        sigma=3.0,
+        min_abs=1e-6,
+        tolerances={
+            "seam_l1": {"mean": 0.1, "std": 0.001, "abs_tol": 0.01, "rel_tol": 0.1},
+            "seam_curvature": {"mean": 0.02, "std": 0.001, "abs_tol": 0.01, "rel_tol": 0.1},
+        },
+    )
+    candidate_id = "candidate-20260102-def5678-syn"
+    candidate = CandidateArtifact(
+        candidate_id=candidate_id,
+        baseline_id=baseline_id,
+        schema_version=SCHEMA_VERSION,
+        metric_definition_version=METRIC_DEFINITION_VERSION,
+        subject_id="syn",
+        run_label="batched-v1",
+        input_fingerprint="sha256:deadbeef",
+        z_indices=z_indices,
+        array_shape=[3, 16, 16],
+        tile_shape=[16, 16],
+        strategy_params={"working_size": 128},
+        metrics_rows=list(baseline_rows),
+        metrics_aggregates={"seam_l1": 0.1, "seam_curvature": 0.02},
+        repeats=1,
+        metadata={
+            "telemetry": {"steady_state_ms": 50.0},
+            "operator_timing": {"end_to_end_ms": 60.0},
+        },
+        environment={"cuda_version": "12.4"},
+        timestamp="2026-01-02T12:00:00Z",
+    )
+
+    write_artifact(bundle_dir / "baseline-bundle.json", baseline)
+    write_artifact(bundle_dir / "tolerance-sidecar.json", sidecar)
+    candidate_dir = artifacts_dir / candidate_id
+    candidate_dir.mkdir()
+    write_artifact(candidate_dir / "candidate-artifact.json", candidate)
+
+    return {
+        "baseline_id": baseline_id,
+        "baseline_path": bundle_dir / "baseline-bundle.json",
+        "candidate_path": candidate_dir / "candidate-artifact.json",
+    }
+
+
 def _make_telemetry_record(*, steady_state_ms: float):
     from linum_basic.benchmark.telemetry import TelemetryRecord
 
@@ -886,6 +977,57 @@ class TestCandidateSubcommand:
         assert not list(out_dir.glob("candidate-*"))
 
 
+class TestPhase11PromotionVerdict:
+    @staticmethod
+    def _quality_verdict(*, passed: bool):
+        from linum_basic.benchmark.quality import MetricDelta, QualityVerdict
+
+        return QualityVerdict(
+            passed=passed,
+            failures=() if passed else ("seam_l1",),
+            worst_z=None,
+            aggregate_deltas={"seam_l1": MetricDelta(0.0, 0.0)},
+            per_z_failures=(),
+        )
+
+    def test_promotion_verdict_both_pass_eligible(self) -> None:
+        from linum_basic.benchmark.sweep import SPEED_RATIO_THRESHOLD
+
+        speed_verdict = {"ratio": 1.35, "label": "faster"}
+        quality_verdict = self._quality_verdict(passed=True)
+        result = bench.build_phase11_promotion_verdict(speed_verdict, quality_verdict)
+        assert result["promotion_eligible"] is True
+        assert result["speed_passed"] is True
+        assert result["quality_passed"] is True
+        assert result["speed_ratio"] == 1.35
+        assert result["threshold"] == SPEED_RATIO_THRESHOLD
+        assert result["metric"] == "steady_state_ms"
+
+    def test_promotion_verdict_quality_pass_speed_fail(self) -> None:
+        speed_verdict = {"ratio": 1.10, "label": "faster"}
+        quality_verdict = self._quality_verdict(passed=True)
+        result = bench.build_phase11_promotion_verdict(speed_verdict, quality_verdict)
+        assert result["promotion_eligible"] is False
+        assert result["speed_passed"] is False
+        assert result["quality_passed"] is True
+
+    def test_promotion_verdict_speed_pass_quality_fail(self) -> None:
+        speed_verdict = {"ratio": 1.50, "label": "faster"}
+        quality_verdict = self._quality_verdict(passed=False)
+        result = bench.build_phase11_promotion_verdict(speed_verdict, quality_verdict)
+        assert result["promotion_eligible"] is False
+        assert result["speed_passed"] is True
+        assert result["quality_passed"] is False
+
+    def test_promotion_verdict_none_ratio(self) -> None:
+        speed_verdict = {"ratio": None, "label": "insufficient_telemetry"}
+        quality_verdict = self._quality_verdict(passed=True)
+        result = bench.build_phase11_promotion_verdict(speed_verdict, quality_verdict)
+        assert result["speed_passed"] is False
+        assert result["promotion_eligible"] is False
+        assert result["quality_passed"] is True
+
+
 class TestCompareSubcommand:
     def test_compare_writes_summary_from_stored_artifacts(
         self,
@@ -947,6 +1089,43 @@ class TestCompareSubcommand:
         summary = json.loads(summary_json.read_text(encoding="utf-8"))
         assert summary["overall"] in ("promote", "reject")
         assert (compare_out / "summary.md").exists() or (compare_out / "summary.csv").exists()
+
+    def test_compare_includes_promotion_verdict(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        fixtures = _write_promotion_eligible_fixtures(tmp_path / "artifacts")
+        compare_out = tmp_path / "compare-promotion"
+        rc = bench.main(
+            [
+                "compare",
+                "--baseline",
+                str(fixtures["baseline_path"]),
+                "--candidate",
+                str(fixtures["candidate_path"]),
+                "--output-dir",
+                str(compare_out),
+            ]
+        )
+        assert rc == 0
+        summary = json.loads((compare_out / "compare-summary.json").read_text(encoding="utf-8"))
+        promotion = summary["promotion_verdict"]
+        assert "promotion_eligible" in promotion
+        assert promotion["metric"] == "steady_state_ms"
+        assert promotion["promotion_eligible"] is True
+        assert promotion["speed_passed"] is True
+        assert promotion["quality_passed"] is True
+        assert promotion["speed_ratio"] == pytest.approx(2.0)
+        timing = summary["timing_report"]
+        assert timing["primary_metric"] == "steady_state_ms"
+        assert timing["candidate_steady_state_ms"] == 50.0
+        assert timing["baseline_steady_state_ms"] == 100.0
+        assert timing["candidate_end_to_end_ms"] == 60.0
+        assert timing["baseline_end_to_end_ms"] == 120.0
+        captured = capsys.readouterr()
+        assert "Phase 11 promotion eligibility" in captured.out
+        assert "promotion_eligible=True" in captured.out
 
     def test_compare_reports_insufficient_telemetry_when_candidate_telemetry_missing(
         self,

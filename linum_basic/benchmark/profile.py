@@ -38,6 +38,7 @@ __all__ = [
     "LeverAttemptTable",
     "RankedLever",
     "build_bottleneck_report",
+    "build_forensics_bottleneck_report",
     "build_forensics_change_attribution",
     "build_forensics_recovery_levers",
     "build_forensics_report",
@@ -52,6 +53,7 @@ __all__ = [
     "compute_stack_speed_ratio",
     "diagnose_regression_triage",
     "is_fast_era",
+    "load_historical_baselines_from_harness_candidate",
     "load_historical_baselines_from_iteration_ab",
     "warn_git_commit_drift",
     "write_forensics_report_bundle",
@@ -1331,6 +1333,96 @@ def load_historical_baselines_from_iteration_ab(
             raise ValueError(msg) from exc
 
     return tuple(rows)
+
+
+def load_historical_baselines_from_harness_candidate(
+    candidate_path: Path | str,
+    compare_path: Path | str,
+    *,
+    current_steady_state_ms: float,
+) -> tuple[HistoricalBaseline, ...]:
+    """Ingest Phase 11 harness candidate/compare JSON into D-23 historical rows (D-12).
+
+    Reads ``candidate-artifact.json`` telemetry and git metadata plus a companion
+    ``compare-summary.json`` for forward-compatible validation. Speed verdict fields
+    are not stored on the returned row.
+    """
+    import json
+
+    candidate_file = Path(candidate_path)
+    compare_file = Path(compare_path)
+
+    payload = json.loads(candidate_file.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        msg = f"{candidate_file} must contain a JSON object"
+        raise ValueError(msg)
+
+    compare_payload = json.loads(compare_file.read_text(encoding="utf-8"))
+    if not isinstance(compare_payload, dict):
+        msg = f"{compare_file} must contain a JSON object"
+        raise ValueError(msg)
+
+    if "candidate_id" not in payload:
+        msg = f"{candidate_file} missing required key candidate_id"
+        raise ValueError(msg)
+
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        msg = f"{candidate_file} metadata missing required telemetry block"
+        raise ValueError(msg)
+
+    if "git_commit" not in metadata:
+        msg = f"{candidate_file} metadata missing required key git_commit"
+        raise ValueError(msg)
+
+    telemetry = metadata.get("telemetry")
+    if not isinstance(telemetry, dict):
+        msg = f"{candidate_file} metadata missing required telemetry block"
+        raise ValueError(msg)
+
+    if "steady_state_ms" not in telemetry:
+        msg = f"{candidate_file} telemetry missing required key steady_state_ms"
+        raise ValueError(msg)
+
+    steady_state_ms = float(telemetry["steady_state_ms"])
+    if steady_state_ms <= 0:
+        msg = f"{candidate_file} telemetry.steady_state_ms must be positive"
+        raise ValueError(msg)
+
+    end_to_end_raw = telemetry.get("end_to_end_ms")
+    end_to_end_ms = float(end_to_end_raw) if end_to_end_raw is not None else None
+
+    _ = compare_payload.get("speed_verdict")
+
+    artifact_id = str(payload["candidate_id"])
+    git_commit = str(metadata["git_commit"])
+
+    row = HistoricalBaseline(
+        git_commit=git_commit,
+        steady_state_ms=steady_state_ms,
+        end_to_end_ms=end_to_end_ms,
+        artifact_id=artifact_id,
+        change_class="torch_compile_inductor",
+        is_fast_era=is_fast_era(current_steady_state_ms, steady_state_ms),
+    )
+    return (row,)
+
+
+def build_forensics_bottleneck_report() -> dict[str, Any]:
+    """Build a single-lever bottleneck report for Phase 11 worker-compile-off (D-01, PERF-01).
+
+    Unlike :func:`build_bottleneck_report`, this does not require Phase 5 profiler output.
+    Only the priority-1 ``worker-compile-off`` lever is included; ``auto-l-s-config`` is
+    excluded because it is a companion config promotion, not a harness attempt row (D-03).
+    """
+    worker_lever = next(lever for lever in build_forensics_recovery_levers() if lever.lever_id == "worker-compile-off")
+    return {
+        "schema_version": "1",
+        "working_size": 128,
+        "primary_limit": BOTTLENECK_COMPILE_SHAPE,
+        "hotspots": [],
+        "ranked_levers": [asdict(worker_lever)],
+    }
 
 
 def build_forensics_recovery_levers() -> tuple[RankedLever, ...]:
