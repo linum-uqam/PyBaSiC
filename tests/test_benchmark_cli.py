@@ -2135,3 +2135,238 @@ class TestInductorWarmPolicy:
         bundle_path = next(baseline_dirs[0].glob("*bundle*.json"))
         bundle_data = json.loads(bundle_path.read_text(encoding="utf-8"))
         assert bundle_data["metadata"]["inductor_warm_passes"] == 2
+
+
+class TestHarnessStrategyAuto:
+    def test_baseline_parser_accepts_strategy_auto(self) -> None:
+        parser = bench._build_subcommand_parser()
+        args = parser.parse_args(["baseline", "--input", "x.ome.zarr", "--strategy", "auto"])
+        assert args.strategy == "auto"
+
+    def test_candidate_parser_accepts_strategy_auto(self) -> None:
+        parser = bench._build_subcommand_parser()
+        args = parser.parse_args(
+            [
+                "candidate",
+                "--input",
+                "x.ome.zarr",
+                "--baseline-id",
+                "baseline-test",
+                "--output-dir",
+                "out",
+                "--strategy",
+                "auto",
+            ]
+        )
+        assert args.strategy == "auto"
+
+    def test_baseline_parser_default_strategy_is_baseline(self) -> None:
+        parser = bench._build_subcommand_parser()
+        args = parser.parse_args(["baseline", "--input", "x.ome.zarr"])
+        assert args.strategy == "baseline"
+
+    @pytest.mark.parametrize(
+        ("harness_label", "fit_strategy"),
+        [
+            ("baseline", "sequential"),
+            ("sequential", "sequential"),
+            ("multi", "multi"),
+            ("batched", "batched"),
+            ("auto", "auto"),
+        ],
+    )
+    def test_harness_to_fit_strategy_mapping(self, harness_label: str, fit_strategy: str) -> None:
+        assert bench._harness_to_fit_strategy(harness_label) == fit_strategy
+
+    def test_baseline_auto_routes_through_production_resolver(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from tests.test_auto_strategy_resolver import _mock_cuda_gpus_fit, _mock_fast_fit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        out_dir = tmp_path / "artifacts"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=3, n_rows=2, n_cols=2, tile=8)
+
+        _mock_cuda_gpus_fit(monkeypatch, 1)
+        _mock_fast_fit(monkeypatch)
+        monkeypatch.setattr(bench, "_cuda_available", lambda: True)
+
+        captured_kwargs: list[dict] = []
+        captured_fits: list = []
+
+        original_fit = bench.fit_mosaic
+
+        def _capturing_fit(mosaic, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            fit = original_fit(mosaic, **kwargs)
+            captured_fits.append(fit)
+            return fit
+
+        monkeypatch.setattr(bench, "fit_mosaic", _capturing_fit)
+
+        rc = bench.main(
+            [
+                "baseline",
+                "--input",
+                str(zarr_in),
+                "--subject-id",
+                "syn",
+                "--output-dir",
+                str(out_dir),
+                "--z-sample",
+                "2",
+                "--strategy",
+                "auto",
+                "--working-size",
+                "128",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "1",
+            ]
+        )
+        assert rc == 0
+        assert captured_kwargs
+        assert captured_kwargs[-1].get("strategy") == "auto"
+
+        strat = captured_fits[-1].params["_strategy"]
+        assert strat["override_source"] in {"auto_resolver", "user_kwargs"}
+        assert strat["name"] != "batched"
+        assert "batched_cuda_guard" in strat
+        assert any(code.startswith("AUTO_WS128_") for code in strat["reason_codes"])
+
+
+class TestHarnessStrategyMetadata:
+    def test_baseline_bundle_persists_strategy_metadata(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from tests.test_auto_strategy_resolver import (
+            STRATEGY_METADATA_REQUIRED_KEYS,
+            _mock_fast_fit,
+            _mock_no_cuda,
+        )
+
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        out_dir = tmp_path / "artifacts"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=3, n_rows=2, n_cols=2, tile=8)
+
+        _mock_no_cuda(monkeypatch)
+        _mock_fast_fit(monkeypatch)
+        monkeypatch.setattr(bench, "_cuda_available", lambda: False)
+
+        rc = bench.main(
+            [
+                "baseline",
+                "--input",
+                str(zarr_in),
+                "--subject-id",
+                "syn",
+                "--output-dir",
+                str(out_dir),
+                "--z-sample",
+                "2",
+                "--strategy",
+                "baseline",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "1",
+            ]
+        )
+        assert rc == 0
+
+        baseline_dirs = list(out_dir.glob("baseline-*"))
+        bundle_path = next(baseline_dirs[0].glob("*bundle*.json"))
+        bundle_data = json.loads(bundle_path.read_text(encoding="utf-8"))
+        strategy_meta = bundle_data["metadata"]["_strategy"]
+        assert isinstance(strategy_meta, dict)
+        assert set(strategy_meta.keys()) >= STRATEGY_METADATA_REQUIRED_KEYS
+        assert strategy_meta["name"] == "sequential"
+        assert strategy_meta["override_source"] == "strategy_lock"
+
+    def test_candidate_artifact_persists_strategy_metadata(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from tests.test_auto_strategy_resolver import (
+            STRATEGY_METADATA_REQUIRED_KEYS,
+            _mock_fast_fit,
+            _mock_no_cuda,
+        )
+
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        out_dir = tmp_path / "artifacts"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=3, n_rows=2, n_cols=2, tile=8)
+
+        _mock_no_cuda(monkeypatch)
+        _mock_fast_fit(monkeypatch)
+        monkeypatch.setattr(bench, "_cuda_available", lambda: False)
+
+        rc = bench.main(
+            [
+                "baseline",
+                "--input",
+                str(zarr_in),
+                "--subject-id",
+                "syn",
+                "--output-dir",
+                str(out_dir),
+                "--z-sample",
+                "2",
+                "--strategy",
+                "baseline",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "1",
+            ]
+        )
+        assert rc == 0
+        baseline_id = json.loads(next(next(out_dir.glob("baseline-*")).glob("*bundle*.json")).read_text(encoding="utf-8"))[
+            "baseline_id"
+        ]
+
+        rc = bench.main(
+            [
+                "candidate",
+                "--input",
+                str(zarr_in),
+                "--baseline-id",
+                baseline_id,
+                "--output-dir",
+                str(out_dir),
+                "--subject-id",
+                "syn",
+                "--strategy",
+                "sequential",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "1",
+            ]
+        )
+        assert rc == 0
+
+        candidate_path = next(out_dir.glob("candidate-*")) / "candidate-artifact.json"
+        data = json.loads(candidate_path.read_text(encoding="utf-8"))
+        strategy_meta = data["metadata"]["_strategy"]
+        assert isinstance(strategy_meta, dict)
+        assert set(strategy_meta.keys()) >= STRATEGY_METADATA_REQUIRED_KEYS

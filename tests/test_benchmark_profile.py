@@ -25,6 +25,7 @@ from linum_basic.benchmark.profile import (
     build_forensics_recovery_levers,
     build_forensics_report,
     build_lever_attempt_table,
+    build_nflo04_reconciliation,
     build_phase3_handoff_config,
     build_phase5_backlog,
     build_phase5_fast_path,
@@ -1239,6 +1240,51 @@ class TestGit_commit_drift:
         assert warning is not None
         assert "oldcommit" in warning
         assert "newcommit" in warning
+
+
+class TestBuildNflo04Reconciliation:
+    def test_within_tolerance_when_harness_within_10_percent(self) -> None:
+        result = build_nflo04_reconciliation(
+            harness_end_to_end_ms=1000.0,
+            nextflow_wallclock_ms=1050.0,
+        )
+        assert result["within_tolerance"] is True
+        assert result["ratio"] == pytest.approx(50.0 / 1050.0)
+        assert result["tolerance"] == pytest.approx(0.10)
+
+    def test_outside_tolerance_when_gap_exceeds_10_percent(self) -> None:
+        result = build_nflo04_reconciliation(
+            harness_end_to_end_ms=1000.0,
+            nextflow_wallclock_ms=1200.0,
+        )
+        assert result["within_tolerance"] is False
+        assert result["ratio"] == pytest.approx(200.0 / 1200.0)
+
+    def test_deferred_verdict_when_nextflow_timing_unavailable(self) -> None:
+        result = build_nflo04_reconciliation(
+            harness_end_to_end_ms=1000.0,
+            nextflow_wallclock_ms=None,
+        )
+        assert result["within_tolerance"] is None
+        assert result["ratio"] is None
+        assert result["nextflow_wallclock_ms"] is None
+        assert "deferred" in result["rationale"].lower()
+
+    def test_output_includes_operator_timing_fields(self) -> None:
+        result = build_nflo04_reconciliation(
+            harness_end_to_end_ms=5000.0,
+            nextflow_wallclock_ms=5200.0,
+            per_z_ms=1000.0,
+            n_z=5,
+        )
+        assert result["harness_end_to_end_ms"] == 5000.0
+        assert result["per_z_ms"] == 1000.0
+        assert result["nextflow_wallclock_ms"] == 5200.0
+        assert result["n_z"] == 5
+        assert "ratio" in result
+        assert "within_tolerance" in result
+        assert "tolerance" in result
+        assert "rationale" in result
 
 
 class TestPhase7_integration_summary:

@@ -1,0 +1,17 @@
+{
+  "baseline_id": "baseline-20260701T020128-be1e880-sub-22",
+  "candidate_id": "candidate-20260702T120000-abc1234-sub-22",
+  "fixture": true,
+  "fixture_note": "Representative schema reference for Plan 04 runbook CI; Nextflow timing deferred.",
+  "git_commit": "example1234",
+  "harness_end_to_end_ms": 6000.0,
+  "n_z": 5,
+  "nextflow_wallclock_ms": null,
+  "operator_timing_source": "candidate.metadata.operator_timing",
+  "per_z_ms": 1200.0,
+  "rationale": "Nextflow wall-clock timing deferred; harness operator_timing is primary evidence (D-13).",
+  "ratio": null,
+  "schema_version": "1",
+  "tolerance": 0.1,
+  "within_tolerance": null
+}

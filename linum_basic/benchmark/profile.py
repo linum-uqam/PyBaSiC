@@ -43,6 +43,7 @@ __all__ = [
     "build_forensics_recovery_levers",
     "build_forensics_report",
     "build_lever_attempt_table",
+    "build_nflo04_reconciliation",
     "build_phase3_handoff_config",
     "build_phase5_backlog",
     "build_phase5_fast_path",
@@ -1607,6 +1608,72 @@ def warn_git_commit_drift(*, manifest_git_commit: str | None, current_git_commit
     if manifest_git_commit is None or manifest_git_commit == current_git_commit:
         return None
     return f"phase5-fast-path git_commit {manifest_git_commit!r} differs from current HEAD {current_git_commit!r}"
+
+
+def build_nflo04_reconciliation(
+    *,
+    harness_end_to_end_ms: float,
+    nextflow_wallclock_ms: float | None = None,
+    per_z_ms: float | None = None,
+    n_z: int | None = None,
+    tolerance: float = 0.10,
+) -> dict[str, Any]:
+    """Build NFLO-04 harness-vs-Nextflow wall-clock reconciliation verdict (DEBT-04).
+
+    Computes ``ratio = abs(harness - nextflow) / nextflow`` when Nextflow timing is
+    available. When ``nextflow_wallclock_ms`` is omitted, the verdict is deferred
+    (harness-primary path per D-13) rather than treated as a failure.
+
+    Parameters
+    ----------
+    harness_end_to_end_ms : float
+        Harness ``metadata.operator_timing.end_to_end_ms`` (steady-state fit wall-clock).
+    nextflow_wallclock_ms : float or None, optional
+        Optional Nextflow operator wall-clock in milliseconds for cross-check.
+    per_z_ms : float or None, optional
+        Harness ``metadata.operator_timing.per_z_ms`` when available.
+    n_z : int or None, optional
+        Number of z-planes included in the harness run.
+    tolerance : float, optional
+        Relative tolerance for ``within_tolerance`` (default 0.10 per D-14).
+
+    Returns
+    -------
+    dict[str, Any]
+        Reconciliation payload with harness timing fields, ratio, tolerance verdict,
+        and a short audit rationale string.
+    """
+    ratio: float | None
+    within_tolerance: bool | None
+    if nextflow_wallclock_ms is None:
+        ratio = None
+        within_tolerance = None
+        rationale = "Nextflow wall-clock timing deferred; harness operator_timing is primary evidence (D-13)."
+    elif nextflow_wallclock_ms <= 0:
+        ratio = None
+        within_tolerance = None
+        rationale = f"Nextflow wall-clock {nextflow_wallclock_ms!r} is not positive; reconciliation deferred."
+    else:
+        ratio = abs(harness_end_to_end_ms - nextflow_wallclock_ms) / float(nextflow_wallclock_ms)
+        within_tolerance = ratio <= tolerance
+        if within_tolerance:
+            rationale = f"Harness end_to_end_ms within {tolerance:.0%} of Nextflow wall-clock (ratio={ratio:.4f})."
+        else:
+            rationale = (
+                f"Harness end_to_end_ms exceeds {tolerance:.0%} tolerance vs Nextflow "
+                f"(ratio={ratio:.4f}); document I/O or orchestration delta per D-14."
+            )
+
+    return {
+        "harness_end_to_end_ms": harness_end_to_end_ms,
+        "per_z_ms": per_z_ms,
+        "nextflow_wallclock_ms": nextflow_wallclock_ms,
+        "ratio": ratio,
+        "within_tolerance": within_tolerance,
+        "tolerance": tolerance,
+        "n_z": n_z,
+        "rationale": rationale,
+    }
 
 
 def build_phase7_integration_summary(

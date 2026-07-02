@@ -101,7 +101,13 @@ from linum_basic.benchmark.quality import (
     compute_quality_report,
     evaluate_quality_gate,
 )
-from linum_basic.benchmark.strategies import StrategyResult, load_overrides, resolve_strategy
+from linum_basic.benchmark.strategies import (
+    StrategyResult,
+    build_workload_context,
+    load_overrides,
+    resolve_auto_strategy,
+    resolve_strategy,
+)
 from linum_basic.benchmark.sweep import SPEED_RATIO_THRESHOLD, build_sweep_table
 from linum_basic.benchmark.telemetry import (
     TelemetryRecord,
@@ -297,10 +303,69 @@ def enforce_large_run_guard(
     raise SystemExit(1)
 
 
+def _harness_to_fit_strategy(name: str) -> Literal["auto", "sequential", "multi", "batched"]:
+    """Map harness CLI strategy label to :func:`fit_mosaic` ``strategy=`` argument."""
+    if name == "baseline":
+        return "sequential"
+    return cast(Literal["auto", "sequential", "multi", "batched"], name)
+
+
+def _resolve_harness_strategy(
+    strategy_name: str,
+    *,
+    z_indices: list[int],
+    n_tiles: int,
+    working_size: int,
+    estimate_darkfield: bool,
+    max_reweighting_iterations: int,
+    batched_z_chunk_size: int | None,
+    overrides: dict[str, Any],
+    is_synthetic: bool,
+) -> tuple[StrategyResult, Literal["auto", "sequential", "multi", "batched"]]:
+    """Resolve harness CLI strategy to fit kwargs and explicit ``fit_mosaic`` strategy."""
+    if strategy_name == "auto":
+        base_kwargs: dict[str, Any] = {
+            "backend": "torch",
+            "working_size": working_size,
+            "estimate_darkfield": estimate_darkfield,
+            "max_reweighting_iterations": max_reweighting_iterations,
+        }
+        if batched_z_chunk_size is not None:
+            base_kwargs["batched_z_chunk_size"] = batched_z_chunk_size
+        context = build_workload_context(
+            n_z=len(z_indices),
+            n_tiles=n_tiles,
+            field_mode="per-z",
+            working_size=working_size,
+        )
+        auto = resolve_auto_strategy(context, user_kwargs={**base_kwargs, **overrides})
+        resolved_chunk = auto.basic_kwargs.get("batched_z_chunk_size")
+        strategy = StrategyResult(
+            name="auto",
+            basic_kwargs=auto.basic_kwargs,
+            batched_z_chunk_size=resolved_chunk if resolved_chunk is not None else batched_z_chunk_size,
+            force_batched=bool(auto.basic_kwargs.get("force_batched_cuda", False)),
+            release_gate=not is_synthetic,
+            label="auto",
+        )
+        return strategy, "auto"
+
+    strategy = resolve_strategy(
+        strategy_name,
+        working_size=working_size,
+        estimate_darkfield=estimate_darkfield,
+        max_reweighting_iterations=max_reweighting_iterations,
+        batched_z_chunk_size=batched_z_chunk_size,
+        overrides=overrides,
+        is_synthetic=is_synthetic,
+    )
+    return strategy, _harness_to_fit_strategy(strategy_name)
+
+
 def _add_shared_run_group(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--strategy",
-        choices=("baseline", "sequential", "multi", "batched"),
+        choices=("baseline", "sequential", "multi", "batched", "auto"),
         default="baseline",
         help="Built-in fit strategy name.",
     )
@@ -581,8 +646,10 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             print(exc, file=sys.stderr)
             return 1
 
-    strategy = resolve_strategy(
+    strategy, fit_strategy = _resolve_harness_strategy(
         args.strategy,
+        z_indices=z_indices,
+        n_tiles=mosaic.n_tiles,
         working_size=args.working_size,
         estimate_darkfield=args.estimate_darkfield,
         max_reweighting_iterations=args.max_reweighting_iterations,
@@ -612,6 +679,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             mosaic,
             z_indices=z_indices,
             basic_kwargs=strategy.basic_kwargs,
+            strategy=fit_strategy,
             n_workers=1,
             verbose=False,
         )
@@ -646,6 +714,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     repeat_reports = [compute_quality_report(mosaic, fit) for fit in measured_fits]
     tolerance_specs = calibrate_tolerances(repeat_reports)
     primary_report = repeat_reports[-1]
+    primary_fit = measured_fits[-1]
+    strategy_metadata = dict(primary_fit.params.get("_strategy") or {})
 
     ts_compact = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     baseline_id = make_baseline_id(
@@ -680,6 +750,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         ),
         "precision": _precision_metadata(),
         "release_gate": strategy.release_gate,
+        "_strategy": strategy_metadata,
     }
 
     bundle = BaselineBundle(
@@ -1128,8 +1199,10 @@ def cmd_candidate(args: argparse.Namespace) -> int:
             print(exc, file=sys.stderr)
             return 1
 
-    strategy = resolve_strategy(
+    strategy, fit_strategy = _resolve_harness_strategy(
         args.strategy,
+        z_indices=z_indices,
+        n_tiles=mosaic.n_tiles,
         working_size=args.working_size,
         estimate_darkfield=args.estimate_darkfield,
         max_reweighting_iterations=args.max_reweighting_iterations,
@@ -1174,7 +1247,7 @@ def cmd_candidate(args: argparse.Namespace) -> int:
             mosaic,
             z_indices=z_indices,
             basic_kwargs=strategy.basic_kwargs,
-            strategy=cast(Literal["auto", "sequential", "multi", "batched"], strategy.name),
+            strategy=fit_strategy,
             n_workers=1,
             verbose=False,
         )
@@ -1325,6 +1398,7 @@ def cmd_candidate(args: argparse.Namespace) -> int:
             "overall": overall,
             "deltas": summary["deltas"],
             "warnings": all_warnings,
+            "_strategy": dict(primary_fit.params.get("_strategy") or {}),
         },
         environment=environment,
         timestamp=run_meta.timestamp,

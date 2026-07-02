@@ -1,0 +1,26 @@
+{
+  "audit_rationale": "Example fixture — all workers inherit one TORCHINDUCTOR_CACHE_DIR; post-run file count did not shrink.",
+  "baseline_id": "baseline-20260701T020128-be1e880-sub-22",
+  "candidate_id": "candidate-20260702T120000-abc1234-sub-22",
+  "fixture": true,
+  "fixture_note": "Representative schema reference for Plan 04 runbook CI; not live server evidence.",
+  "git_commit": "example1234",
+  "log_path": "/scratch/workspace/sub-22/runs/ws128-opt/27/nflo03-multi-shared-cache.log",
+  "per_worker_cache_paths": {
+    "cuda:0": "/scratch/workspace/sub-22/runs/ws128-opt/27/inductor-cache",
+    "cuda:1": "/scratch/workspace/sub-22/runs/ws128-opt/27/inductor-cache"
+  },
+  "post_run_cache": {
+    "file_count": 42,
+    "file_list_hash": "post-run-sha256-example"
+  },
+  "pre_run_cache": {
+    "file_count": 38,
+    "file_list_hash": "pre-run-sha256-example"
+  },
+  "resolved_inductor_cache_path": "/scratch/workspace/sub-22/runs/ws128-opt/27/inductor-cache",
+  "schema_version": "1",
+  "shared_inductor_cache_dir": "/scratch/workspace/sub-22/runs/ws128-opt/27/inductor-cache",
+  "stable_shared_cache": true,
+  "worker_pids": [12345, 12346]
+}
