@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from linum_basic.benchmark.artifacts import BaselineBundle, CandidateArtifact
@@ -32,10 +33,14 @@ __all__ = [
     "BottleneckClass",
     "BottleneckHotspot",
     "BottleneckReport",
+    "HistoricalBaseline",
     "LeverAttemptRow",
     "LeverAttemptTable",
     "RankedLever",
     "build_bottleneck_report",
+    "build_forensics_change_attribution",
+    "build_forensics_recovery_levers",
+    "build_forensics_report",
     "build_lever_attempt_table",
     "build_phase3_handoff_config",
     "build_phase5_backlog",
@@ -43,9 +48,13 @@ __all__ = [
     "build_phase5_optimization_report",
     "build_phase6_concurrency_verdict",
     "build_phase7_integration_summary",
+    "build_regression_triage_result",
     "compute_stack_speed_ratio",
     "diagnose_regression_triage",
+    "is_fast_era",
+    "load_historical_baselines_from_iteration_ab",
     "warn_git_commit_drift",
+    "write_forensics_report_bundle",
 ]
 
 _LEVER_DEFINITIONS: tuple[tuple[str, str, str, str], ...] = (
@@ -1145,6 +1154,334 @@ def build_phase6_concurrency_verdict(
     if selection_rationale is not None:
         manifest["selection_rationale"] = selection_rationale
     return manifest
+
+
+_FORENSICS_SCHEMA_VERSION = "1"
+_FAST_ERA_RATIO_THRESHOLD = 1.20
+
+_DEFAULT_FORENSICS_WORKLOAD: dict[str, Any] = {
+    "working_size": 128,
+    "z_indices": [0, 13, 27, 40, 54],
+    "estimate_darkfield": True,
+    "max_reweighting_iterations": 500,
+}
+
+
+def is_fast_era(current_steady_state_ms: float, baseline_steady_state_ms: float) -> bool:
+    """Return whether *baseline* qualifies as a fast era vs *current* timing (FORE-03, D-23).
+
+    A baseline is a fast era when ``current_steady_state_ms / baseline_steady_state_ms``
+    is at or above the locked 20% threshold (ratio >= 1.20).
+    """
+    if baseline_steady_state_ms <= 0:
+        return False
+    return current_steady_state_ms / baseline_steady_state_ms >= _FAST_ERA_RATIO_THRESHOLD
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalBaseline:
+    """One historical timing era for D-23 regression triage (FORE-03).
+
+    Attributes
+    ----------
+    git_commit : str
+        Git commit hash for the era.
+    steady_state_ms : float
+        Median steady-state per-z fit time in milliseconds.
+    end_to_end_ms : float or None
+        Optional end-to-end wall time in milliseconds.
+    artifact_id : str
+        Source artifact identifier (for example ``iteration-ab-z27``).
+    change_class : str or None
+        FORE-02 change class when known (for example ``torch_compile_inductor``).
+    is_fast_era : bool
+        Precomputed fast-era flag for serialization; callers may recompute via
+        :func:`is_fast_era`.
+    """
+
+    git_commit: str
+    steady_state_ms: float
+    end_to_end_ms: float | None
+    artifact_id: str
+    change_class: str | None
+    is_fast_era: bool
+
+
+def build_regression_triage_result(
+    *,
+    harness_overall: str,
+    wallclock_regressed: bool,
+    current_steady_state_ms: float,
+    historical_baselines: Sequence[HistoricalBaseline],
+) -> dict[str, Any]:
+    """Extend D-23 regression triage with ``historical_baselines[]`` evidence (FORE-03).
+
+    Returns the unchanged :func:`diagnose_regression_triage` enum plus historical
+    baseline rows, fast-era commit hashes, and the best (fastest) fast-era baseline.
+    """
+    regression_triage = diagnose_regression_triage(
+        harness_overall=harness_overall,
+        wallclock_regressed=wallclock_regressed,
+    )
+
+    serialized_baselines: list[dict[str, Any]] = []
+    fast_era_commits: list[str] = []
+    best_fast_era: HistoricalBaseline | None = None
+
+    for baseline in historical_baselines:
+        fast = is_fast_era(current_steady_state_ms, baseline.steady_state_ms)
+        row = HistoricalBaseline(
+            git_commit=baseline.git_commit,
+            steady_state_ms=baseline.steady_state_ms,
+            end_to_end_ms=baseline.end_to_end_ms,
+            artifact_id=baseline.artifact_id,
+            change_class=baseline.change_class,
+            is_fast_era=fast,
+        )
+        serialized_baselines.append(asdict(row))
+        if fast:
+            fast_era_commits.append(baseline.git_commit)
+            if best_fast_era is None or baseline.steady_state_ms < best_fast_era.steady_state_ms:
+                best_fast_era = row
+
+    return {
+        "regression_triage": regression_triage,
+        "historical_baselines": serialized_baselines,
+        "fast_era_commits": fast_era_commits,
+        "historical_regression_detected": bool(fast_era_commits),
+        "best_fast_era": asdict(best_fast_era) if best_fast_era is not None else None,
+    }
+
+
+def _parse_iteration_ab_era(
+    era_key: str,
+    era_payload: Any,
+    *,
+    artifact_id: str,
+    current_steady_state_ms: float,
+) -> HistoricalBaseline:
+    if not isinstance(era_payload, dict):
+        msg = f"{era_key} must be an object"
+        raise ValueError(msg)
+    if "git_commit" not in era_payload:
+        msg = f"{era_key} missing required key git_commit"
+        raise ValueError(msg)
+    if "steady_state_ms" not in era_payload:
+        msg = f"{era_key} missing required key steady_state_ms"
+        raise ValueError(msg)
+
+    steady_state_ms = float(era_payload["steady_state_ms"])
+    if steady_state_ms <= 0:
+        msg = f"{era_key}.steady_state_ms must be positive"
+        raise ValueError(msg)
+
+    end_to_end_raw = era_payload.get("end_to_end_ms")
+    end_to_end_ms = float(end_to_end_raw) if end_to_end_raw is not None else None
+
+    change_class = era_payload.get("change_class")
+    if change_class is not None:
+        change_class = str(change_class)
+
+    git_commit = str(era_payload["git_commit"])
+    return HistoricalBaseline(
+        git_commit=git_commit,
+        steady_state_ms=steady_state_ms,
+        end_to_end_ms=end_to_end_ms,
+        artifact_id=artifact_id,
+        change_class=change_class,
+        is_fast_era=is_fast_era(current_steady_state_ms, steady_state_ms),
+    )
+
+
+def load_historical_baselines_from_iteration_ab(
+    path: Path | str,
+    *,
+    current_steady_state_ms: float,
+) -> tuple[HistoricalBaseline, ...]:
+    """Ingest ad-hoc server A/B JSON into :class:`HistoricalBaseline` rows (FORE-03, D-23).
+
+    Reads existing ``iteration-ab-z*.json`` artifacts without running new GPU benchmarks.
+    Unknown extra keys are ignored for forward compatibility with ad-hoc scripts.
+    """
+    import json
+
+    resolved = Path(path)
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        msg = f"{resolved} must contain a JSON object"
+        raise ValueError(msg)
+
+    artifact_id = resolved.stem
+    rows: list[HistoricalBaseline] = []
+    for era_key in ("pre_fix", "post_fix"):
+        if era_key not in payload:
+            msg = f"{resolved} missing required key {era_key}"
+            raise ValueError(msg)
+        try:
+            rows.append(
+                _parse_iteration_ab_era(
+                    era_key,
+                    payload[era_key],
+                    artifact_id=artifact_id,
+                    current_steady_state_ms=current_steady_state_ms,
+                )
+            )
+        except ValueError as exc:
+            msg = f"{resolved}: {exc}"
+            raise ValueError(msg) from exc
+
+    return tuple(rows)
+
+
+def build_forensics_recovery_levers() -> tuple[RankedLever, ...]:
+    """Return ranked recovery levers from ad-hoc A6000 forensics (FORE-04).
+
+    Priority 1: worker compile-off (``511c88c``); priority 2: auto ``l_s`` config.
+    """
+    return (
+        RankedLever(
+            lever_id="worker-compile-off",
+            target_file="linum_basic/_parallel.py",
+            priority=1,
+            expected_risk="low",
+            gate_notes=(
+                "Set LINUM_BASIC_ALM_COMPILE_MODE=off in CUDA joblib workers (511c88c); "
+                "validate seam_l1 quality gates before Phase 11 promotion."
+            ),
+        ),
+        RankedLever(
+            lever_id="auto-l-s-config",
+            target_file="linumpy subject config",
+            priority=2,
+            expected_risk="low",
+            gate_notes=(
+                "Set fix_illum_smoothness_flatfield=null on subject configs for auto l_s; "
+                "confirm seam_l1 non-regression vs fixed l_s=0.05."
+            ),
+        ),
+    )
+
+
+def build_forensics_change_attribution(
+    historical_baselines: Sequence[HistoricalBaseline],
+) -> list[dict[str, Any]]:
+    """Map historical baselines to FORE-02 change-class attribution rows."""
+    entries: list[dict[str, Any]] = []
+    for baseline in historical_baselines:
+        if baseline.change_class is None:
+            continue
+        summary = f"steady_state_ms={baseline.steady_state_ms:.1f} at {baseline.git_commit} ({baseline.artifact_id})"
+        if baseline.end_to_end_ms is not None:
+            summary += f"; end_to_end_ms={baseline.end_to_end_ms:.1f}"
+        entries.append(
+            {
+                "change_class": baseline.change_class,
+                "git_commit": baseline.git_commit,
+                "steady_state_ms": baseline.steady_state_ms,
+                "evidence_summary": summary,
+            }
+        )
+    return entries
+
+
+def build_forensics_report(
+    *,
+    slice_id: int,
+    historical_baselines: Sequence[HistoricalBaseline],
+    current_steady_state_ms: float,
+    current_git_commit: str,
+    harness_compare_overall: str = "promote",
+    wallclock_regressed: bool = False,
+    evidence_artifact_ids: Sequence[str],
+    workload: dict[str, Any] | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Assemble slim forensics-report.json manifest from ingested baselines (FORE-01)."""
+    from datetime import UTC, datetime
+
+    triage = build_regression_triage_result(
+        harness_overall=harness_compare_overall,
+        wallclock_regressed=wallclock_regressed,
+        current_steady_state_ms=current_steady_state_ms,
+        historical_baselines=historical_baselines,
+    )
+    resolved_workload = dict(_DEFAULT_FORENSICS_WORKLOAD)
+    if workload is not None:
+        resolved_workload.update(workload)
+
+    return {
+        "schema_version": _FORENSICS_SCHEMA_VERSION,
+        "slice_id": slice_id,
+        "workload": resolved_workload,
+        "current_git_commit": current_git_commit,
+        "historical_baselines": triage["historical_baselines"],
+        "regression_triage": triage["regression_triage"],
+        "historical_regression_detected": triage["historical_regression_detected"],
+        "fast_era_commits": triage["fast_era_commits"],
+        "best_fast_era": triage["best_fast_era"],
+        "change_attribution": build_forensics_change_attribution(historical_baselines),
+        "ranked_recovery_levers": [asdict(lever) for lever in build_forensics_recovery_levers()],
+        "evidence_artifact_ids": list(evidence_artifact_ids),
+        "timestamp": timestamp or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def write_forensics_report_bundle(output_dir: Path | str, report: dict[str, Any]) -> None:
+    """Write ``forensics-report.json`` and ``forensics-report.md`` under *output_dir*.
+
+    Default operator path on the A6000 server:
+    ``/scratch/workspace/sub-22/runs/forensics/{slice_id}/``.
+    """
+    import json
+
+    from linum_basic.benchmark.artifacts import write_summary_table
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    json_path = out / "forensics-report.json"
+    json_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    rows: list[dict[str, Any]] = [
+        {
+            "era": "historical",
+            "git_commit": baseline.get("git_commit", ""),
+            "steady_state_ms": baseline.get("steady_state_ms", ""),
+            "change_class": baseline.get("change_class", ""),
+            "lever_id": "",
+            "priority": "",
+        }
+        for baseline in report.get("historical_baselines", [])
+    ]
+    rows.extend(
+        {
+            "era": "recovery_lever",
+            "git_commit": "",
+            "steady_state_ms": "",
+            "change_class": "",
+            "lever_id": lever.get("lever_id", ""),
+            "priority": lever.get("priority", ""),
+        }
+        for lever in report.get("ranked_recovery_levers", [])
+    )
+
+    md_path = out / "forensics-report.md"
+    preamble = (
+        "# Forensics report\n\n"
+        "Root cause: CUDA joblib worker torch.compile default plus fixed l_s=0.05 in "
+        "linumpy configs caused ~229 s/z regression; worker compile-off (511c88c) and "
+        "auto l_s restore ~3-6 s/z with improved seam_l1.\n\n"
+    )
+    if rows:
+        table_path = out / "_forensics-table.md"
+        write_summary_table(table_path, rows, fmt="markdown")
+        md_path.write_text(preamble + table_path.read_text(encoding="utf-8"), encoding="utf-8")
+        table_path.unlink()
+    else:
+        md_path.write_text(preamble, encoding="utf-8")
 
 
 def diagnose_regression_triage(*, harness_overall: str, wallclock_regressed: bool) -> str:

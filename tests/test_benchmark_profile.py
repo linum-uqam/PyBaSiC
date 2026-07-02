@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+
 import numpy as np
 import pytest
 
@@ -12,17 +15,25 @@ from linum_basic.benchmark.profile import (
     BOTTLENECK_MEMORY_BANDWIDTH,
     BOTTLENECK_SYNCHRONIZATION,
     BottleneckReport,
+    HistoricalBaseline,
     LeverAttemptTable,
     RankedLever,
     build_bottleneck_report,
+    build_forensics_change_attribution,
+    build_forensics_recovery_levers,
+    build_forensics_report,
     build_lever_attempt_table,
     build_phase3_handoff_config,
     build_phase5_backlog,
     build_phase5_fast_path,
     build_phase6_concurrency_verdict,
     build_phase7_integration_summary,
+    build_regression_triage_result,
     diagnose_regression_triage,
+    is_fast_era,
+    load_historical_baselines_from_iteration_ab,
     warn_git_commit_drift,
+    write_forensics_report_bundle,
 )
 from linum_basic.core import BaSiC
 
@@ -757,6 +768,320 @@ class TestBuildPhase6ConcurrencyVerdict:
         assert "winner" in manifest
         assert "recommended_max_forks" in manifest
         assert "gpu_allocation_map" in manifest
+
+
+class TestHistoricalBaseline:
+    def test_is_fast_era_true_at_1_20_boundary(self) -> None:
+        assert is_fast_era(120.0, 100.0) is True
+
+    def test_is_fast_era_false_at_1_19_boundary(self) -> None:
+        assert is_fast_era(119.0, 100.0) is False
+
+    def test_is_fast_era_false_when_baseline_non_positive(self) -> None:
+        assert is_fast_era(100.0, 0.0) is False
+        assert is_fast_era(100.0, -1.0) is False
+
+    def test_historical_baseline_asdict_round_trip(self) -> None:
+        baseline = HistoricalBaseline(
+            git_commit="511c88c",
+            steady_state_ms=5000.0,
+            end_to_end_ms=None,
+            artifact_id="iteration-ab-z27",
+            change_class="torch_compile_inductor",
+            is_fast_era=True,
+        )
+        payload = asdict(baseline)
+        assert payload["end_to_end_ms"] is None
+        assert payload["change_class"] == "torch_compile_inductor"
+        assert payload["is_fast_era"] is True
+
+
+class TestHistoricalRegressionTriage:
+    def test_reject_preserves_algorithm_or_env_drift(self) -> None:
+        result = build_regression_triage_result(
+            harness_overall="reject",
+            wallclock_regressed=True,
+            current_steady_state_ms=229_000.0,
+            historical_baselines=(),
+        )
+        assert result["regression_triage"] == "algorithm_or_env_drift"
+        assert result["historical_regression_detected"] is False
+        assert result["fast_era_commits"] == []
+        assert result["best_fast_era"] is None
+
+    def test_promote_with_wallclock_regressed_is_pipeline_issue(self) -> None:
+        result = build_regression_triage_result(
+            harness_overall="promote",
+            wallclock_regressed=True,
+            current_steady_state_ms=229_000.0,
+            historical_baselines=(),
+        )
+        assert result["regression_triage"] == "pipeline_orchestration_issue"
+
+    def test_promote_without_wallclock_regressed_is_no_regression(self) -> None:
+        result = build_regression_triage_result(
+            harness_overall="promote",
+            wallclock_regressed=False,
+            current_steady_state_ms=5_000.0,
+            historical_baselines=(),
+        )
+        assert result["regression_triage"] == "no_regression"
+
+    def test_fast_era_baselines_populate_historical_regression(self) -> None:
+        baselines = (
+            HistoricalBaseline(
+                git_commit="be1e880",
+                steady_state_ms=229_000.0,
+                end_to_end_ms=250_000.0,
+                artifact_id="iteration-ab-z27",
+                change_class="torch_compile_inductor",
+                is_fast_era=False,
+            ),
+            HistoricalBaseline(
+                git_commit="511c88c",
+                steady_state_ms=5_000.0,
+                end_to_end_ms=6_000.0,
+                artifact_id="iteration-ab-z27",
+                change_class="linumpy_config",
+                is_fast_era=True,
+            ),
+        )
+        result = build_regression_triage_result(
+            harness_overall="promote",
+            wallclock_regressed=False,
+            current_steady_state_ms=229_000.0,
+            historical_baselines=baselines,
+        )
+        assert result["historical_regression_detected"] is True
+        assert result["fast_era_commits"] == ["511c88c"]
+        assert result["best_fast_era"]["git_commit"] == "511c88c"
+        assert result["best_fast_era"]["steady_state_ms"] == 5_000.0
+
+    def test_no_fast_era_baselines_when_current_is_fast(self) -> None:
+        baselines = (
+            HistoricalBaseline(
+                git_commit="be1e880",
+                steady_state_ms=229_000.0,
+                end_to_end_ms=None,
+                artifact_id="iteration-ab-z27",
+                change_class="torch_compile_inductor",
+                is_fast_era=False,
+            ),
+            HistoricalBaseline(
+                git_commit="511c88c",
+                steady_state_ms=5_000.0,
+                end_to_end_ms=None,
+                artifact_id="iteration-ab-z27",
+                change_class="linumpy_config",
+                is_fast_era=False,
+            ),
+        )
+        result = build_regression_triage_result(
+            harness_overall="promote",
+            wallclock_regressed=False,
+            current_steady_state_ms=5_000.0,
+            historical_baselines=baselines,
+        )
+        assert result["historical_regression_detected"] is False
+        assert result["fast_era_commits"] == []
+        assert result["best_fast_era"] is None
+
+    def test_invalid_harness_overall_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="harness_overall"):
+            build_regression_triage_result(
+                harness_overall="unknown",
+                wallclock_regressed=False,
+                current_steady_state_ms=5_000.0,
+                historical_baselines=(),
+            )
+
+
+class TestLoadIterationAbBaselines:
+    @pytest.fixture
+    def fixture_path(self, tmp_path: pytest.TempPathFactory) -> object:
+        from pathlib import Path
+
+        repo_fixture = Path(__file__).resolve().parent / "fixtures" / "iteration-ab-z27.json"
+        if repo_fixture.is_file():
+            return repo_fixture
+        fixture = tmp_path / "iteration-ab-z27.json"
+        fixture.write_text(
+            """{
+  "slice_id": 27,
+  "pre_fix": {
+    "git_commit": "be1e880",
+    "steady_state_ms": 229000.0,
+    "end_to_end_ms": 250000.0,
+    "backend": "numpy",
+    "change_class": "torch_compile_inductor",
+    "linumpy_config": {"fix_illum_smoothness_flatfield": 0.05}
+  },
+  "post_fix": {
+    "git_commit": "511c88c",
+    "steady_state_ms": 5000.0,
+    "end_to_end_ms": 6000.0,
+    "backend": "torch",
+    "change_class": "linumpy_config",
+    "linumpy_config": {"fix_illum_smoothness_flatfield": null}
+  }
+}""",
+            encoding="utf-8",
+        )
+        return fixture
+
+    def test_loads_pre_and_post_fix_rows(self, fixture_path: object) -> None:
+        baselines = load_historical_baselines_from_iteration_ab(
+            fixture_path,
+            current_steady_state_ms=229_000.0,
+        )
+        assert len(baselines) == 2
+        commits = {row.git_commit for row in baselines}
+        assert "be1e880" in commits
+        assert "511c88c" in commits
+
+    def test_post_fix_is_fast_era_against_pre_fix_current(self, fixture_path: object) -> None:
+        baselines = load_historical_baselines_from_iteration_ab(
+            fixture_path,
+            current_steady_state_ms=229_000.0,
+        )
+        post_fix = next(row for row in baselines if row.git_commit.startswith("511c88c"))
+        assert post_fix.is_fast_era is True
+        assert post_fix.change_class == "linumpy_config"
+
+    def test_pre_fix_maps_torch_compile_change_class(self, fixture_path: object) -> None:
+        baselines = load_historical_baselines_from_iteration_ab(
+            fixture_path,
+            current_steady_state_ms=229_000.0,
+        )
+        pre_fix = next(row for row in baselines if row.git_commit.startswith("be1e880"))
+        assert pre_fix.change_class == "torch_compile_inductor"
+
+    def test_missing_required_keys_raises_value_error(self, tmp_path: pytest.TempPathFactory) -> None:
+        bad = tmp_path / "bad.json"
+        bad.write_text('{"slice_id": 27}', encoding="utf-8")
+        with pytest.raises(ValueError, match=r"bad\.json"):
+            load_historical_baselines_from_iteration_ab(bad, current_steady_state_ms=100.0)
+
+
+class TestForensicsRecoveryLevers:
+    def test_recovery_levers_ordered_with_required_fields(self) -> None:
+        levers = build_forensics_recovery_levers()
+        assert len(levers) >= 2
+        assert levers[0].lever_id == "worker-compile-off"
+        assert levers[0].priority == 1
+        assert levers[1].lever_id == "auto-l-s-config"
+        assert levers[1].priority == 2
+        for lever in levers:
+            assert lever.target_file
+            assert lever.expected_risk
+            assert lever.gate_notes
+
+    def test_change_attribution_documents_fore02_classes(self) -> None:
+        baselines = (
+            HistoricalBaseline(
+                git_commit="be1e880",
+                steady_state_ms=229_000.0,
+                end_to_end_ms=None,
+                artifact_id="iteration-ab-z27",
+                change_class="torch_compile_inductor",
+                is_fast_era=False,
+            ),
+            HistoricalBaseline(
+                git_commit="511c88c",
+                steady_state_ms=5_000.0,
+                end_to_end_ms=None,
+                artifact_id="iteration-ab-z27",
+                change_class="linumpy_config",
+                is_fast_era=True,
+            ),
+        )
+        attribution = build_forensics_change_attribution(baselines)
+        classes = {entry["change_class"] for entry in attribution}
+        assert "torch_compile_inductor" in classes
+        assert "linumpy_config" in classes
+        assert all("evidence_summary" in entry for entry in attribution)
+
+
+class TestForensicsReport:
+    @pytest.fixture
+    def baselines(self) -> tuple[HistoricalBaseline, ...]:
+        from pathlib import Path
+
+        fixture = Path(__file__).resolve().parent / "fixtures" / "iteration-ab-z27.json"
+        return tuple(load_historical_baselines_from_iteration_ab(fixture, current_steady_state_ms=229_000.0))
+
+    def test_report_schema_keys(self, baselines: tuple[HistoricalBaseline, ...]) -> None:
+        report = build_forensics_report(
+            slice_id=27,
+            historical_baselines=baselines,
+            current_steady_state_ms=229_000.0,
+            current_git_commit="511c88c",
+            harness_compare_overall="promote",
+            wallclock_regressed=False,
+            evidence_artifact_ids=["iteration-ab-z27.json"],
+        )
+        for key in (
+            "schema_version",
+            "slice_id",
+            "workload",
+            "current_git_commit",
+            "historical_baselines",
+            "regression_triage",
+            "change_attribution",
+            "ranked_recovery_levers",
+            "evidence_artifact_ids",
+            "timestamp",
+            "fast_era_commits",
+        ):
+            assert key in report
+        assert report["workload"]["working_size"] == 128
+        assert report["fast_era_commits"]
+        assert "timeline_commits" not in report
+        assert "basicpy_reference" not in report
+        assert "bisect_windows" not in report
+
+    def test_ranked_recovery_levers_match_ranked_lever_schema(self, baselines: tuple[HistoricalBaseline, ...]) -> None:
+        report = build_forensics_report(
+            slice_id=27,
+            historical_baselines=baselines,
+            current_steady_state_ms=229_000.0,
+            current_git_commit="511c88c",
+            evidence_artifact_ids=["iteration-ab-z27.json"],
+        )
+        levers = report["ranked_recovery_levers"]
+        assert levers[0]["lever_id"] == "worker-compile-off"
+        for lever in levers:
+            assert {"lever_id", "target_file", "priority", "expected_risk", "gate_notes"} <= set(lever)
+
+
+class TestForensicsReportBundle:
+    def test_writes_json_and_markdown(
+        self, tmp_path: pytest.TempPathFactory, baselines: tuple[HistoricalBaseline, ...] | None = None
+    ) -> None:
+        from pathlib import Path
+
+        if baselines is None:
+            fixture = Path(__file__).resolve().parent / "fixtures" / "iteration-ab-z27.json"
+            baselines = tuple(load_historical_baselines_from_iteration_ab(fixture, current_steady_state_ms=229_000.0))
+        report = build_forensics_report(
+            slice_id=27,
+            historical_baselines=baselines,
+            current_steady_state_ms=229_000.0,
+            current_git_commit="511c88c",
+            evidence_artifact_ids=["iteration-ab-z27.json"],
+        )
+        out = tmp_path / "forensics"
+        write_forensics_report_bundle(out, report)
+        json_path = out / "forensics-report.json"
+        md_path = out / "forensics-report.md"
+        assert json_path.is_file()
+        assert md_path.is_file()
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert payload["slice_id"] == 27
+        assert (
+            "worker compile" in md_path.read_text(encoding="utf-8").lower()
+            or "compile" in md_path.read_text(encoding="utf-8").lower()
+        )
 
 
 class TestRegression_triage:

@@ -1,0 +1,24 @@
+{
+  "slice_id": 27,
+  "subject_id": "sub-22",
+  "pre_fix": {
+    "git_commit": "be1e880",
+    "steady_state_ms": 229000.0,
+    "end_to_end_ms": 250000.0,
+    "backend": "numpy",
+    "change_class": "torch_compile_inductor",
+    "linumpy_config": {
+      "fix_illum_smoothness_flatfield": 0.05
+    }
+  },
+  "post_fix": {
+    "git_commit": "511c88c",
+    "steady_state_ms": 5000.0,
+    "end_to_end_ms": 6000.0,
+    "backend": "torch",
+    "change_class": "linumpy_config",
+    "linumpy_config": {
+      "fix_illum_smoothness_flatfield": null
+    }
+  }
+}
