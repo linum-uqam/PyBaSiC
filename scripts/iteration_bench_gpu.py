@@ -87,6 +87,7 @@ def _run_case(
     conv = fit.convergence_per_z or []
     reweight_iters = [int(c["reweighting_iteration"]) for c in conv]
     alm_iters = [int(c.get("alm_iterations_last", 0)) for c in conv]
+    l_s_vals = [c.get("l_s") for c in conv if c.get("l_s") is not None]
     row = {
         "label": label,
         "wall_s": wall_s,
@@ -94,8 +95,10 @@ def _run_case(
         "seam_curvature": float(metrics["seam_curvature"]),
         "reweight_iters_median": float(np.median(reweight_iters)) if reweight_iters else None,
         "reweight_iters_max": int(max(reweight_iters)) if reweight_iters else None,
+        "reweight_iters_per_z": reweight_iters,
         "alm_iters_median": float(np.median(alm_iters)) if alm_iters else None,
         "alm_iters_max": int(max(alm_iters)) if alm_iters else None,
+        "l_s_median": float(np.median(l_s_vals)) if l_s_vals else None,
         "per_z_s": wall_s / max(len(z_indices), 1),
         "basic_kwargs": {k: basic_kwargs[k] for k in sorted(basic_kwargs) if k != "device"},
     }
@@ -130,12 +133,16 @@ def main() -> None:
         "verbose": False,
     }
     cases = [
-        ("prod_500_500_ls005", {**base, "max_reweighting_iterations": 500, "alm_max_iter": 500, "l_s": 0.05}),
-        ("prod_500_500_auto_ls", {**base, "max_reweighting_iterations": 500, "alm_max_iter": 500}),
-        ("harness_15_500_auto_ls", {**base, "max_reweighting_iterations": 15, "alm_max_iter": 500}),
-        ("cap_15_100_auto_ls", {**base, "max_reweighting_iterations": 15, "alm_max_iter": 100}),
-        ("cap_15_100_warm", {**base, "max_reweighting_iterations": 15, "alm_max_iter": 100, "warm_start_reweighting": True}),
-        ("default_10_500_auto_ls", {**base, "max_reweighting_iterations": 10, "alm_max_iter": 500}),
+        # A/B: pipeline flatfield smoothness (l_s) and reweighting caps
+        ("A_prod_ls005_cap500", {**base, "max_reweighting_iterations": 500, "alm_max_iter": 500, "l_s": 0.05}),
+        ("B_auto_ls_cap500", {**base, "max_reweighting_iterations": 500, "alm_max_iter": 500}),
+        ("C_auto_ls_cap15", {**base, "max_reweighting_iterations": 15, "alm_max_iter": 100}),
+        ("D_prod_ls005_cap15", {**base, "max_reweighting_iterations": 15, "alm_max_iter": 100, "l_s": 0.05}),
+        (
+            "E_prod_ls005_tol1e2",
+            {**base, "max_reweighting_iterations": 500, "alm_max_iter": 500, "l_s": 0.05, "reweighting_tolerance": 1e-2},
+        ),
+        ("F_auto_ls_tol1e2", {**base, "max_reweighting_iterations": 500, "alm_max_iter": 500, "reweighting_tolerance": 1e-2}),
     ]
 
     report = {
