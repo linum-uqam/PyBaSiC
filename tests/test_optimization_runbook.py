@@ -5,8 +5,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 RUNBOOK = Path(".planning/phases/05-algorithm-runtime-minimization/OPTIMIZATION_RUNBOOK.md")
 UAT = Path(".planning/phases/05-algorithm-runtime-minimization/05-UAT.md")
+
+# The runbook/UAT are gitignored post-migration (.planning/) artifacts; skip the
+# whole module on clean checkouts / CI where they are absent (convention K15).
+pytestmark = pytest.mark.skipif(
+    not RUNBOOK.exists(),
+    reason=f"{RUNBOOK} not present (gitignored post-migration artifact); runbook guard skipped",
+)
 
 _BASH_BLOCK = re.compile(r"```bash\n(.*?)```", re.DOTALL)
 

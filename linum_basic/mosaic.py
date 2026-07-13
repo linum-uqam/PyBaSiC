@@ -13,9 +13,12 @@ region.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import zarr
 
 __all__ = ["MosaicGrid", "SeamPair"]
 
@@ -88,9 +91,13 @@ class MosaicGrid:
 
     Parameters
     ----------
-    array : numpy.ndarray, shape (Z, H, W)
+    array : numpy.ndarray or zarr.Array, shape (Z, H, W)
         The assembled mosaic volume.  Tiles are packed edge-to-edge; there
-        are no gaps between tiles in the stored data.
+        are no gaps between tiles in the stored data.  By default this is a
+        materialised :class:`numpy.ndarray`; pass ``lazy=True`` to
+        :meth:`from_ome_zarr` to keep the backing array as the level-0
+        :class:`zarr.Array` handle (on-disk, chunked) so the volume is not
+        loaded into memory up front.
     tile_shape : tuple of int
         ``(tile_height, tile_width)`` of each tile.  Must divide *H* and
         *W* evenly.
@@ -114,7 +121,7 @@ class MosaicGrid:
     neighbour by ``round(overlap_fraction * th)`` pixels along y.
     """
 
-    array: np.ndarray
+    array: np.ndarray | zarr.Array
     tile_shape: tuple[int, int]
     overlap_fraction: float = 0.2
     _seam_pairs_cache: list[SeamPair] | None = field(default=None, init=False, repr=False, compare=False)
@@ -176,10 +183,14 @@ class MosaicGrid:
         # Reshape-transpose is equivalent to the nested loop but avoids Python
         # iteration over all nrows*ncols tiles. The transpose creates a
         # non-contiguous view; the final reshape forces a contiguous copy.
-        plane = self.array[z]  # (nrows*th, ncols*tw)
-        reshaped = plane.reshape(nrows, th, ncols, tw)
-        # torch.Tensor.transpose only swaps two dims; use permute when available
-        transposed = reshaped.permute(0, 2, 1, 3) if hasattr(reshaped, "permute") else reshaped.transpose(0, 2, 1, 3)
+        # Materialise the z-plane to a concrete ndarray: indexing a zarr.Array
+        # reads only that plane from disk; np.asarray is a no-op for an already
+        # materialised ndarray (eager path).
+        plane: np.ndarray = np.asarray(self.array[z])  # (nrows*th, ncols*tw)
+        reshaped: np.ndarray = plane.reshape(nrows, th, ncols, tw)
+        # Reorder tile-grid axes (nrows, th, ncols, tw) -> (nrows, ncols, th, tw)
+        # so flattening the first two yields row-major tile order.
+        transposed = reshaped.transpose(0, 2, 1, 3)
         return transposed.reshape(nrows * ncols, th, tw)
 
     def get_tile(self, z: int, row: int, col: int) -> np.ndarray:
@@ -200,7 +211,9 @@ class MosaicGrid:
             Shape ``(th, tw)``.
         """
         th, tw = self.tile_shape
-        return self.array[z, row * th : (row + 1) * th, col * tw : (col + 1) * tw]
+        # Indexing a zarr.Array reads only the requested region from disk;
+        # np.asarray normalises to ndarray (no-op for the eager ndarray path).
+        return np.asarray(self.array[z, row * th : (row + 1) * th, col * tw : (col + 1) * tw])
 
     # ------------------------------------------------------------------
     # Seam enumeration
@@ -259,7 +272,13 @@ class MosaicGrid:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_ome_zarr(cls, path: str, *, overlap_fraction: float = 0.2) -> MosaicGrid:
+    def from_ome_zarr(
+        cls,
+        path: str,
+        *,
+        overlap_fraction: float = 0.2,
+        lazy: bool = False,
+    ) -> MosaicGrid:
         """Load a mosaic grid from an OME-Zarr file.
 
         Parameters
@@ -269,6 +288,14 @@ class MosaicGrid:
         overlap_fraction : float
             Physical overlap fraction between adjacent tiles.  Default
             ``0.2``.
+        lazy : bool, optional
+            When ``True`` (default ``False``) the backing array is the
+            level-0 :class:`zarr.Array` handle (on-disk, chunked) instead of a
+            fully materialised :class:`numpy.ndarray`.  Tile geometry and
+            per-z / per-tile reads (``iter_tiles``, ``get_tile``, indexing)
+            work identically; nothing is read from disk until those calls are
+            made.  Use this for large volumes that should not be loaded into
+            memory up front (see the streaming fit path).
 
         Returns
         -------
@@ -281,34 +308,45 @@ class MosaicGrid:
         the convention used by linumpy's mosaic-grid writer where tiles
         are chunked individually along y and x but the full z-stack is a
         single chunk.
+
+        When ``lazy`` is ``False`` (default) the full volume is read into
+        memory exactly as before (backward compatible).  When ``lazy`` is
+        ``True`` the returned :class:`zarr.Array` is reused to read the
+        chunk grid, so the store is opened once rather than twice.
         """
         import zarr
 
         from linum_basic.io.zarr import load_ome_zarr
 
-        # Load array into memory
-        array, _axes, _scale = load_ome_zarr(path)
+        # When lazy, load_ome_zarr returns the level-0 zarr.Array handle;
+        # otherwise it materialises the full volume into an ndarray.
+        array, _axes, _scale = load_ome_zarr(path, lazy=lazy)
 
-        # Infer tile shape from chunk grid of level-0 array.
-        # Resolve the level-0 sub-path via OME-NGFF metadata rather than
-        # hardcoding a particular dataset name (e.g. "s0").
-        from pathlib import Path as _Path
+        # Infer tile shape from the level-0 chunk grid.  When lazy, the
+        # returned handle IS the level-0 zarr.Array and exposes ``.chunks``
+        # directly; when eager (ndarray) resolve the level-0 sub-path via
+        # OME-NGFF metadata and re-open the array purely for its chunks.
+        if isinstance(array, zarr.Array):
+            chunk_shape = array.chunks
+        else:
+            from pathlib import Path as _Path
 
-        from ome_zarr.io import parse_url
-        from ome_zarr.reader import Multiscales, Reader
+            from ome_zarr.io import parse_url
+            from ome_zarr.reader import Multiscales, Reader
 
-        node = parse_url(str(path))
-        if node is None:
-            raise FileNotFoundError(f"Not a valid OME-Zarr store: {path}")
-        reader = Reader(node)
-        image_node = next(iter(reader()))
-        level0_subpath = "s0"  # fallback
-        for spec in image_node.specs:
-            if isinstance(spec, Multiscales):
-                level0_subpath = spec.datasets[0]
-                break
-        arr_meta = zarr.open_array(str(_Path(path) / level0_subpath), mode="r")
-        chunk_shape = arr_meta.chunks  # tuple, e.g. (55, 75, 75)
+            node = parse_url(str(path))
+            if node is None:
+                raise FileNotFoundError(f"Not a valid OME-Zarr store: {path}")
+            reader = Reader(node)
+            image_node = next(iter(reader()))
+            level0_subpath = "s0"  # fallback
+            for spec in image_node.specs:
+                if isinstance(spec, Multiscales):
+                    level0_subpath = spec.datasets[0]
+                    break
+            arr_meta = zarr.open_array(str(_Path(path) / level0_subpath), mode="r")
+            chunk_shape = arr_meta.chunks  # tuple, e.g. (55, 75, 75)
+
         tile_shape: tuple[int, int] = (int(chunk_shape[-2]), int(chunk_shape[-1]))
 
         return cls(array=array, tile_shape=tile_shape, overlap_fraction=overlap_fraction)

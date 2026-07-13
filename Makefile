@@ -1,4 +1,4 @@
-.PHONY: install install-gpu lint format typecheck test all docs docs-live
+.PHONY: install install-gpu lint format typecheck test test-gpu-smoke all docs docs-live
 
 install:
 	uv sync --extra dev
@@ -20,6 +20,9 @@ typecheck:
 
 test:
 	uv run python -m pytest -q --ignore=tests/test_demo_fitting.py
+
+test-gpu-smoke:
+	bash scripts/gpu_smoke.sh
 
 all: lint format-check typecheck test
 

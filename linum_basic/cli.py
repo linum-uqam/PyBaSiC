@@ -154,6 +154,26 @@ def _add_fit_subcommand(subs: argparse._SubParsersAction) -> None:  # type: igno
             "when auto picks a CUDA path the effective backend becomes torch unless --backend is set."
         ),
     )
+    alg.add_argument(
+        "--streaming",
+        action="store_true",
+        default=False,
+        help=(
+            "Fit z-levels one at a time (sequential only), bounding peak memory to a single "
+            "plane instead of holding all per-z tile stacks live. Incompatible with "
+            "--strategy multi or batched."
+        ),
+    )
+    alg.add_argument(
+        "--lazy",
+        action="store_true",
+        default=False,
+        help=(
+            "Load the input mosaic lazily (zarr.Array-backed) so the full volume is not read "
+            "into memory up front. Pair with --streaming for the lowest peak memory on the "
+            "fit path."
+        ),
+    )
 
     # Fit omits backend/device from basic_kwargs unless explicitly passed (default None),
     # so strategy=auto can upgrade to torch for CUDA paths without clobbering by numpy default.
@@ -187,7 +207,7 @@ def _run_fit(args: argparse.Namespace) -> int:
     from linum_basic.fit import fit_mosaic, save_corrected
     from linum_basic.mosaic import MosaicGrid
 
-    mosaic = MosaicGrid.from_ome_zarr(str(args.input), overlap_fraction=args.overlap)
+    mosaic = MosaicGrid.from_ome_zarr(str(args.input), overlap_fraction=args.overlap, lazy=args.lazy)
     basic_kwargs: dict = {"estimate_darkfield": args.estimate_darkfield}
     if args.backend is not None:
         basic_kwargs["backend"] = args.backend
@@ -199,6 +219,7 @@ def _run_fit(args: argparse.Namespace) -> int:
         field_mode=args.field_mode,
         basic_kwargs=basic_kwargs,
         strategy=args.strategy,
+        streaming=args.streaming,
         n_workers=args.n_jobs,
         verbose=args.verbose,
     )
@@ -247,6 +268,13 @@ def _add_tune_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ign
     io.add_argument(
         "--apply", metavar="ZARR", default=None, type=Path, help="If set, run a full-z fit with the best params and save here."
     )
+    io.add_argument(
+        "--bounds-json",
+        metavar="FILE",
+        default=None,
+        type=Path,
+        help="Write the recommended narrowed search-space bounds (recommend_bounds) as JSON to this file.",
+    )
 
     tuning = p.add_argument_group("Tuning")
     tuning.add_argument("--n-trials", metavar="N", type=int, default=50, help="Number of Optuna trials.")
@@ -274,6 +302,13 @@ def _add_tune_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ign
         help="Leading rows per tile to drop before fitting (galvo fly-back artefact).",
     )
     tuning.add_argument("--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1).")
+    tuning.add_argument(
+        "--bounds-margin",
+        metavar="FRAC",
+        type=float,
+        default=0.10,
+        help="Relative margin (0-1) selecting the near-optimal trial band used by --bounds-json.",
+    )
 
     backend = p.add_argument_group("Backend")
     backend.add_argument(
@@ -291,7 +326,7 @@ def _run_tune(args: argparse.Namespace) -> int:
         return rc
 
     from linum_basic.mosaic import MosaicGrid
-    from linum_basic.tuning import tune
+    from linum_basic.tuning import recommend_bounds, tune
 
     mosaic = MosaicGrid.from_ome_zarr(str(args.input), overlap_fraction=args.overlap)
 
@@ -326,6 +361,28 @@ def _run_tune(args: argparse.Namespace) -> int:
             json.dump(result.best_params, fh, indent=2)
         if args.verbose:
             print(f"Wrote best params to '{args.out_json}'.")
+
+    if args.bounds_json:
+        import json
+
+        try:
+            rec = recommend_bounds(result, margin=args.bounds_margin)
+        except ValueError as exc:
+            print(f"error: could not recommend bounds: {exc}", file=sys.stderr)
+            return 1
+        args.bounds_json.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "search_space": rec.search_space,
+            "best_value": rec.best_value,
+            "n_near_optimal": rec.n_near_optimal,
+            "margin": rec.margin,
+        }
+        with args.bounds_json.open("w") as fh:
+            json.dump(payload, fh, indent=2)
+        if args.verbose:
+            print(f"Recommended bounds (margin={rec.margin:.2f}, n_near_optimal={rec.n_near_optimal}):")
+            print(json.dumps(payload["search_space"], indent=2))
+            print(f"Wrote recommended bounds to '{args.bounds_json}'.")
 
     if args.apply and result.best_fit is not None:
         from linum_basic.fit import save_corrected
@@ -376,8 +433,13 @@ def _run_preview(args: argparse.Namespace) -> int:
     if in_plane:
         pixel_size_mm = float(in_plane[-1])
 
+    # Materialise the volume: aip_preview computes an average-intensity
+    # projection over the whole array, so it needs a dense ndarray regardless
+    # of whether load_ome_zarr returned one eagerly or a lazy zarr.Array handle.
+    import numpy as np
+
     fig = viz.aip_preview(
-        volume,
+        np.asarray(volume),
         axis=args.axis,
         pixel_size_mm=pixel_size_mm,
         cmap=args.cmap,

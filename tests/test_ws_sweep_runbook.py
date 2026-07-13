@@ -5,7 +5,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 RUNBOOK = Path(".planning/phases/02-working-size-sweep/WS_SWEEP_RUNBOOK.md")
+
+# The runbook is a gitignored post-migration (.planning/) artifact; skip the
+# whole module on clean checkouts / CI where it is absent (convention K15).
+pytestmark = pytest.mark.skipif(
+    not RUNBOOK.exists(),
+    reason=f"{RUNBOOK} not present (gitignored post-migration artifact); runbook guard skipped",
+)
 
 _BASH_BLOCK = re.compile(r"```bash\n(.*?)```", re.DOTALL)
 

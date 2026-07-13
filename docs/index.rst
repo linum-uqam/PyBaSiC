@@ -81,6 +81,13 @@ offsets (darkfield) from fluorescence, bright-field, and other modalities.
 
       Run BaSiC on CUDA hardware using the PyTorch backend (Apple MPS unsupported).
 
+   .. grid-item-card:: Operator Runbooks
+      :link: runbooks
+      :link-type: doc
+
+      Which runbook to use when: GPU smoke test, streaming fits, and
+      tuning/bounds workflows — with reproducible commands.
+
    .. grid-item-card:: Contributing
       :link: contributing
       :link-type: doc
@@ -101,6 +108,7 @@ offsets (darkfield) from fluorescence, bright-field, and other modalities.
    getting_started
    algorithm
    parameters
+   runbooks
    gpu
    validation
    contributing

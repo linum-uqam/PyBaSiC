@@ -582,6 +582,245 @@ class TestFitSubcommand:
         assert "CPU fallback: no CUDA devices visible." in out
 
 
+class TestFitStreamingLazyFlags:
+    """Tests for ``--streaming`` and ``--lazy`` on ``basic fit`` (S02/T04)."""
+
+    def test_fit_help_shows_streaming_and_lazy(self) -> None:
+        """``basic fit --help`` documents ``--streaming`` and ``--lazy``."""
+        from linum_basic.cli import main
+
+        buf = io.StringIO()
+        with pytest.raises(SystemExit) as excinfo, redirect_stdout(buf):
+            main(["fit", "--help"])
+        assert excinfo.value.code == 0
+        help_text = buf.getvalue()
+        assert "--streaming" in help_text
+        assert "--lazy" in help_text
+
+    def test_fit_streaming_flag_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--streaming`` is forwarded to ``fit_mosaic`` as ``streaming=True``."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+
+        def _stub_fit(mosaic, **kwargs):
+            captured.update(kwargs)
+            th, tw = mosaic.tile_shape
+            return MosaicFit(
+                flatfields=np.ones((1, th, tw), dtype=np.float32),
+                darkfields=np.zeros((1, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=[0],
+                params={},
+            )
+
+        monkeypatch.setattr("linum_basic.fit.fit_mosaic", _stub_fit)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--streaming",
+                "--strategy",
+                "sequential",
+            ]
+        )
+        assert rc == 0
+        assert captured.get("streaming") is True
+
+    def test_fit_streaming_defaults_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Omitting ``--streaming`` forwards ``streaming=False`` (backward compatible)."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+
+        def _stub_fit(mosaic, **kwargs):
+            captured.update(kwargs)
+            th, tw = mosaic.tile_shape
+            return MosaicFit(
+                flatfields=np.ones((1, th, tw), dtype=np.float32),
+                darkfields=np.zeros((1, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=[0],
+                params={},
+            )
+
+        monkeypatch.setattr("linum_basic.fit.fit_mosaic", _stub_fit)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(["fit", "--input", str(zarr_in), "--output", str(zarr_out)])
+        assert rc == 0
+        assert captured.get("streaming") is False
+
+    def test_fit_lazy_flag_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--lazy`` is forwarded to ``MosaicGrid.from_ome_zarr`` as ``lazy=True``."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.mosaic import MosaicGrid
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+        original_from = MosaicGrid.from_ome_zarr
+
+        def _spy_from(path, **kwargs):
+            captured.update(kwargs)
+            return original_from(path, **kwargs)
+
+        monkeypatch.setattr(MosaicGrid, "from_ome_zarr", _spy_from)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--lazy",
+                "--streaming",
+                "--strategy",
+                "sequential",
+                "--backend",
+                "numpy",
+            ]
+        )
+        assert rc == 0
+        assert captured.get("lazy") is True
+
+    def test_fit_lazy_defaults_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Omitting ``--lazy`` forwards ``lazy=False`` (eager load, backward compatible)."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.mosaic import MosaicGrid
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+        original_from = MosaicGrid.from_ome_zarr
+
+        def _spy_from(path, **kwargs):
+            captured.update(kwargs)
+            return original_from(path, **kwargs)
+
+        monkeypatch.setattr(MosaicGrid, "from_ome_zarr", _spy_from)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(["fit", "--input", str(zarr_in), "--output", str(zarr_out)])
+        assert rc == 0
+        assert captured.get("lazy") is False
+
+    def test_fit_streaming_incompatible_with_multi_raises(self, tmp_path: Path) -> None:
+        """``--streaming --strategy multi`` bubbles up ``ValueError`` from ``fit_mosaic``."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        with pytest.raises(ValueError, match="streaming"):
+            main(
+                [
+                    "fit",
+                    "--input",
+                    str(zarr_in),
+                    "--output",
+                    str(zarr_out),
+                    "--strategy",
+                    "multi",
+                    "--streaming",
+                ]
+            )
+
+    def test_fit_streaming_creates_output(self, tmp_path: Path) -> None:
+        """``--streaming`` end-to-end writes a corrected OME-Zarr (numerics unchanged)."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--streaming",
+                "--strategy",
+                "sequential",
+                "--backend",
+                "numpy",
+            ]
+        )
+        assert rc == 0
+        assert zarr_out.exists()
+
+    def test_fit_lazy_streaming_creates_output(self, tmp_path: Path) -> None:
+        """``--lazy --streaming`` end-to-end writes a corrected OME-Zarr (lowest peak memory)."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--lazy",
+                "--streaming",
+                "--strategy",
+                "sequential",
+                "--backend",
+                "numpy",
+            ]
+        )
+        assert rc == 0
+        assert zarr_out.exists()
+
+
 class TestTuneSubcommand:
     """Tests for the ``basic tune`` sub-command."""
 
@@ -649,3 +888,265 @@ class TestTuneSubcommand:
         )
         assert rc == 0
         assert zarr_apply.exists()
+
+    def test_tune_bounds_json_writes_payload(self, tmp_path: Path) -> None:
+        """``--bounds-json`` writes a search_space-shaped JSON payload."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+        pytest.importorskip("pandas")
+
+        import json
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        bounds_out = tmp_path / "bounds.json"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+        rc = main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+                "--bounds-json",
+                str(bounds_out),
+                "--seed",
+                "0",
+            ]
+        )
+        assert rc == 0
+        assert bounds_out.exists()
+
+        payload = json.loads(bounds_out.read_text())
+        assert "search_space" in payload
+        search_space = payload["search_space"]
+        # The scale-invariant divisor parametrisation keys must be present.
+        for key in ("working_size", "l_s_divisor", "l_d_divisor", "epsilon", "estimate_darkfield"):
+            assert key in search_space, f"missing key '{key}' in search_space"
+        # working_size is a list of observed integer choices.
+        assert isinstance(search_space["working_size"], list)
+        assert len(search_space["working_size"]) >= 1
+        assert all(isinstance(ws, int) for ws in search_space["working_size"])
+        # Divisor / epsilon ranges are [low, high] lists.
+        for key in ("l_s_divisor", "l_d_divisor", "epsilon"):
+            rng = search_space[key]
+            assert len(rng) == 2
+            assert rng[0] <= rng[1]
+        # estimate_darkfield is a single-element boolean list (majority vote
+        # over Optuna-sampled flags — the specific value is seed-dependent and
+        # not asserted here).
+        edf = search_space["estimate_darkfield"]
+        assert len(edf) == 1
+        assert isinstance(edf[0], bool)
+        # Metadata fields.
+        assert payload["n_near_optimal"] >= 1
+        assert payload["margin"] == 0.10
+        assert "best_value" in payload
+
+    def test_tune_bounds_json_verbose_prints_search_space(self, tmp_path: Path, capsys) -> None:
+        """``--bounds-json --verbose`` prints the recommended search space to stdout."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+        pytest.importorskip("pandas")
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        bounds_out = tmp_path / "bounds.json"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+        rc = main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+                "--bounds-json",
+                str(bounds_out),
+                "--bounds-margin",
+                "0.20",
+                "--verbose",
+                "--seed",
+                "0",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Recommended bounds" in out
+        assert "l_s_divisor" in out
+        assert "bounds.json" in out
+
+        # The --bounds-margin value is forwarded into the written payload.
+        import json
+
+        payload = json.loads(bounds_out.read_text())
+        assert payload["margin"] == pytest.approx(0.20)
+
+    def test_tune_bounds_margin_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--bounds-margin`` is forwarded to ``recommend_bounds``."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+        pytest.importorskip("pandas")
+
+        from linum_basic import cli
+        from linum_basic.tuning import BoundsRecommendation
+
+        captured: dict = {}
+
+        # The CLI imports recommend_bounds lazily inside _run_tune; patch the
+        # source module so the lazy import resolves to our spy.
+        import linum_basic.tuning as tuning_mod
+
+        original = tuning_mod.recommend_bounds
+
+        def _spy_recommend(result, *, margin=0.10):
+            captured["margin"] = margin
+            return BoundsRecommendation(
+                search_space={
+                    "working_size": [128],
+                    "l_s_divisor": (800.0, 1200.0),
+                    "l_d_divisor": (2000.0, 4000.0),
+                    "epsilon": (0.1, 0.3),
+                    "estimate_darkfield": [False],
+                },
+                best_value=0.01,
+                n_near_optimal=1,
+                margin=margin,
+            )
+
+        monkeypatch.setattr(tuning_mod, "recommend_bounds", _spy_recommend)
+        try:
+            zarr_in = tmp_path / "in.ome.zarr"
+            bounds_out = tmp_path / "bounds.json"
+            _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+            rc = cli.main(
+                [
+                    "tune",
+                    "--input",
+                    str(zarr_in),
+                    "--n-trials",
+                    "2",
+                    "--z-subsample",
+                    "1",
+                    "--bounds-json",
+                    str(bounds_out),
+                    "--bounds-margin",
+                    "0.05",
+                    "--seed",
+                    "0",
+                ]
+            )
+            assert rc == 0
+            assert bounds_out.exists()
+            assert captured["margin"] == pytest.approx(0.05)
+        finally:
+            tuning_mod.recommend_bounds = original
+
+    def test_tune_bounds_json_and_out_json_both_written(self, tmp_path: Path) -> None:
+        """``--bounds-json`` and ``--out-json`` can be combined (two distinct artifacts)."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+        pytest.importorskip("pandas")
+
+        import json
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        best_out = tmp_path / "best.json"
+        bounds_out = tmp_path / "bounds.json"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+        rc = main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+                "--out-json",
+                str(best_out),
+                "--bounds-json",
+                str(bounds_out),
+                "--seed",
+                "0",
+            ]
+        )
+        assert rc == 0
+        assert best_out.exists()
+        assert bounds_out.exists()
+        # best.json carries best_params (l_s key); bounds.json carries search_space.
+        best_data = json.loads(best_out.read_text())
+        assert "l_s" in best_data
+        bounds_data = json.loads(bounds_out.read_text())
+        assert "search_space" in bounds_data
+
+    def test_tune_bounds_failure_exits_nonzero(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A ``ValueError`` from ``recommend_bounds`` is reported and exits 1."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+        pytest.importorskip("pandas")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        original = tuning_mod.recommend_bounds
+
+        def _failing_recommend(result, *, margin=0.10):
+            msg = "recommend_bounds requires at least one COMPLETE trial"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(tuning_mod, "recommend_bounds", _failing_recommend)
+        try:
+            zarr_in = tmp_path / "in.ome.zarr"
+            bounds_out = tmp_path / "bounds.json"
+            _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+            rc = cli.main(
+                [
+                    "tune",
+                    "--input",
+                    str(zarr_in),
+                    "--n-trials",
+                    "2",
+                    "--z-subsample",
+                    "1",
+                    "--bounds-json",
+                    str(bounds_out),
+                    "--seed",
+                    "0",
+                ]
+            )
+            assert rc == 1
+            assert not bounds_out.exists()
+        finally:
+            tuning_mod.recommend_bounds = original
+
+    def test_tune_help_documents_bounds_flags(self) -> None:
+        """``basic tune --help`` lists ``--bounds-json`` and ``--bounds-margin``."""
+        pytest.importorskip("optuna")
+
+        from linum_basic.cli import main
+
+        buf = io.StringIO()
+        with pytest.raises(SystemExit) as excinfo, redirect_stdout(buf):
+            main(["tune", "--help"])
+        assert excinfo.value.code == 0
+        help_text = buf.getvalue()
+        assert "--bounds-json" in help_text
+        assert "--bounds-margin" in help_text

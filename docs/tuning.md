@@ -262,6 +262,7 @@ print("Best seam L1:", result.best_value)
 print("Best params:", result.best_params)
 # e.g. {'working_size': 128, 'l_s': 0.41, 'l_d': 0.16,
 #       'epsilon': 0.1, 'estimate_darkfield': True}
+```
 
 ### Choosing the tuning objective
 
@@ -291,7 +292,6 @@ result = tune(
     composite_weights=(1.0, 2.0),  # (seam_l1_weight, curvature_weight)
 )
 print(f"Objective: {result.objective}  Best: {result.best_value:.4f}")
-```
 ```
 
 `best_params` already holds resolved BaSiC hyperparameters (the searched
@@ -362,6 +362,77 @@ basic tune --input my_mosaic.ome.zarr \
            --study-name my-mosaic-tuning
 ```
 
+### Recommending narrowed bounds
+
+A single tuning run explores the full search space, but the near-optimal
+trials usually cluster in a small region.  `recommend_bounds` collapses
+that region into a narrowed `search_space` you can feed straight back into
+a follow-up `tune` call, concentrating the next search where it is most
+likely to pay off.
+
+It keeps every completed trial whose objective value is within *margin*
+(a relative fraction, default 10 %) of the best observed value, then
+summarises that near-optimal subset:
+
+- `working_size` → sorted unique choices observed in the subset.
+- `l_s_divisor`, `l_d_divisor`, `epsilon` → `(min, max)` range over the
+  subset.  The regularisation strengths stay in the scale-invariant
+  divisor parametrisation, so the bounds transfer across datasets without
+  the per-subject `dct_sum`.
+- `estimate_darkfield` → majority vote across the subset, returned as a
+  single-element list.
+
+```python
+from linum_basic.tuning import tune, recommend_bounds
+
+result = tune(mosaic, n_trials=50, seed=42)
+
+rec = recommend_bounds(result, margin=0.10)
+print(f"Best value: {rec.best_value:.4f}")
+print(f"Near-optimal trials: {rec.n_near_optimal} / {len(result.trials_df)}")
+print(rec.search_space)
+# {'working_size': [96, 128], 'l_s_divisor': (300.0, 1200.0),
+#  'l_d_divisor': (800.0, 4000.0), 'epsilon': (0.05, 0.4),
+#  'estimate_darkfield': [True]}
+
+# Focus the next run on the empirically productive region.
+focused = tune(mosaic, n_trials=50, search_space=rec.search_space)
+```
+
+The returned {class}`~linum_basic.tuning.BoundsRecommendation` is a frozen
+dataclass carrying the narrowed `search_space`, the best objective
+`best_value`, the count of near-optimal trials `n_near_optimal`, and the
+`margin` used.  Degenerate ranges (`low == high`, e.g. when only one trial
+falls in the band) are valid, not errors.
+
+```{note}
+`recommend_bounds` is an **advisory** workflow heuristic, distinct from the
+release-gate calibration in `linum_basic.benchmark.quality` (which applies a
+`mean+3std` policy to repeated A/B baselines).  It never gates a production
+fit — it only narrows the search space of a subsequent `tune` call.
+```
+
+#### From the CLI
+
+The `basic tune` subcommand exposes the same workflow through two flags
+(see {doc}`cli` for the full option reference):
+
+```bash
+basic tune --input mosaic.ome.zarr \
+           --n-trials 50 \
+           --bounds-json bounds.json \
+           --bounds-margin 0.10 \
+           --verbose
+```
+
+`--bounds-json FILE` writes a JSON payload whose `search_space` dict plugs
+straight back into a follow-up `tune(search_space=...)` call.
+`--bounds-margin FRAC` (default `0.10`) sets the relative width of the
+near-optimal band.  Both flags are independent of `--out-json` and `--apply`,
+so all three can be combined in one invocation.  With `--verbose`, the
+recommended `search_space` is also printed to the terminal for a quick
+visual check before re-running.
+
 ---
 
 ## API Reference
@@ -386,5 +457,7 @@ basic tune --input my_mosaic.ome.zarr \
 | `save_corrected` | `linum_basic.fit` | Save corrected mosaic as OME-Zarr |
 | `TuneResult` | `linum_basic.tuning` | Best trial params, value, and optional fit |
 | `tune` | `linum_basic.tuning` | Optuna-based hyperparameter search |
+| `recommend_bounds` | `linum_basic.tuning` | Quality-aware search-space narrowing from a `TuneResult` |
+| `BoundsRecommendation` | `linum_basic.tuning` | Frozen dataclass holding narrowed bounds + metadata |
 
 See the {doc}`API reference <api/index>` for full parameter documentation.

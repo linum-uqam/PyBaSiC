@@ -165,6 +165,9 @@ seam-consistency L1 metric over a subsample of z-levels.
    * - ``--apply ZARR``
      - ``None``
      - Run a full-z fit with the best params and save here.
+   * - ``--bounds-json FILE``
+     - ``None``
+     - Write the recommended narrowed search-space bounds (``recommend_bounds``) as JSON.
    * - ``--n-trials N``
      - ``50``
      - Number of Optuna trials.
@@ -192,6 +195,9 @@ seam-consistency L1 metric over a subsample of z-levels.
    * - ``--overlap FRAC``
      - ``0.2``
      - Physical tile-overlap fraction.
+   * - ``--bounds-margin FRAC``
+     - ``0.10``
+     - Relative margin (0-1) selecting the near-optimal trial band used by ``--bounds-json``.
    * - ``--backend {numpy,torch}``
      - ``numpy``
      - Compute backend.
@@ -220,6 +226,20 @@ Tune and immediately apply the best parameters::
         --n-trials 100 \
         --apply corrected.ome.zarr \
         --verbose
+
+Tune, then write recommended narrowed bounds for a follow-up ``tune`` run::
+
+    basic tune \
+        --input mosaic.ome.zarr \
+        --n-trials 50 \
+        --bounds-json bounds.json \
+        --bounds-margin 0.10 \
+        --verbose
+
+The ``bounds.json`` payload carries a ``search_space`` dict (in the
+scale-invariant ``l_s_divisor`` / ``l_d_divisor`` parametrisation) that plugs
+straight back into a follow-up ``tune`` call via the library's ``tune(...)``
+``search_space=`` argument.
 
 Distributed tuning with persistent SQLite storage::
 

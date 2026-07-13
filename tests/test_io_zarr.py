@@ -152,3 +152,93 @@ def test_axes_metadata_units(tmp_path):
     # space axes SHOULD have 'millimeter'
     assert by_name["y"]["unit"] == "millimeter"
     assert by_name["x"]["unit"] == "millimeter"
+
+
+# ----------------------------------------------------------------------
+# Lazy read path (load_ome_zarr(lazy=True))
+# ----------------------------------------------------------------------
+
+
+def test_lazy_returns_zarr_array_handle(tmp_path):
+    """load_ome_zarr(lazy=True) returns a zarr.Array handle, not a materialized ndarray."""
+    import zarr
+
+    from linum_basic.io.zarr import load_ome_zarr, write_ome_zarr
+
+    arr = np.arange(2 * 4 * 5, dtype=np.float32).reshape(2, 4, 5)
+    out = tmp_path / "lazy.ome.zarr"
+    write_ome_zarr(out, arr, axes=["z", "y", "x"], scale=[1.0, 0.5, 0.5])
+
+    handle, axes, scale = load_ome_zarr(out, lazy=True)
+
+    # The handle is the on-disk zarr array, NOT a materialized numpy array.
+    assert isinstance(handle, zarr.Array)
+    assert not isinstance(handle, np.ndarray)
+    assert tuple(handle.shape) == arr.shape
+    assert handle.dtype == arr.dtype
+    # Chunked, on-disk storage is the structural proof of laziness.
+    assert handle.chunks is not None and len(handle.chunks) == arr.ndim
+    assert axes == ["z", "y", "x"]
+    assert scale == pytest.approx([1.0, 0.5, 0.5])
+
+
+def test_lazy_plane_read_materializes_single_slice(tmp_path):
+    """Indexing the lazy handle returns a numpy array for just the requested slice."""
+    from linum_basic.io.zarr import load_ome_zarr, write_ome_zarr
+
+    arr = np.arange(3 * 8 * 8, dtype=np.float32).reshape(3, 8, 8)
+    out = tmp_path / "planes.ome.zarr"
+    write_ome_zarr(out, arr, axes=["z", "y", "x"], scale=[1.0, 1.0, 1.0])
+
+    handle, _, _ = load_ome_zarr(out, lazy=True)
+
+    # A single z-plane materializes as a numpy array of that plane's shape only.
+    plane = handle[1]
+    assert isinstance(plane, np.ndarray)
+    assert plane.shape == (8, 8)
+    np.testing.assert_array_equal(plane, arr[1])
+
+    # A spatial sub-slice materializes only the requested region.
+    tile = handle[2, 0:4, 0:4]
+    assert isinstance(tile, np.ndarray)
+    assert tile.shape == (4, 4)
+    np.testing.assert_array_equal(tile, arr[2, 0:4, 0:4])
+
+
+def test_lazy_values_match_eager(tmp_path):
+    """Full read of the lazy handle matches the eager load exactly."""
+    from linum_basic.io.zarr import load_ome_zarr, write_ome_zarr
+
+    rng = np.random.default_rng(0)
+    arr = rng.random((4, 6, 7)).astype(np.float32)
+    out = tmp_path / "parity.ome.zarr"
+    write_ome_zarr(out, arr, axes=["z", "y", "x"], scale=[0.5, 0.01, 0.01])
+
+    eager, e_axes, e_scale = load_ome_zarr(out)
+    lazy, l_axes, l_scale = load_ome_zarr(out, lazy=True)
+
+    assert isinstance(eager, np.ndarray)
+    assert not isinstance(lazy, np.ndarray)
+    np.testing.assert_array_equal(np.asarray(lazy[:]), eager)
+    assert l_axes == e_axes
+    assert l_scale == pytest.approx(e_scale)
+
+
+def test_default_load_is_eager(tmp_path):
+    """Without lazy=, load_ome_zarr returns a materialized ndarray (backward compat)."""
+    from linum_basic.io.zarr import load_ome_zarr, write_ome_zarr
+
+    arr = np.ones((2, 3, 4), dtype=np.float32)
+    out = tmp_path / "eager.ome.zarr"
+    write_ome_zarr(out, arr, axes=["z", "y", "x"], scale=[1.0, 1.0, 1.0])
+
+    loaded, _, _ = load_ome_zarr(out)
+    assert isinstance(loaded, np.ndarray)
+
+
+def test_lazy_invalid_store_raises(tmp_path):
+    """lazy=True still raises FileNotFoundError for a non-existent store."""
+    from linum_basic.io.zarr import load_ome_zarr
+
+    with pytest.raises(FileNotFoundError):
+        load_ome_zarr(tmp_path / "does_not_exist.ome.zarr", lazy=True)

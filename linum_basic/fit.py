@@ -469,6 +469,7 @@ def fit_mosaic(
     field_mode: Literal["per-z", "global"] = "per-z",
     basic_kwargs: dict[str, Any] | None = None,
     strategy: Literal["auto", "sequential", "multi", "batched"] = "auto",
+    streaming: bool = False,
     n_extra_rows: int = 0,
     n_workers: int | None = None,
     verbose: bool = False,
@@ -496,6 +497,17 @@ def fit_mosaic(
         shape, hardware, and Phase 2/3 policy. Named strategies lock the
         execution path; the resolved decision is recorded in
         ``params["_strategy"]``.
+    streaming : bool
+        When ``True``, fit z-levels one at a time without pre-extracting all
+        per-z tile stacks into memory, bounding peak memory to a single plane
+        instead of the full z-stack. Sequential only: raises
+        :exc:`ValueError` if combined with ``strategy="multi"`` or
+        ``"batched"``. Numerics are identical to the non-streaming sequential
+        path — the same ``_fit_one_z`` runs on the same tiles in the same
+        order; only the extraction timing differs (one-at-a-time vs
+        all-up-front). Pair with a lazy ``MosaicGrid``
+        (``MosaicGrid.from_ome_zarr(..., lazy=True)``) so the backing volume
+        is also not loaded into memory up front. Default ``False``.
     n_extra_rows : int
         Number of rows at the top of each tile to exclude from the BaSiC
         fit (galvo return / flyback signal).  The excluded rows are filled
@@ -519,6 +531,13 @@ def fit_mosaic(
     """
     if strategy not in FIT_MOSAIC_STRATEGIES:
         msg = f"Unknown strategy: {strategy}; choose from {FIT_MOSAIC_STRATEGIES}"
+        raise ValueError(msg)
+
+    if streaming and strategy in ("multi", "batched"):
+        msg = (
+            f"streaming=True is incompatible with strategy={strategy!r}; "
+            "streaming is sequential only. Use strategy='auto' or 'sequential'."
+        )
         raise ValueError(msg)
 
     user_kwargs = dict(basic_kwargs or {})
@@ -573,35 +592,51 @@ def fit_mosaic(
         and (params.get("device") or "cuda").lower().startswith("cuda")
     )
 
-    # Pre-extract per-z tile stacks so workers receive only the slice they
-    # need (cheap views into the in-memory mosaic) instead of the whole grid.
-    tile_stacks = [mosaic.iter_tiles(z) for z in z_idx]
-
-    use_batched_cuda = _BATCHED_FIT_AVAILABLE and should_use_batched_cuda(
-        field_mode=field_mode,
-        n_z=len(z_idx),
-        backend=params.get("backend"),
-        device=params.get("device"),
-    )
-    if use_batched_cuda and not _allow_batched_cuda_for_params(params):
-        if _batched_explicitly_desired(params, params["_strategy"]):
-            _record_batched_guard_downgrade(
-                params["_strategy"],
-                n_cuda_devices=len(cuda_devices) or 1,
-            )
-        use_batched_cuda = False
     convergence_per_z: list[dict[str, Any]] | None = None
-    if use_batched_cuda:
-        results = _fit_mosaic_batched_cuda(
-            tile_stacks,
-            params=params,
-            n_extra_rows=n_extra_rows,
-            cuda_devices=cuda_devices or ["cuda:0"],
-            verbose=verbose,
-        )
-    else:
+    use_batched_cuda = False
+    if streaming:
+        # Sequential streaming: extract and fit one z-level at a time so peak
+        # memory is bounded by a single plane instead of all per-z tile stacks
+        # held live simultaneously.  The same ``_fit_one_z`` runs on the same
+        # tiles in the same order as the non-streaming sequential path, so
+        # numerics are identical — only the extraction timing differs.
         convergence_per_z = []
-        if use_cuda_fanout:
+        fit_fn = partial(_fit_one_z, params=params, n_extra_rows=n_extra_rows)
+        iterator: Any = z_idx
+        if verbose:
+            from tqdm.auto import tqdm
+
+            iterator = tqdm(z_idx, desc="Fitting z-levels (streaming)", total=len(z_idx), leave=False)
+        results = [fit_fn(mosaic.iter_tiles(z)) for z in iterator]
+        use_cuda_fanout = False
+    else:
+        # Pre-extract per-z tile stacks so workers receive only the slice they
+        # need (cheap views into the in-memory mosaic) instead of the whole grid.
+        tile_stacks = [mosaic.iter_tiles(z) for z in z_idx]
+
+        use_batched_cuda = _BATCHED_FIT_AVAILABLE and should_use_batched_cuda(
+            field_mode=field_mode,
+            n_z=len(z_idx),
+            backend=params.get("backend"),
+            device=params.get("device"),
+        )
+        if use_batched_cuda and not _allow_batched_cuda_for_params(params):
+            if _batched_explicitly_desired(params, params["_strategy"]):
+                _record_batched_guard_downgrade(
+                    params["_strategy"],
+                    n_cuda_devices=len(cuda_devices) or 1,
+                )
+            use_batched_cuda = False
+        if use_batched_cuda:
+            results = _fit_mosaic_batched_cuda(
+                tile_stacks,
+                params=params,
+                n_extra_rows=n_extra_rows,
+                cuda_devices=cuda_devices or ["cuda:0"],
+                verbose=verbose,
+            )
+        elif use_cuda_fanout:
+            convergence_per_z = []
             cuda_fit = partial(_fit_one_z_cuda_map, params=params, n_extra_rows=n_extra_rows)
             results = parallel_map_cuda_devices(
                 cuda_fit,
@@ -611,6 +646,7 @@ def fit_mosaic(
                 verbose=verbose,
             )
         else:
+            convergence_per_z = []
             results = parallel_map(
                 partial(_fit_one_z, params=params, n_extra_rows=n_extra_rows),
                 tile_stacks,
@@ -685,7 +721,10 @@ def apply_fit(
     th, tw = mosaic.tile_shape
     nrows, ncols = mosaic.n_rows, mosaic.n_cols
 
-    corrected = mosaic.array.astype(np.float32).copy()
+    # Materialise to ndarray: no-op for eager MosaicGrid, required read for a
+    # lazy (zarr.Array-backed) grid.  apply_fit always needs the full volume
+    # since it corrects every pixel.
+    corrected = np.asarray(mosaic.array).astype(np.float32).copy()
 
     for z in range(nz):
         if fit.field_mode == "global":

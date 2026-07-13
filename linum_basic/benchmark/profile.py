@@ -1175,6 +1175,11 @@ def is_fast_era(current_steady_state_ms: float, baseline_steady_state_ms: float)
 
     A baseline is a fast era when ``current_steady_state_ms / baseline_steady_state_ms``
     is at or above the locked 20% threshold (ratio >= 1.20).
+
+    Returns
+    -------
+    bool
+        ``True`` when the baseline is a fast era relative to the current timing.
     """
     if baseline_steady_state_ms <= 0:
         return False
@@ -1221,6 +1226,13 @@ def build_regression_triage_result(
 
     Returns the unchanged :func:`diagnose_regression_triage` enum plus historical
     baseline rows, fast-era commit hashes, and the best (fastest) fast-era baseline.
+
+    Returns
+    -------
+    dict
+        Regression triage payload with keys ``regression_triage``,
+        ``historical_baselines``, ``fast_era_commits``,
+        ``historical_regression_detected``, and ``best_fast_era``.
     """
     regression_triage = diagnose_regression_triage(
         harness_overall=harness_overall,
@@ -1305,6 +1317,11 @@ def load_historical_baselines_from_iteration_ab(
 
     Reads existing ``iteration-ab-z*.json`` artifacts without running new GPU benchmarks.
     Unknown extra keys are ignored for forward compatibility with ad-hoc scripts.
+
+    Returns
+    -------
+    tuple of HistoricalBaseline
+            One ingested baseline row per era present in the A/B JSON artifact.
     """
     import json
 
@@ -1347,6 +1364,11 @@ def load_historical_baselines_from_harness_candidate(
     Reads ``candidate-artifact.json`` telemetry and git metadata plus a companion
     ``compare-summary.json`` for forward-compatible validation. Speed verdict fields
     are not stored on the returned row.
+
+    Returns
+    -------
+    tuple of HistoricalBaseline
+            A single-element tuple with the candidate's historical baseline row.
     """
     import json
 
@@ -1415,6 +1437,11 @@ def build_forensics_bottleneck_report() -> dict[str, Any]:
     Unlike :func:`build_bottleneck_report`, this does not require Phase 5 profiler output.
     Only the priority-1 ``worker-compile-off`` lever is included; ``auto-l-s-config`` is
     excluded because it is a companion config promotion, not a harness attempt row (D-03).
+
+    Returns
+    -------
+    dict
+        Bottleneck-report payload with the single ranked ``worker-compile-off`` lever.
     """
     worker_lever = next(lever for lever in build_forensics_recovery_levers() if lever.lever_id == "worker-compile-off")
     return {
@@ -1430,6 +1457,11 @@ def build_forensics_recovery_levers() -> tuple[RankedLever, ...]:
     """Return ranked recovery levers from ad-hoc A6000 forensics (FORE-04).
 
     Priority 1: worker compile-off (``511c88c``); priority 2: auto ``l_s`` config.
+
+    Returns
+    -------
+    tuple of RankedLever
+            Recovery levers ordered by descending priority.
     """
     return (
         RankedLever(
@@ -1458,7 +1490,13 @@ def build_forensics_recovery_levers() -> tuple[RankedLever, ...]:
 def build_forensics_change_attribution(
     historical_baselines: Sequence[HistoricalBaseline],
 ) -> list[dict[str, Any]]:
-    """Map historical baselines to FORE-02 change-class attribution rows."""
+    """Map historical baselines to FORE-02 change-class attribution rows.
+
+    Returns
+    -------
+    list of dict
+            One attribution row per baseline carrying a ``change_class``.
+    """
     entries: list[dict[str, Any]] = []
     for baseline in historical_baselines:
         if baseline.change_class is None:
@@ -1489,7 +1527,14 @@ def build_forensics_report(
     workload: dict[str, Any] | None = None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble slim forensics-report.json manifest from ingested baselines (FORE-01)."""
+    """Assemble slim forensics-report.json manifest from ingested baselines (FORE-01).
+
+    Returns
+    -------
+    dict
+        Forensics-report manifest with triage, baselines, change attribution, and
+        ranked recovery levers.
+    """
     from datetime import UTC, datetime
 
     triage = build_regression_triage_result(

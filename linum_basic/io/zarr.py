@@ -21,18 +21,34 @@ from ome_zarr.writer import write_image
 __all__ = ["load_ome_zarr", "write_ome_zarr"]
 
 
-def load_ome_zarr(path: str | Path) -> tuple[np.ndarray, list[str], list[float]]:
-    """Load an OME-Zarr file into a NumPy array (multiscale level 0).
+def load_ome_zarr(path: str | Path, *, lazy: bool = False) -> tuple[np.ndarray | zarr.Array, list[str], list[float]]:
+    """Load an OME-Zarr file (multiscale level 0).
+
+    By default the level-0 volume is fully materialised into a NumPy array
+    (eager read).  Pass ``lazy=True`` to get back the underlying
+    :class:`zarr.Array` handle instead — on-disk and chunked — so callers can
+    stream planes or tiles without loading the whole volume into memory.  The
+    lazy handle supports NumPy-style indexing (``handle[z]``,
+    ``handle[z, y0:y1, x0:x1]``); each index materialises only the requested
+    region into a :class:`numpy.ndarray`.
 
     Parameters
     ----------
     path : str or Path
         Path to the ``.ome.zarr`` directory.
+    lazy : bool, optional
+        When ``True`` (default ``False``), return the level-0
+        :class:`zarr.Array` handle instead of a materialised NumPy array.
+        The handle shares the on-disk store's chunk grid; nothing is read
+        until it is indexed.
 
     Returns
     -------
-    array : numpy.ndarray
-        The full-resolution volume (level 0) loaded into memory.
+    array : numpy.ndarray or zarr.Array
+        When ``lazy`` is ``False`` (default), the full-resolution volume
+        (level 0) loaded into memory as a :class:`numpy.ndarray`.
+        When ``lazy`` is ``True``, the level-0 :class:`zarr.Array` handle
+        (on-disk, chunked) — index it to read specific planes or regions.
     axes : list of str
         Axis names extracted from the multiscale metadata
         (e.g. ``["z", "y", "x"]``).
@@ -55,9 +71,10 @@ def load_ome_zarr(path: str | Path) -> tuple[np.ndarray, list[str], list[float]]
     if multiscale is None:
         raise ValueError(f"No Multiscales spec found in: {path}")
 
-    # Level-0 array
+    # Level-0 array handle.  Kept as the on-disk zarr.Array so callers can opt
+    # into lazy streaming (indexing materialises only the requested region).
     arr = zarr.open_array(str(Path(path) / multiscale.datasets[0]), mode="r")
-    array = np.asarray(arr[:])
+    array: np.ndarray | zarr.Array = arr if lazy else np.asarray(arr[:])
 
     # Axes and scale from the OME-Zarr attrs.  The spec keeps metadata under
     # root.attrs["ome"]["multiscales"] (v0.4+), but some writers (and older
@@ -70,9 +87,10 @@ def load_ome_zarr(path: str | Path) -> tuple[np.ndarray, list[str], list[float]]
     # When axes metadata is absent, derive a fallback from ndim so 2-D data
     # gets ["y", "x"] instead of always returning the 3-D ["z", "y", "x"] list.
     _fallback_axes = ["t", "c", "z", "y", "x"]
-    axes: list[str] = [ax["name"] for ax in axes_meta] if axes_meta else _fallback_axes[-array.ndim :]
+    ndim = arr.ndim
+    axes: list[str] = [ax["name"] for ax in axes_meta] if axes_meta else _fallback_axes[-ndim:]
 
-    scale: list[float] = [1.0] * array.ndim
+    scale: list[float] = [1.0] * ndim
     for tr in (ms_meta.get("datasets", [{}])[0]).get("coordinateTransformations", []):
         if tr.get("type") == "scale":
             scale = list(tr["scale"])

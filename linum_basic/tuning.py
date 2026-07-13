@@ -39,7 +39,7 @@ from linum_basic.fit import MosaicFit, make_model
 from linum_basic.metrics import seam_l1
 from linum_basic.mosaic import MosaicGrid
 
-__all__ = ["TuneResult", "tune"]
+__all__ = ["BoundsRecommendation", "TuneResult", "recommend_bounds", "tune"]
 
 # Default Optuna search space.
 # Categorical values → suggest_categorical; length-2 tuples → log-uniform float.
@@ -141,6 +141,185 @@ class TuneResult:
         self.objective = objective
         self.trials_df = trials_df
         self.best_fit = best_fit
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class BoundsRecommendation:
+    """Quality-aware search-space narrowing derived from a :class:`TuneResult`.
+
+    Summarises the near-optimal region of an Optuna trial history into a
+    ``search_space``-shaped dict that can be fed straight back into a
+    follow-up :func:`tune` call (or serialised to JSON for the CLI).  Bounds
+    are expressed in the scale-invariant *divisor* parametrisation
+    (``l_s_divisor`` / ``l_d_divisor``), matching
+    :data:`_DEFAULT_SEARCH_SPACE` so they transfer across datasets without
+    the per-subject ``dct_sum``.
+
+    Attributes
+    ----------
+    search_space : dict
+        Narrowed search space ready for :func:`tune`::
+
+            {
+                "working_size": [96, 128],
+                "l_s_divisor": (300.0, 1200.0),
+                "l_d_divisor": (800.0, 4000.0),
+                "epsilon": (0.05, 0.4),
+                "estimate_darkfield": [True],
+            }
+
+        Degenerate ranges (``low == high``) are valid and arise when the
+        near-optimal subset contains a single trial or a constant value.
+    best_value : float
+        Objective value of the best completed trial.
+    n_near_optimal : int
+        Number of completed trials within *margin* of ``best_value``.
+    margin : float
+        Relative margin used to select the near-optimal subset.
+    """
+
+    search_space: dict[str, Any]
+    best_value: float
+    n_near_optimal: int
+    margin: float
+
+    def __init__(
+        self,
+        search_space: dict[str, Any],
+        best_value: float,
+        n_near_optimal: int,
+        margin: float,
+    ) -> None:
+        """Construct a :class:`BoundsRecommendation`.
+
+        Parameters
+        ----------
+        search_space : dict
+            Narrowed search space (see class docstring for shape).
+        best_value : float
+            Objective value of the best completed trial.
+        n_near_optimal : int
+            Number of completed trials within *margin* of ``best_value``.
+        margin : float
+            Relative margin used to select the near-optimal subset.
+        """
+        object.__setattr__(self, "search_space", dict(search_space))
+        object.__setattr__(self, "best_value", float(best_value))
+        object.__setattr__(self, "n_near_optimal", int(n_near_optimal))
+        object.__setattr__(self, "margin", float(margin))
+
+
+def recommend_bounds(
+    result: TuneResult,
+    *,
+    margin: float = 0.10,
+) -> BoundsRecommendation:
+    """Propose narrowed l_s / l_d / working_size bounds from a tuning run.
+
+    Selects the subset of completed trials whose objective value is within
+    *margin* (a relative fraction) of the best observed value, then collapses
+    that subset into a ``search_space``-shaped recommendation:
+
+    - ``working_size`` → sorted unique choices observed in the subset.
+    - ``l_s_divisor``, ``l_d_divisor``, ``epsilon`` → ``(min, max)`` range
+      over the subset.  The regularisation strengths stay in the
+      scale-invariant divisor parametrisation so the bounds transfer across
+      datasets.
+    - ``estimate_darkfield`` → majority vote, returned as a single-element
+      list.
+
+    The returned :attr:`BoundsRecommendation.search_space` plugs directly
+    into a follow-up :func:`tune` call, focusing the next search on the
+    empirically productive region.
+
+    Parameters
+    ----------
+    result : TuneResult
+        Output of :func:`tune`.  Must carry a populated ``trials_df`` with at
+        least one ``COMPLETE`` trial.
+    margin : float
+        Relative width of the near-optimal band.  ``0.0`` keeps only the
+        best trial(s); ``0.10`` (default) keeps trials within 10% of the
+        best value.  Must be in ``[0, 1]``.
+
+    Returns
+    -------
+    BoundsRecommendation
+        Narrowed search space plus the best value, near-optimal count, and
+        margin used.
+
+    Raises
+    ------
+    ValueError
+        If *margin* is outside ``[0, 1]``, *result* has no ``trials_df``
+        (e.g. pandas was unavailable), or no trial reached the ``COMPLETE``
+        state.
+
+    Notes
+    -----
+    This is a distinct, advisory heuristic from the release-gate calibration
+    in :mod:`linum_basic.benchmark.quality` (which applies a ``mean+3std``
+    policy to repeated A/B baselines).  ``recommend_bounds`` instead collapses
+    a single Optuna study's trial history into a narrowed search space and
+    never gates a production fit.
+
+    Examples
+    --------
+    >>> rec = recommend_bounds(result, margin=0.10)  # doctest: +SKIP
+    >>> rec.search_space["working_size"]  # doctest: +SKIP
+    [128]
+    >>> rec.n_near_optimal >= 1  # doctest: +SKIP
+    True
+    """
+    if not 0.0 <= margin <= 1.0:
+        msg = f"margin must be in [0, 1], got {margin!r}"
+        raise ValueError(msg)
+
+    trials_df = result.trials_df
+    if trials_df is None or len(trials_df) == 0:
+        msg = "recommend_bounds requires a TuneResult with a populated trials_df"
+        raise ValueError(msg)
+
+    # Only COMPLETE trials carry a final, comparable objective value.
+    # trials_dataframe() stringifies TrialState (e.g. "COMPLETE");
+    # str.endswith also tolerates a future "TrialState.COMPLETE" form.
+    state = trials_df["state"].astype(str)
+    complete = trials_df[state.str.endswith("COMPLETE")]
+    if len(complete) == 0:
+        msg = "recommend_bounds requires at least one COMPLETE trial"
+        raise ValueError(msg)
+
+    values = complete["value"].to_numpy(dtype=float)
+    best_value = float(np.nanmin(values))
+
+    # Near-optimal band: values within `margin` of the best (relative).
+    threshold = best_value * (1.0 + margin)
+    near = complete[values <= threshold]
+
+    working_sizes = sorted({int(v) for v in near["params_working_size"].to_numpy()})
+
+    def _range(col: str) -> tuple[float, float]:
+        arr = near[col].to_numpy(dtype=float)
+        return (float(np.nanmin(arr)), float(np.nanmax(arr)))
+
+    # Majority vote on the boolean darkfield flag across the near-optimal set.
+    df_flags = near["params_estimate_darkfield"].to_numpy().astype(bool)
+    estimate_darkfield = bool(np.mean(df_flags) >= 0.5)
+
+    search_space: dict[str, Any] = {
+        "working_size": working_sizes,
+        "l_s_divisor": _range("params_l_s_divisor"),
+        "l_d_divisor": _range("params_l_d_divisor"),
+        "epsilon": _range("params_epsilon"),
+        "estimate_darkfield": [estimate_darkfield],
+    }
+
+    return BoundsRecommendation(
+        search_space=search_space,
+        best_value=best_value,
+        n_near_optimal=len(near),
+        margin=margin,
+    )
 
 
 def tune(
