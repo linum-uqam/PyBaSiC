@@ -19,6 +19,15 @@ Covered invariants (T01):
 * **Eq. 6 dual DCT+spatial shrink** — the second (spatial) soft-threshold of
   the dark-field residual is load-bearing: ablating it measurably changes the
   estimated ``D_field``.
+
+Covered invariants (T02):
+
+* **OpenCV double-transpose resize** — ``core.py`` resizes every image with
+  ``cv2.resize(img.T, new_shape, ...).T``.  The double transpose matches
+  OpenCV's ``(width, height)`` column-major convention; removing it introduces
+  ~1e-7 float drift that cascades through the iterative solver.  The drift is
+  too small to assert against reliably, so the test pins the *call contract*:
+  ``cv2.resize`` must always receive the transposed array, never the plain one.
 """
 
 from __future__ import annotations
@@ -28,10 +37,12 @@ from typing import Any
 import numpy as np
 import pytest
 
+import linum_basic.core as core
 from linum_basic import _alm
 from linum_basic._alm import _ALM_STEP_CACHE, _build_alm_step
 from linum_basic._alm import shrink as real_shrink
 from linum_basic.backend import Backend, get_xp
+from linum_basic.core import BaSiC
 
 # Return-tuple index map of ``_alm_core_step`` (kept in sync with ``_alm.py``):
 #   0:new_sf 1:new_s_spatial 2:new_ib 3:new_ir 4:d_minus_ir
@@ -356,4 +367,109 @@ class TestDarkfieldDualShrink:
         assert (1, pq) in observed_shapes, (
             "No spatial (1, P*Q) dark-field shrink call observed; the Eq. 6 dual "
             f"penalty may have been removed. Observed shrink shapes: {observed_shapes}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# OpenCV double-transpose resize invariant (core._load_images)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenCVDoubleTransposeResize:
+    """Pin the ``cv2.resize(img.T, new_shape, ...).T`` double transpose.
+
+    CONCERNS / AGENTS rationale: ``core.py`` resizes every image with the
+    ``.T`` applied before *and* after ``cv2.resize`` to match OpenCV's
+    ``(width, height)`` column-major convention.  Removing either transpose
+    introduces ~1e-7 float drift that cascades through the iterative solver.
+    That drift is too small to assert against reliably in the *output*, so
+    the test pins the *call contract*: ``cv2.resize``'s source argument must
+    be the transposed array, never the plain one.
+    """
+
+    @staticmethod
+    def _asymmetric_non_square_stack(n: int = 3, h: int = 7, w: int = 11) -> np.ndarray:
+        """A non-square, asymmetric-content image stack.
+
+        Two independent properties make the contract assertion discriminating:
+
+        * **Non-square** (``h != w``): ``img`` has shape ``(h, w)`` while
+          ``img.T`` has shape ``(w, h)``, so the transpose is detectable by
+          shape alone.
+        * **Asymmetric content** (an increasing ramp): even for a square
+          image ``img != img.T`` element-wise, so the transpose is also
+          detectable by content.
+
+        Both axes guard against a future "simplification" of the fixture
+        (e.g. a constant or symmetric image) that would silently make the
+        main test non-discriminating.
+        """
+        assert h != w, "fixture must be non-square for shape-level discrimination"
+        stack = np.empty((n, h, w), dtype=np.float32)
+        for i in range(n):
+            stack[i] = np.arange(h * w, dtype=np.float32).reshape(h, w) + i * 1000.0
+        return stack
+
+    def test_resize_receives_transposed_array(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``cv2.resize``'s source arg must equal ``img.T``, never ``img``.
+
+        Spies on ``cv2.resize`` during ``BaSiC.prepare()`` and asserts every
+        captured source array is the transpose of an input image.  If the
+        leading ``.T`` is removed, the plain (non-transposed) image would be
+        passed and this assertion fails directly — rather than only surfacing
+        as ~1e-7 output drift three layers away in an end-to-end test.
+        """
+        n, h, w = 3, 7, 11
+        stack = self._asymmetric_non_square_stack(n, h, w)
+
+        captured: list[np.ndarray] = []
+        real_resize = core.cv2.resize
+
+        def _spy_resize(src: np.ndarray, dsize: tuple[int, int], **kwargs: Any) -> np.ndarray:
+            captured.append(np.asarray(src).copy())
+            return real_resize(src, dsize, **kwargs)
+
+        monkeypatch.setattr(core.cv2, "resize", _spy_resize)
+
+        model = BaSiC(stack, estimate_darkfield=False)
+        model.working_size = 4  # < image_shape[0] → INTER_AREA downscale (production path)
+        model.prepare()
+
+        # Sanity: prepare completed and produced the expected resized shape.
+        assert model.img_stack_resized.shape == (n, model.working_size, model.working_size)
+        assert len(captured) == n, f"expected {n} resize calls (one per image), got {len(captured)}"
+
+        expected_transposes = [stack[i].T for i in range(n)]
+        plain_images = [stack[i] for i in range(n)]
+
+        for src in captured:
+            # Every source must be the transpose of some input image.
+            assert any(np.array_equal(src, t) for t in expected_transposes), (
+                "cv2.resize received an array that is not the transpose of any "
+                f"input image; the leading '.T' before resize may be broken. "
+                f"observed src.shape={src.shape}, expected {(w, h)}"
+            )
+            # The plain (non-transposed) image must never be passed.
+            assert not any(np.array_equal(src, p) for p in plain_images), (
+                "cv2.resize received the plain (non-transposed) image; the leading "
+                "'.T' was removed, breaking OpenCV's (width, height) convention "
+                "and introducing ~1e-7 drift that cascades through the solver."
+            )
+
+    def test_fixture_is_discriminating(self) -> None:
+        """The fixture is non-square AND asymmetric, so discrimination is robust.
+
+        Documents *why* the main test reliably catches removal of ``.T``: the
+        plain image and its transpose differ on *both* shape (non-square) and
+        content (asymmetric ramp).  If a future change makes the fixture
+        square-and-symmetric, this guard fails, preventing the main contract
+        assertion from silently becoming a no-op.
+        """
+        stack = self._asymmetric_non_square_stack(n=2, h=7, w=11)
+        img = stack[0]
+        assert img.shape == (7, 11), f"plain image shape must be (h, w)=(7, 11), got {img.shape}"
+        assert img.T.shape == (11, 7), f"transposed shape must be (w, h)=(11, 7), got {img.T.shape}"
+        assert not np.array_equal(img, img.T), (
+            "fixture content is symmetric; img == img.T would make the contract "
+            "assertion unable to distinguish the transposed from the plain input"
         )
