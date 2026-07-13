@@ -50,6 +50,10 @@ from linum_basic.core import BaSiC
 _IDX_NEW_D_FIELD = 8
 _IDX_NEW_B1 = 9
 
+# Cross-backend agreement tolerance, matching ``tests/test_backend_parity.py``
+# so the σ₁ agreement assertion is consistent with the established parity gate.
+ATOL = 1e-4
+
 
 @pytest.fixture(autouse=True)
 def _reset_alm_step_cache() -> None:
@@ -472,4 +476,157 @@ class TestOpenCVDoubleTransposeResize:
         assert not np.array_equal(img, img.T), (
             "fixture content is symmetric; img == img.T would make the contract "
             "assertion unable to distinguish the transposed from the plain input"
+        )
+
+
+# ---------------------------------------------------------------------------
+# svd_leading_singular power-iteration invariant (backend.ArrayNamespace)
+# ---------------------------------------------------------------------------
+
+
+def _torch_available() -> bool:
+    """Return ``True`` if PyTorch is importable.
+
+    The other invariant tests above are NumPy-only and must keep running on
+    torch-less environments, so the SVD power-iteration class is guarded with
+    a per-class ``skipif`` rather than a module-level ``importorskip``.
+    """
+    try:
+        import torch  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    not _torch_available(),
+    reason="PyTorch not installed — skipping SVD power-iteration invariant tests",
+)
+class TestSvdLeadingSingularPowerIteration:
+    """Pin the ``svd_leading_singular`` backend split invariant.
+
+    CONCERNS / AGENTS rationale: NumPy computes the leading singular value via
+    a full ``numpy.linalg.svd(compute_uv=False)``; the Torch/GPU path instead
+    uses batched power iteration on ``x @ x.T`` (see
+    ``_svd_leading_singular_torch_batched``) to avoid a full GPU SVD and its
+    device synchronisation.  Reverting the Torch path to ``torch.linalg.svd``
+    reintroduces the sync and a ~0.001% σ₁ drift that shifts soft-threshold
+    boundaries and breaks the darkfield regression tests.
+
+    The invariant has two conjuncts, both pinned here:
+
+    1. The Torch path **never** calls ``torch.linalg.svd`` / ``svdvals``.
+    2. The power-iteration σ₁ agrees with NumPy's full-SVD σ₁ within ``ATOL``.
+    """
+
+    @staticmethod
+    def _representative_matrix(seed: int = 7) -> np.ndarray:
+        """A non-negative, image-like matrix with a genuine spectral gap.
+
+        Mirrors the kind of matrix BaSiC feeds to ``svd_leading_singular``:
+        the dark-field residual ``D`` is reshaped from sorted, mostly-positive
+        image data, for which the power-iteration's deterministic uniform
+        start converges quickly (see
+        ``_svd_leading_singular_torch_batched`` docstring).  A pure-rank-1 or
+        constant matrix would make the agreement assertion trivially pass; a
+        matrix with no spectral gap would make 30 power-iteration steps
+        meaningless.  This fixture has a moderate gap (verified by the
+        companion ``test_fixture_has_genuine_spectral_gap``) so the agreement
+        test both converges and stresses the iteration.
+        """
+        rng = np.random.default_rng(seed)
+        return np.abs(rng.normal(1.0, 0.3, (16, 16))).astype(np.float32)
+
+    def test_torch_path_never_calls_full_svd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The Torch path must use power iteration, never a full SVD.
+
+        Spies on ``torch.linalg.svd`` and ``torch.linalg.svdvals`` during a
+        single ``svd_leading_singular`` call.  If a future change reverts the
+        GPU path to ``torch.linalg.svd`` (the exact regression the invariant
+        guards against), this assertion fails directly instead of only
+        surfacing as ~0.001% σ₁ drift in a darkfield recovery test.
+        """
+        import torch
+
+        xp = get_xp(Backend.TORCH)
+        mat = self._representative_matrix()
+
+        calls = {"svd": 0, "svdvals": 0}
+        real_svd = torch.linalg.svd
+        real_svdvals = torch.linalg.svdvals
+
+        def _spy_svd(*args: Any, **kwargs: Any) -> Any:
+            calls["svd"] += 1
+            return real_svd(*args, **kwargs)
+
+        def _spy_svdvals(*args: Any, **kwargs: Any) -> Any:
+            calls["svdvals"] += 1
+            return real_svdvals(*args, **kwargs)
+
+        monkeypatch.setattr(torch.linalg, "svd", _spy_svd)
+        monkeypatch.setattr(torch.linalg, "svdvals", _spy_svdvals)
+
+        sigma = xp.svd_leading_singular(xp.asarray(mat))
+
+        # The call must produce a finite leading singular value.
+        assert np.isfinite(sigma), f"svd_leading_singular returned non-finite σ₁: {sigma}"
+
+        # Neither full-SVD entry point may be invoked on the Torch path.
+        assert calls["svd"] == 0, (
+            "Torch svd_leading_singular called torch.linalg.svd ("
+            f"{calls['svd']} time(s)); the power-iteration path may have been "
+            "reverted to a full GPU SVD, reintroducing device sync and σ₁ drift."
+        )
+        assert calls["svdvals"] == 0, (
+            "Torch svd_leading_singular called torch.linalg.svdvals ("
+            f"{calls['svdvals']} time(s)); the power-iteration path may have "
+            "been reverted to a full GPU SVD, reintroducing device sync and σ₁ drift."
+        )
+
+    def test_power_iteration_agrees_with_numpy_full_svd(self) -> None:
+        """The power-iteration σ₁ agrees with NumPy's full-SVD σ₁ within ATOL.
+
+        Complements conjunct 1: even if the path avoids ``torch.linalg.svd``, a
+        broken iteration (wrong transpose, dropped normalisation, too few
+        steps) would produce a σ₁ that disagrees with the NumPy reference.
+        "ATOL`` matches ``tests/test_backend_parity.py`` so the invariant test
+        is consistent with the established cross-backend parity gate.
+        """
+        xp_np = get_xp(Backend.NUMPY)
+        xp_th = get_xp(Backend.TORCH)
+        mat = self._representative_matrix()
+
+        s_np = xp_np.svd_leading_singular(xp_np.asarray(mat))
+        s_th = xp_th.svd_leading_singular(xp_th.asarray(mat))
+
+        assert np.isfinite(s_np) and np.isfinite(s_th)
+        assert abs(s_np - s_th) < ATOL, (
+            f"Leading σ mismatch: numpy full SVD σ₁={s_np:.6f} vs "
+            f"torch power-iteration σ₁={s_th:.6f} (Δ={abs(s_np - s_th):.3e}, "
+            f"ATOL={ATOL}). The power-iteration math may be broken."
+        )
+
+    def test_fixture_has_genuine_spectral_gap(self) -> None:
+        """The fixture has σ₁ clearly larger than σ₂, so the test is meaningful.
+
+        Documents *why* the agreement test reliably catches a broken power
+        iteration: with a genuine spectral gap (σ₂/σ₁ well below 1), 30
+        iterations converge tightly to σ₁, so any broken iteration math
+        produces a measurably wrong estimate.  If a future change makes the
+        fixture near-rank-1 (σ₂≈0) or isotropic (σ₁≈σ₂), this guard fails,
+        preventing the agreement assertion from silently weakening.
+        """
+        mat = self._representative_matrix()
+        singular = np.linalg.svd(mat.astype(np.float64), compute_uv=False)
+        sigma1, sigma2 = singular[0], singular[1]
+        assert sigma1 > 0.0, "fixture has no signal (σ₁ = 0)"
+        # A moderate gap: σ₂ no more than 80% of σ₁.  Empirically this fixture
+        # sits around 0.55-0.70; 0.80 is a conservative ceiling.
+        assert sigma2 / sigma1 < 0.80, (
+            f"fixture spectral gap too small for a meaningful power-iteration test: σ₂/σ₁={sigma2 / sigma1:.3f} (need < 0.80)"
+        )
+        # And not rank-1 either, which would converge trivially in one step.
+        assert sigma2 > 1e-3 * sigma1, (
+            f"fixture is near-rank-1: σ₂/σ₁={sigma2 / sigma1:.3e}, which makes "
+            "power iteration converge in ~1 step and weakens the agreement test."
         )
