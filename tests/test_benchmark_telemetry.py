@@ -281,7 +281,30 @@ class TestCollectPrecisionMetadata:
 
 class TestCollectMultiGpuMemoryStats:
     def test_collect_multi_gpu_memory_stats_cpu_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delitem(sys.modules, "torch", raising=False)
+        # Simulate a CPU-only environment where ``import torch`` fails. We block
+        # the import at ``builtins.__import__`` rather than merely deleting
+        # ``sys.modules["torch"]``: once a real torch import has run earlier in
+        # the same process (e.g. via test_alm_parity.py), re-importing torch
+        # re-executes its ``__init__.py`` and re-registers the C-level "triton"
+        # TORCH_LIBRARY namespace, which raises RuntimeError (not ImportError)
+        # on the second registration. Blocking at the import boundary short-
+        # circuits before torch's module body runs, so the function's existing
+        # ``except ImportError: return {}`` guard fires reliably regardless of
+        # what other test modules imported torch earlier in the suite.
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _block_torch(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "torch" or name.startswith("torch."):
+                raise ImportError("torch unavailable")
+            return real_import(name, *args, **kwargs)
+
+        for key in list(sys.modules):
+            if key == "torch" or key.startswith("torch."):
+                monkeypatch.delitem(sys.modules, key, raising=False)
+        monkeypatch.setattr(builtins, "__import__", _block_torch)
+
         from linum_basic.benchmark import telemetry
 
         assert telemetry.collect_multi_gpu_memory_stats(["cuda:0", "cuda:1"]) == {}
