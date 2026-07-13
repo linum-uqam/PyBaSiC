@@ -364,3 +364,116 @@ class TestUpdateGuard:
         model.l_s = None  # reset after prepare to trigger the guard
         with pytest.raises(RuntimeError, match="l_s and l_d must be set"):
             model.update()
+
+
+# ---------------------------------------------------------------------------
+# update() dark-field zero convergence guard (core invariant)
+# ---------------------------------------------------------------------------
+
+
+class TestDarkfieldZeroConvergenceGuard:
+    """Pin core.py's dark-field zero guard in ``BaSiC.update()``.
+
+    The invariant (``linum_basic/core.py``, ``BaSiC.update``)::
+
+        if mad_dark_abs < 1e-7:
+            mad_dark = 0.0
+        elif last_dark_sum < 1e-7:
+            mad_dark = 1.0  # previous estimate was zero; relative change undefined
+        else:
+            mad_dark = mad_dark_abs / last_dark_sum
+
+    prevents the solver from falsely declaring convergence on the very first
+    reweighting iterate, when the previous dark-field estimate is still
+    all-zeros (as initialised by ``prepare()``).  Without the guard, the
+    pre-fix formula ``mad_dark_abs / max(last_dark_sum, 1e-6)`` would divide
+    a tiny dark-field change by the 1e-6 floor and report a small ratio,
+    falsely satisfying ``reweighting_tolerance`` and stopping after a single
+    iterate.
+
+    These tests use a mocked ``inexact_alm_l1`` returning a near-zero
+    dark-field on the first pass with a *loose* tolerance, constructing the
+    only regime where old and new behaviour diverge (for the default
+    ``reweighting_tolerance=1e-3`` the discriminating window is empty, so a
+    loose tolerance is required).
+    """
+
+    # Discriminating dark-field change.  Must satisfy
+    #   1e-7 <= mad_dark_abs <= tolerance * 1e-6
+    # so the first (< 1e-7) branch is skipped, the zero-guard branch is taken
+    # under the current invariant (mad_dark = 1.0 -> not converged), but the
+    # pre-fix clamped ratio (mad_dark_abs / 1e-6) falls at or below tolerance
+    # (false convergence).  3e-7 sits inside the [1e-7, 5e-7] window for the
+    # 0.5 tolerance used below.
+    _TARGET_MAD_DARK_ABS = 3e-7
+    _LOOSE_TOLERANCE = 0.5
+
+    def _make_prepared_model(self, ws: int = 32, n: int = 4) -> BaSiC:
+        """Return a prepared BaSiC whose initial dark-field is all-zeros."""
+        rng = np.random.default_rng(7)
+        stack = rng.random((n, ws, ws)).astype(np.float32) + 0.2
+        model = BaSiC(stack, estimate_darkfield=True)
+        model.working_size = ws
+        model.prepare()
+        # Precondition for the zero-guard branch: prepare() initialises the
+        # dark-field to zeros.
+        assert model.darkfield.shape == (ws, ws)
+        assert float(np.abs(model.darkfield).sum()) == 0.0
+        return model
+
+    def _fake_alm_factory(self, ws: int, n: int):
+        """Build a mock ``inexact_alm_l1`` returning a near-zero dark-field.
+
+        The returned dark-field has ``|D|.sum() == _TARGET_MAD_DARK_ABS`` so
+        that ``mad_dark_abs`` (the change from the zero initial dark-field)
+        equals the target and exercises the zero-guard branch.  ``Ib`` is all
+        ones so ``Ib.mean(axis=0) - D_2d`` normalises back to ones, making
+        ``mad_flat == 0`` and leaving ``mad_dark`` as the sole convergence
+        determinant.
+        """
+        c = np.float32(self._TARGET_MAD_DARK_ABS / (ws * ws))
+        Ib = np.ones((n, ws, ws), dtype=np.float32)
+        Ir = np.zeros((n, ws, ws), dtype=np.float32)
+        D = np.full(ws * ws, c, dtype=np.float32)
+        alm_state = {"alm_iterations": 5}
+
+        def _fake_alm(*args, **kwargs):
+            return Ib, Ir, D, alm_state
+
+        return _fake_alm
+
+    def test_zero_darkfield_guard_prevents_false_convergence(self, monkeypatch) -> None:
+        """Under the discriminating fixture the guard keeps reweighting alive.
+
+        With a near-zero dark-field change (3e-7) and a loose tolerance (0.5),
+        the current invariant sets ``mad_dark = 1.0`` (zero-guard branch), so
+        ``max(mad_flat, 1.0) <= 0.5`` is False and ``_flag_reweighting`` stays
+        True.  A regression to the pre-fix clamped ratio would falsely
+        converge here (see ``test_fixture_discriminates_from_prefix_formula``).
+        """
+        ws, n = 32, 4
+        model = self._make_prepared_model(ws=ws, n=n)
+        model.reweighting_tolerance = self._LOOSE_TOLERANCE
+        monkeypatch.setattr("linum_basic.core.inexact_alm_l1", self._fake_alm_factory(ws, n))
+        model.update()
+        assert model._flag_reweighting is True
+
+    def test_fixture_discriminates_from_prefix_formula(self) -> None:
+        """The fixture exercises the zero-guard and would converge pre-fix.
+
+        Asserts the branch preconditions (``mad_dark_abs >= 1e-7`` so the
+        first branch is skipped; ``last_dark_sum < 1e-7`` so the zero-guard is
+        taken) and that the pre-fix clamped ratio falls at or below the loose
+        tolerance -- i.e. the scenario genuinely distinguishes old vs new
+        behaviour, so the main test cannot pass under the old formula.
+        """
+        mad_dark_abs = self._TARGET_MAD_DARK_ABS
+        last_dark_sum = 0.0  # prepare() initialises the dark-field to zeros
+        # Pre-fix formula: divide by the 1e-6 floor instead of the zero guard.
+        prefix_mad_dark = mad_dark_abs / max(last_dark_sum, 1e-6)
+        assert mad_dark_abs >= 1e-7, "fixture must skip the < 1e-7 first branch"
+        assert last_dark_sum < 1e-7, "fixture must enter the zero-guard branch"
+        assert prefix_mad_dark <= self._LOOSE_TOLERANCE, (
+            "pre-fix formula must falsely converge on this fixture; "
+            "otherwise the main test does not discriminate old vs new behaviour"
+        )
