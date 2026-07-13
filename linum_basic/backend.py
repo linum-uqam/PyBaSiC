@@ -690,7 +690,7 @@ def clear_dct_caches() -> None:
 
     See Also
     --------
-    _DCT_CACHE_MAXSIZE : per-cache LRU bound.
+    _DCT_CACHE_MAXSIZE : Per-cache LRU bound.
     """
     _DCT_MATRIX_CACHE.clear()
     _DCT_TWIDDLE_CACHE.clear()
