@@ -10,13 +10,14 @@ from __future__ import annotations
 import enum
 import math
 import os
+from collections import OrderedDict
 from typing import Any
 
 import numpy as np
 from scipy.fft import dctn as scipy_dctn
 from scipy.fft import idctn as scipy_idctn
 
-__all__ = ["ArrayNamespace", "Backend", "get_xp"]
+__all__ = ["ArrayNamespace", "Backend", "clear_dct_caches", "get_xp"]
 
 
 class Backend(enum.StrEnum):
@@ -653,16 +654,47 @@ class ArrayNamespace:
 # PyTorch DCT-II / DCT-III via FFT  (Lee 1984 / Makhoul 1980)
 # ---------------------------------------------------------------------------
 
+# Maximum number of entries retained in each DCT cache below.  Once the bound
+# is exceeded the least-recently-used entry is evicted, so long-running batch
+# jobs that fit many distinct image sizes cannot leak memory across fits (K10).
+# Tune by monkeypatching this constant, or release every cached entry between
+# batches via :func:`clear_dct_caches`.
+_DCT_CACHE_MAXSIZE: int = 64
+
 # Per-(length, dtype, device) cache of precomputed twiddle factors and scale
 # vectors.  Populated lazily on first use; avoids O(n) trig recomputation on
-# every DCT call inside the hot ALM loop.
-_DCT_TWIDDLE_CACHE: dict[tuple, tuple] = {}
-_IDCT_TWIDDLE_CACHE: dict[tuple, tuple] = {}
+# every DCT call inside the hot ALM loop.  Bounded by LRU eviction
+# (see ``_DCT_CACHE_MAXSIZE``).
+_DCT_TWIDDLE_CACHE: OrderedDict[tuple, tuple] = OrderedDict()
+_IDCT_TWIDDLE_CACHE: OrderedDict[tuple, tuple] = OrderedDict()
 
 # Per-(length, device) cache of orthonormal DCT-II matrices for matmul-based
 # DCT.  Used by _build_alm_step to replace FFT-based DCT inside torch.compile
 # regions (Torchinductor cannot generate Triton code for complex ops).
-_DCT_MATRIX_CACHE: dict[tuple, Any] = {}
+# Bounded by LRU eviction (see ``_DCT_CACHE_MAXSIZE``).
+_DCT_MATRIX_CACHE: OrderedDict[tuple, Any] = OrderedDict()
+
+
+def clear_dct_caches() -> None:
+    """Empty all three backend DCT caches.
+
+    Releases the cached orthonormal DCT-II matrices and the forward/inverse
+    twiddle factors held at module scope.  Intended for long-running batch
+    jobs that fit many stacks with varying shapes and want to reclaim the
+    (already LRU-bounded) memory between independent runs, or whenever a
+    guaranteed-cold DCT cache is required.
+
+    The caches are bounded by :data:`_DCT_CACHE_MAXSIZE` and evict
+    least-recently-used entries automatically, so calling this function is
+    optional — it only forces an immediate, full release.
+
+    See Also
+    --------
+    _DCT_CACHE_MAXSIZE : per-cache LRU bound.
+    """
+    _DCT_MATRIX_CACHE.clear()
+    _DCT_TWIDDLE_CACHE.clear()
+    _IDCT_TWIDDLE_CACHE.clear()
 
 
 def read_dct_kernel_mode() -> str:
@@ -679,6 +711,19 @@ def read_dct_kernel_mode() -> str:
     """
     raw = os.environ.get("LINUM_BASIC_DCT_KERNEL", "default").strip().lower()
     return "tuned" if raw == "tuned" else "default"
+
+
+def _lru_put(cache: OrderedDict[tuple, Any], key: tuple, value: Any) -> None:
+    """Store *value* under *key* in *cache* with LRU eviction.
+
+    Once the cache exceeds ``_DCT_CACHE_MAXSIZE`` the least-recently-used
+    entry is removed.  The new entry is always appended as most-recently-used,
+    so eviction (``popitem(last=False)``) removes the oldest surviving entry,
+    never the one just inserted.
+    """
+    cache[key] = value
+    if len(cache) > _DCT_CACHE_MAXSIZE:
+        cache.popitem(last=False)
 
 
 def _get_dct_matrix(n: int, device: Any) -> Any:
@@ -709,7 +754,9 @@ def _get_dct_matrix(n: int, device: Any) -> Any:
         A = torch.cos(math.pi * (i[None, :] + 0.5) * k[:, None] / n)
         A[0] *= 1.0 / math.sqrt(n)
         A[1:] *= math.sqrt(2.0 / n)
-        _DCT_MATRIX_CACHE[key] = A
+        _lru_put(_DCT_MATRIX_CACHE, key, A)
+    else:
+        _DCT_MATRIX_CACHE.move_to_end(key)
     return _DCT_MATRIX_CACHE[key]
 
 
@@ -726,7 +773,9 @@ def _get_dct_twiddles(n: int, dtype: Any, device: Any) -> tuple:
         scale = torch.empty(n, dtype=dtype, device=device)
         scale[0] = 1.0 / math.sqrt(n)
         scale[1:] = 1.0 / math.sqrt(n / 2)
-        _DCT_TWIDDLE_CACHE[key] = (cos_k, sin_k, scale)
+        _lru_put(_DCT_TWIDDLE_CACHE, key, (cos_k, sin_k, scale))
+    else:
+        _DCT_TWIDDLE_CACHE.move_to_end(key)
     return _DCT_TWIDDLE_CACHE[key]
 
 
@@ -742,7 +791,9 @@ def _get_idct_twiddles(n: int, dtype: Any, device: Any) -> tuple:
         scale = torch.empty(n, dtype=dtype, device=device)
         scale[0] = math.sqrt(n)
         scale[1:] = math.sqrt(n / 2)
-        _IDCT_TWIDDLE_CACHE[key] = (cos_k, sin_k, scale)
+        _lru_put(_IDCT_TWIDDLE_CACHE, key, (cos_k, sin_k, scale))
+    else:
+        _IDCT_TWIDDLE_CACHE.move_to_end(key)
     return _IDCT_TWIDDLE_CACHE[key]
 
 

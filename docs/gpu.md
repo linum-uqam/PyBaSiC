@@ -104,6 +104,12 @@ can be backend-agnostic:
   reweighting iterations and across different {class}`~linum_basic.core.BaSiC`
   instances.  The one-time warmup is amortised over the entire process
   lifetime.
+- The precomputed DCT-II matrices and forward/inverse FFT twiddle factors
+  are cached per ``(length, dtype, device)`` at module scope and bounded by
+  an LRU policy (default 64 entries per cache).  Long-running batch jobs
+  that fit many distinct image sizes therefore cannot leak memory across
+  fits.  To force a full release between independent runs, call
+  {func}`~linum_basic.backend.clear_dct_caches`.
 - The darkfield estimation step (when `estimate_darkfield=True`) runs
   **entirely on-device** with no host-device synchronisation points during
   the iteration.  The only sync per iteration is the convergence check.
