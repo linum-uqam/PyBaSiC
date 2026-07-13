@@ -52,7 +52,7 @@ docs = [
     "scienceplots>=2.1",
 ]
 validation = [
-    "sbh-simulator @ git+https://github.com/linum-uqam/sbh_simulator.git@master",
+    "sbh-simulator @ git+https://github.com/linum-uqam/sbh_simulator.git@110a59d7b0c150eb096fd4b9c63cc7633f785cd3",
 ]
 dev = [
     "pytest>=8.4",
