@@ -1,0 +1,4 @@
+{
+  "reweighting_tolerance": 5e-3,
+  "max_reweighting_iterations": 6
+}
