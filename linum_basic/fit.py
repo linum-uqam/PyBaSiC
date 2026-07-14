@@ -27,6 +27,12 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 from linum_basic._parallel import list_cuda_devices, parallel_map, parallel_map_cuda_devices, resolve_workers
+from linum_basic._working_size import (
+    PREVIEW_Z_SAMPLE,
+    WorkingSizeResolution,
+    build_working_size_context,
+    resolve_working_size,
+)
 from linum_basic.benchmark.strategies import (
     BASELINE_REFERENCE_ID,
     EVIDENCE_POLICY_ID,
@@ -462,6 +468,57 @@ class MosaicFit:
         self.convergence_per_z = convergence_per_z
 
 
+def _resolve_working_size_auto(
+    mosaic: MosaicGrid,
+    user_kwargs: dict[str, Any],
+    *,
+    n_z: int,
+    field_mode: str,
+) -> WorkingSizeResolution | None:
+    """Resolve the ``working_size="auto"`` sentinel to a concrete int.
+
+    Activates *only* when the caller asked for ``"auto"`` (opt-in). Builds a
+    :class:`WorkingSizeContext` from mosaic metadata, a bounded preview mean,
+    and a best-effort memory budget, then calls the pure resolver. The
+    resolved int replaces the sentinel in *user_kwargs* so a literal
+    ``"auto"`` never reaches :class:`BaSiC` or the strategy resolver.
+
+    Returns ``None`` when no resolution is needed (caller passed an explicit
+    int or omitted ``working_size``). Always fails safe to
+    :data:`~linum_basic._working_size.SAFE_DEFAULT` (128).
+    """
+    requested = user_kwargs.get("working_size", 128)
+    if requested != "auto":
+        return None
+
+    # Form a bounded preview mean across at most PREVIEW_Z_SAMPLE z-planes,
+    # averaged across tiles. Cheap (one read per plane + one mean).
+    sample_z = list(range(n_z))[:PREVIEW_Z_SAMPLE]
+    mean_image: np.ndarray | None = None
+    if sample_z:
+        try:
+            stacks = [mosaic.iter_tiles(z) for z in sample_z]
+            stacked = np.stack(stacks, axis=0)  # (n_sample_z, n_tiles, th, tw)
+            mean_image = stacked.mean(axis=(0, 1))
+        except ValueError, IndexError, OSError:
+            mean_image = None
+
+    device = user_kwargs.get("device")
+    ctx = build_working_size_context(
+        n_z=n_z,
+        n_tiles=mosaic.n_tiles,
+        field_mode=field_mode,
+        tile_shape=tuple(mosaic.tile_shape),
+        mean_image=mean_image,
+        device=device,
+        requested="auto",
+    )
+    resolution = resolve_working_size(ctx)
+    # Replace the sentinel with the concrete int before it flows downstream.
+    user_kwargs["working_size"] = resolution.resolved_working_size
+    return resolution
+
+
 def fit_mosaic(
     mosaic: MosaicGrid,
     *,
@@ -543,6 +600,11 @@ def fit_mosaic(
     user_kwargs = dict(basic_kwargs or {})
     z_idx = list(z_indices) if z_indices is not None else list(range(mosaic.n_z))
 
+    # Resolve the working_size="auto" sentinel (opt-in, M006/S02) to a concrete
+    # int *before* it reaches BaSiC, the workload context, or the strategy
+    # resolver. Existing callers that never pass "auto" are unaffected.
+    ws_resolution = _resolve_working_size_auto(mosaic, user_kwargs, n_z=len(z_idx), field_mode=field_mode)
+
     working_size = int(user_kwargs.get("working_size", 128))
     estimate_darkfield = bool(user_kwargs.get("estimate_darkfield", False))
     max_reweighting_iterations = int(user_kwargs.get("max_reweighting_iterations", 10))
@@ -556,7 +618,7 @@ def fit_mosaic(
     )
 
     if strategy == "auto":
-        resolved = resolve_auto_strategy(context, user_kwargs=basic_kwargs)
+        resolved = resolve_auto_strategy(context, user_kwargs=user_kwargs)
         strategy_meta = dict(resolved.strategy_metadata)
         params: dict[str, Any] = {**resolved.basic_kwargs, **user_kwargs}
     else:
@@ -579,6 +641,11 @@ def fit_mosaic(
         params["warm_start_reweighting"] = True
 
     params["_strategy"] = strategy_meta
+
+    # Record the adaptive working_size resolution (purely additive metadata;
+    # never affects fit numerics). Mirrors the params["_strategy"] D-19 pattern.
+    if ws_resolution is not None:
+        params["_working_size_selector"] = ws_resolution.metadata()
 
     th, tw = mosaic.tile_shape
     flatfields = np.ones((len(z_idx), th, tw), dtype=np.float32)
