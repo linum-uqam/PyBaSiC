@@ -177,11 +177,15 @@ result = tune(mosaic, working_size="auto")
 # basic tune --input subject.ome.zarr --working-size auto
 ```
 
-**Opt-in status.** `"auto"` is opt-in only.  Until the real-subject
-`seam_l1` / `seam_curvature` gate (K01) is passed in milestone M006 S03,
-the quality-floor *raise* branch is conservatively gated and the rule
-will rarely enlarge beyond `128` on real (typically smooth) illumination
-fields.  Passing an explicit integer always wins over `"auto"`.
+**Opt-in status.** `"auto"` is opt-in only.  Milestone M006 S03 evaluated
+the quality-floor *raise* branch on real subjects (sub-22, A6000) against a
+fresh `ws=128` baseline: both raise targets (`160`, `192`) **FAILED the
+K01 `seam_l1` / `seam_curvature` gate** (and were 3.7x / 9.6x slower), so
+the raise branch is **not promoted** and R058 (auto as default) is not
+validated.  The production default stays the integer `128`.  Passing an
+explicit integer always wins over `"auto"`.  See
+`docs/adaptive_working_size.md` (Validation plan) and
+`scripts/experiments/s03_artifacts/S03-DECISION.md` for the full verdict.
 
 **Reproducibility / observability.**  Every resolution records full
 explainability metadata, mirroring the existing `params["_strategy"]`

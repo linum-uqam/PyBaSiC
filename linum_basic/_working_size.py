@@ -66,9 +66,11 @@ WORKING_SIZE_GRID: tuple[int, ...] = (64, 96, 128, 160, 192)
 #: The production default and the safe fail-safe value (D002 / MEM002).
 SAFE_DEFAULT: int = 128
 
-#: Promotion state of the raise branch (D-19 / R058). Until S03's real-subject
-#: K01 gate passes, ``"auto"`` is opt-in only.
-GATE_STATUS_OPT_IN: str = "opt-in (K01 not yet passed)"
+#: Promotion state of the raise branch (D-19 / R058). S03 evaluated the raise
+#: branch on real subjects and it FAILED the K01 seam gate at both 160 and 192
+#: (see ``scripts/experiments/s03_artifacts/S03-DECISION.md``), so ``"auto"``
+#: is opt-in only and the raise branch is not promoted to a default.
+GATE_STATUS_OPT_IN: str = "opt-in (raise branch not promoted: K01 failed at 160/192 on real subjects)"
 
 #: Fixed preview resolution for the DCT quality signal. Computing the signal at
 #: a single resolution makes it comparable across datasets and independent of
@@ -79,11 +81,16 @@ PREVIEW_RESOLUTION: int = 256
 #: ``min(n_z, 8)`` chunk convention already in ``build_workload_context``.
 PREVIEW_Z_SAMPLE: int = 8
 
-#: Conservative default for the quality-floor (raise) threshold. Chosen to make
-#: the raise branch rarely fire on real (typically smooth) illumination fields
-#: until S03 calibrates it empirically from real-subject preview signals. The
-#: branch is additionally gated by the opt-in ``"auto"`` sentinel and by the
-#: memory budget permitting a size ``>= 160``.
+#: Conservative default for the quality-floor (raise) threshold. S03 (M006)
+#: found this value (0.15) is low enough to fire on real per-z-mode data: on
+#: sub-22 it drove ``auto -> 192``, and both raise targets (160, 192) then
+#: FAILED the K01 real-subject seam gate (see
+#: ``scripts/experiments/s03_artifacts/S03-DECISION.md``). The value is kept
+#: at 0.15 — no evidence-based replacement is available and the raise branch
+#: must remain opt-in until a future milestone finds a quality-safe raise
+#: target or recalibrates upward with persisted preview signals. The branch is
+#: additionally gated by the opt-in ``"auto"`` sentinel and by the memory
+#: budget permitting a size ``>= 160``.
 WORKING_SIZE_QUALITY_RAISE_THRESHOLD: float = 0.15
 
 
@@ -146,8 +153,10 @@ class WorkingSizeResolution:
     fallback_reason : str or None
         Why 128 was chosen when a required signal was unavailable/ambiguous.
     gate_status : str
-        Promotion state of the raise branch (always
-        :data:`GATE_STATUS_OPT_IN` until S03).
+        Promotion state of the raise branch. After S03's real-subject K01
+        evaluation rejected the raise branch (160 and 192 both fail the seam
+        gate on sub-22), this is always :data:`GATE_STATUS_OPT_IN`; ``"auto"``
+        is opt-in only and the raise branch is not promoted.
     signals : dict
         Snapshot of the input signals used for the decision.
     peak_memory_estimate_bytes : dict

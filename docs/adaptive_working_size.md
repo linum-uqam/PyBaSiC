@@ -1,9 +1,12 @@
 # Adaptive `working_size` selection — design
 
-> **Status:** design only (milestone M006, slice S01). No production code in
-> `linum_basic/` changes in this slice. Slice S02 implements the resolver
-> described here; slice S03 validates it against the real-subject K01 seam
-> gate before `"auto"` may become a default (requirement R058).
+> **Status:** S01 (design) and S02 (implementation) are shipped. S03 has now
+> validated the resolver against the real-subject K01 seam gate (M006, July
+> 2026): the quality-floor **raise branch was NOT promoted** — both raise
+> targets (`160`, `192`) failed `seam_l1`/`seam_curvature` parity against the
+> `ws=128` baseline on `sub-22`, so `"auto"` stays **opt-in** (requirement
+> R058 not validated). See
+> `scripts/experiments/s03_artifacts/S03-DECISION.md` for the full verdict.
 
 This document specifies how `fit_mosaic` and `tune` should resolve
 `working_size="auto"` to a concrete integer. It defines (1) the cheap
@@ -188,13 +191,15 @@ resolver still returns).
 
 ## Quality-safety clause
 
-Until S03's real-subject K01 gate passes, adaptive selection is
-**opt-in and conservative**:
+S03's real-subject K01 evaluation has been completed, with a **no-go**
+verdict on promotion. Adaptive selection is therefore **opt-in and
+conservative**:
 
 1. **Opt-in only.** The default value of `working_size` everywhere
    (`fit_mosaic`, `tune`, the `basic` CLI, `BaSiC`) remains the integer `128`.
    Adaptive selection activates *only* when a caller explicitly passes
    `working_size="auto"`. Existing callers are byte-for-byte unaffected.
+   **S03 did not change this:** R058 (auto as default) was not validated.
 
 2. **Fail-safe to `128`.** Whenever a required signal is **unavailable or
    ambiguous**, `"auto"` MUST resolve to `128`. This covers:
@@ -207,21 +212,34 @@ Until S03's real-subject K01 gate passes, adaptive selection is
    The resolution records `fallback_reason` in the observability metadata so
    the operator can see *why* `128` was chosen.
 
-3. **Raise branch is gated.** The quality-floor (enlarge) branch cannot
-   promote a `> 128` size to the *default* until S03 demonstrates, on real
-   subject data, that the larger size holds `seam_l1` / `seam_curvature`
-   parity with the `ws=128` baseline (K01) **and** that the larger size does
-   not regress the D009 / K03 strategy invariants. Promotion of `"auto"` to a
-   default is owned by R058 and is out of scope for S01/S02.
+3. **Raise branch is gated — and NOT promoted.** S03 (M006) ran the raise
+   branch on the production-shaped subject `sub-22` on the A6000 and it
+   **FAILED the K01 gate**: requesting `working_size="auto"` fired the raise
+   branch (`auto -> 192`) and failed both `seam_l1` (+5.77%) and
+   `seam_curvature` (+13.53%) while running 9.62x slower; an explicit
+   `working_size=160` failed `seam_l1` (+15.29%, 3.73x slower) too. A `> 128`
+   size **cannot** promote toward the default until a future milestone
+   demonstrates, on real subject data, that the larger size holds `seam_l1` /
+   `seam_curvature` parity with the `ws=128` baseline (K01) **and** that the
+   larger size does not regress the D009 / K03 strategy invariants. Promotion
+   of `"auto"` to a default is owned by R058 and is **not validated** by S03;
+   the raise branch stays opt-in and quality-risky. See
+   `scripts/experiments/s03_artifacts/S03-DECISION.md`.
 
 4. **Shrink branch is always safe.** The memory-ceiling (shrink) branch may
    fire immediately, because selecting the largest feasible size `≤ 128` is
    strictly safer than OOM-ing and the evidence (D002) already establishes
    quality parity at `≤ 128`.
 
-`WORKING_SIZE_QUALITY_RAISE_THRESHOLD` is a named, conservative constant
-(default chosen to make the raise branch rarely fire until S03 calibrates
-it). Its calibration is an S03 deliverable, not an S02 one.
+`WORKING_SIZE_QUALITY_RAISE_THRESHOLD` is a named, conservative constant.
+S03 found the default value (`0.15`) is low enough to fire on real per-z
+illumination data (it fired on `sub-22`, resolving `auto -> 192`), but the
+raise targets it selects to (`160`, `192`) then failed the K01 seam gate on
+that same subject. The value is **kept at `0.15`** — no evidence-based
+replacement number is available (the exact `sub-22` preview signal value was
+not persisted into the harness artifact JSON), so an upward recalibration is
+deferred to a future milestone that closes that observability gap. The
+constant's docstring in `linum_basic/_working_size.py` records this outcome.
 
 ---
 
@@ -279,7 +297,7 @@ params["_working_size_selector"] = {
     "candidate_grid": [64, 96, 128, 160, 192],    # the grid used
     "rule_path": "baseline-default",              # see paths below
     "fallback_reason": None,                      # why 128 was chosen, if it was
-    "gate_status": "opt-in (K01 not yet passed)", # promotion state
+    "gate_status": "opt-in (raise branch not promoted)", # promotion state (S03 no-go)
     "signals": {
         "n_z": 41,
         "n_tiles": 72,
@@ -314,25 +332,39 @@ The metadata is purely additive; it never affects the numerics of the fit.
 
 ---
 
-## Validation plan (S03)
+## Validation plan (S03) — outcome: NO-GO on promotion
 
-Before `"auto"` may be promoted toward a default (R058), S03 must produce:
+S03 has been executed (M006, July 2026) with a **no-go** verdict: the
+quality-floor raise branch was **not promoted**. The runs and their outcomes:
 
-1. **K01 real-subject A/B.** Run the resolver on the production-shaped
-   subject (e.g. `sub-22`) on the A6000, and compare the resulting fit's
-   `seam_l1` / `seam_curvature` against the `ws=128` baseline using
-   `linum_basic.benchmark.quality`'s mean+3std gate. Both the shrink and raise
-   branches must be exercised on datasets where they are expected to fire.
-2. **Cost-bound verification.** A test proving the resolver never invokes a
-   solver (see *Cost bound* above).
-3. **Fail-safe verification.** Tests that each ambiguous/missing-signal path
-   resolves to `128` with the correct `fallback_reason`.
-4. **Threshold calibration.** Empirical setting of
-   `WORKING_SIZE_QUALITY_RAISE_THRESHOLD` from the real-subject preview
-   signals, with the calibration recorded in a decision (D0xx).
+1. **K01 real-subject A/B (DONE — both raise candidates REJECTED).** Ran the
+   resolver and explicit raise-target sizes on the production-shaped subject
+   `sub-22` on the A6000, comparing `seam_l1` / `seam_curvature` against a
+   fresh `ws=128` baseline via `linum_basic.benchmark.quality`'s mean+3std
+   gate:
+   - `working_size="auto"` fired the raise branch (`auto -> 192`): REJECT,
+     `seam_l1` +5.77%, `seam_curvature` +13.53%, 9.62x slower.
+   - explicit `working_size=160` (smallest raise target): REJECT, `seam_l1`
+     +15.29% (curvature improved -9.57%, but K01 needs both), 3.73x slower.
+   - The baseline-default path (`auto -> 128`) was *not* exercised on this
+     subject because the raise branch fired first.
+2. **Cost-bound verification (DONE in S02).** A test proves the resolver
+   never invokes a solver (`tests/test_working_size_resolver.py::TestCostBound`).
+3. **Fail-safe verification (DONE in S02).** Tests assert each ambiguous /
+   missing-signal path resolves to `128` with the correct `fallback_reason`
+   (`tests/test_working_size_resolver.py::TestFailSafe`).
+4. **Threshold calibration (RECORDED — value kept at 0.15).** S03 found the
+   threshold fires on real per-z data but the raise *targets* fail K01; the
+   value is kept and the outcome is recorded in the constant's docstring and
+   in `scripts/experiments/s03_artifacts/S03-DECISION.md`. A principled
+   upward recalibration is deferred.
 
-Until (1) passes, `"auto"` remains opt-in and the raise branch stays
-conservative.
+Because (1) did not pass, `"auto"` remains opt-in and the raise branch
+stays conservative. Promotion of the raise branch (or of `"auto"` as a
+default) would require, at minimum, a real-subject dataset where `160`/`192`
+holds K01 parity, closure of the `_working_size_selector` explainability gap
+in the harness artifact JSON, and multi-subject evidence. Full synthesis:
+`scripts/experiments/s03_artifacts/S03-DECISION.md`.
 
 ---
 

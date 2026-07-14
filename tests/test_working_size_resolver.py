@@ -396,6 +396,21 @@ class TestObservability:
         res = resolve_working_size(_ctx(memory_budget_bytes=128 * 1024**3))
         assert res.gate_status == GATE_STATUS_OPT_IN
 
+    def test_gate_status_reflects_evaluated_s03_outcome(self) -> None:
+        """The gate_status string records the S03 no-go, not a pending state.
+
+        S03 (M006) evaluated the raise branch on real subjects and it FAILED
+        the K01 seam gate at both 160 and 192, so promotion is rejected (not
+        merely "not yet passed"). Lock the evaluated phrasing so the stale
+        pre-evaluation wording cannot silently return.
+        """
+        res = resolve_working_size(_ctx(memory_budget_bytes=128 * 1024**3))
+        # Must keep the "opt-in" token (TestOptInIsolation checks for it).
+        assert "opt-in" in res.gate_status
+        # Must record the evaluated no-go, not the pending state.
+        assert "not promoted" in res.gate_status
+        assert "not yet passed" not in res.gate_status
+
     def test_requested_is_echoed(self) -> None:
         ctx = _ctx(memory_budget_bytes=128 * 1024**3, requested="auto")
         assert resolve_working_size(ctx).requested == "auto"
