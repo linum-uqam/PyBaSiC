@@ -60,6 +60,7 @@ from typing import Any, Literal, cast
 import numpy as np
 
 from linum_basic._torch_cache import warm_policy_passes
+from linum_basic._working_size import SAFE_DEFAULT
 from linum_basic.benchmark.artifacts import (
     BaselineBundle,
     CandidateArtifact,
@@ -117,6 +118,7 @@ from linum_basic.benchmark.telemetry import (
     peak_single_gpu_vram_bytes,
     run_with_phases,
 )
+from linum_basic.cli import _working_size_type
 from linum_basic.fit import MosaicFit, fit_mosaic
 
 LARGE_RUN_Z_THRESHOLD = 8
@@ -315,18 +317,30 @@ def _resolve_harness_strategy(
     *,
     z_indices: list[int],
     n_tiles: int,
-    working_size: int,
+    working_size: int | str,
     estimate_darkfield: bool,
     max_reweighting_iterations: int,
     batched_z_chunk_size: int | None,
     overrides: dict[str, Any],
     is_synthetic: bool,
 ) -> tuple[StrategyResult, Literal["auto", "sequential", "multi", "batched"]]:
-    """Resolve harness CLI strategy to fit kwargs and explicit ``fit_mosaic`` strategy."""
+    """Resolve harness CLI strategy to fit kwargs and explicit ``fit_mosaic`` strategy.
+
+    When *working_size* is the ``"auto"`` sentinel, a provisional concrete int
+    (:data:`~linum_basic._working_size.SAFE_DEFAULT`, 128) is used for the
+    harness's own VRAM/path decisions; the sentinel is then restored into
+    ``basic_kwargs["working_size"]`` so it reaches :func:`fit_mosaic`
+    unmodified, where the mosaic-aware resolver
+    (:func:`~linum_basic.fit._resolve_working_size_auto`) resolves it for real.
+    Existing explicit-int callers are unaffected.
+    """
+    requested = working_size
+    provisional = SAFE_DEFAULT if requested == "auto" else int(requested)
+
     if strategy_name == "auto":
         base_kwargs: dict[str, Any] = {
             "backend": "torch",
-            "working_size": working_size,
+            "working_size": provisional,
             "estimate_darkfield": estimate_darkfield,
             "max_reweighting_iterations": max_reweighting_iterations,
         }
@@ -336,7 +350,7 @@ def _resolve_harness_strategy(
             n_z=len(z_indices),
             n_tiles=n_tiles,
             field_mode="per-z",
-            working_size=working_size,
+            working_size=provisional,
         )
         auto = resolve_auto_strategy(context, user_kwargs={**base_kwargs, **overrides})
         resolved_chunk = auto.basic_kwargs.get("batched_z_chunk_size")
@@ -348,18 +362,25 @@ def _resolve_harness_strategy(
             release_gate=not is_synthetic,
             label="auto",
         )
-        return strategy, "auto"
+        fit_strategy: Literal["auto", "sequential", "multi", "batched"] = "auto"
+    else:
+        strategy = resolve_strategy(
+            strategy_name,
+            working_size=provisional,
+            estimate_darkfield=estimate_darkfield,
+            max_reweighting_iterations=max_reweighting_iterations,
+            batched_z_chunk_size=batched_z_chunk_size,
+            overrides=overrides,
+            is_synthetic=is_synthetic,
+        )
+        fit_strategy = _harness_to_fit_strategy(strategy_name)
 
-    strategy = resolve_strategy(
-        strategy_name,
-        working_size=working_size,
-        estimate_darkfield=estimate_darkfield,
-        max_reweighting_iterations=max_reweighting_iterations,
-        batched_z_chunk_size=batched_z_chunk_size,
-        overrides=overrides,
-        is_synthetic=is_synthetic,
-    )
-    return strategy, _harness_to_fit_strategy(strategy_name)
+    # Restore the requested value (the "auto" sentinel when requested) into
+    # basic_kwargs so it reaches fit_mosaic unmodified; fit_mosaic performs the
+    # real mosaic-aware resolution. The provisional int above kept the
+    # harness's own VRAM/path decisions well-defined on a concrete size.
+    strategy.basic_kwargs["working_size"] = requested
+    return strategy, fit_strategy
 
 
 def _add_shared_run_group(parser: argparse.ArgumentParser) -> None:
@@ -370,7 +391,12 @@ def _add_shared_run_group(parser: argparse.ArgumentParser) -> None:
         help="Built-in fit strategy name.",
     )
     parser.add_argument("--config", default=None, help="Optional JSON/YAML override file.")
-    parser.add_argument("--working-size", type=int, default=128)
+    parser.add_argument(
+        "--working-size",
+        type=_working_size_type,
+        default=128,
+        help="BaSiC working resolution (int) or 'auto' to defer to the adaptive resolver.",
+    )
     parser.add_argument("--repeats", type=int, default=3, help="Measured repeats after warmup.")
     parser.add_argument("--warmup", type=int, default=1, help="Untimed warmup iterations.")
     parser.add_argument("--max-reweighting-iterations", type=int, default=15)

@@ -2370,3 +2370,224 @@ class TestHarnessStrategyMetadata:
         strategy_meta = data["metadata"]["_strategy"]
         assert isinstance(strategy_meta, dict)
         assert set(strategy_meta.keys()) >= STRATEGY_METADATA_REQUIRED_KEYS
+
+
+class TestHarnessWorkingSizeAuto:
+    """T01: ``--working-size auto`` flows the sentinel unmodified into fit_mosaic."""
+
+    def test_baseline_parser_accepts_working_size_auto(self) -> None:
+        parser = bench._build_subcommand_parser()
+        args = parser.parse_args(["baseline", "--input", "x.ome.zarr", "--working-size", "auto"])
+        assert args.working_size == "auto"
+
+    def test_candidate_parser_accepts_working_size_auto(self) -> None:
+        parser = bench._build_subcommand_parser()
+        args = parser.parse_args(
+            [
+                "candidate",
+                "--input",
+                "x.ome.zarr",
+                "--baseline-id",
+                "baseline-test",
+                "--output-dir",
+                "out",
+                "--working-size",
+                "auto",
+            ]
+        )
+        assert args.working_size == "auto"
+
+    def test_baseline_parser_default_working_size_is_128(self) -> None:
+        parser = bench._build_subcommand_parser()
+        args = parser.parse_args(["baseline", "--input", "x.ome.zarr"])
+        assert args.working_size == 128
+
+    def test_baseline_parser_rejects_non_numeric_working_size(self) -> None:
+        parser = bench._build_subcommand_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["baseline", "--input", "x.ome.zarr", "--working-size", "fast"])
+
+    def test_baseline_parser_rejects_non_positive_working_size(self) -> None:
+        parser = bench._build_subcommand_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["baseline", "--input", "x.ome.zarr", "--working-size", "0"])
+        with pytest.raises(SystemExit):
+            parser.parse_args(["baseline", "--input", "x.ome.zarr", "--working-size", "-8"])
+
+    def test_baseline_parser_accepts_explicit_int_working_size(self) -> None:
+        parser = bench._build_subcommand_parser()
+        args = parser.parse_args(["baseline", "--input", "x.ome.zarr", "--working-size", "160"])
+        assert args.working_size == 160
+
+    @pytest.mark.parametrize("strategy_name", ["baseline", "sequential", "multi", "auto"])
+    def test_resolve_harness_strategy_restores_auto_sentinel_in_basic_kwargs(
+        self, strategy_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.test_auto_strategy_resolver import _mock_no_cuda
+
+        _mock_no_cuda(monkeypatch)
+        strategy, _ = bench._resolve_harness_strategy(
+            strategy_name,
+            z_indices=[0, 1],
+            n_tiles=4,
+            working_size="auto",
+            estimate_darkfield=True,
+            max_reweighting_iterations=5,
+            batched_z_chunk_size=None,
+            overrides={},
+            is_synthetic=True,
+        )
+        assert strategy.basic_kwargs["working_size"] == "auto"
+
+    @pytest.mark.parametrize("strategy_name", ["baseline", "sequential"])
+    def test_resolve_harness_strategy_keeps_explicit_int_unmodified(
+        self, strategy_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tests.test_auto_strategy_resolver import _mock_no_cuda
+
+        _mock_no_cuda(monkeypatch)
+        strategy, _ = bench._resolve_harness_strategy(
+            strategy_name,
+            z_indices=[0, 1],
+            n_tiles=4,
+            working_size=160,
+            estimate_darkfield=True,
+            max_reweighting_iterations=5,
+            batched_z_chunk_size=None,
+            overrides={},
+            is_synthetic=True,
+        )
+        assert strategy.basic_kwargs["working_size"] == 160
+
+    def test_baseline_working_size_auto_flows_unmodified_to_fit_mosaic(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from tests.test_auto_strategy_resolver import _mock_fast_fit, _mock_no_cuda
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        out_dir = tmp_path / "artifacts"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=3, n_rows=2, n_cols=2, tile=8)
+
+        _mock_no_cuda(monkeypatch)
+        _mock_fast_fit(monkeypatch)
+        monkeypatch.setattr(bench, "_cuda_available", lambda: False)
+
+        captured_kwargs: list[dict] = []
+        original_fit = bench.fit_mosaic
+
+        def _capturing_fit(mosaic, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            return original_fit(mosaic, **kwargs)
+
+        monkeypatch.setattr(bench, "fit_mosaic", _capturing_fit)
+
+        rc = bench.main(
+            [
+                "baseline",
+                "--input",
+                str(zarr_in),
+                "--subject-id",
+                "syn",
+                "--output-dir",
+                str(out_dir),
+                "--z-sample",
+                "2",
+                "--strategy",
+                "sequential",
+                "--working-size",
+                "auto",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "0",
+            ]
+        )
+        assert rc == 0
+        assert captured_kwargs
+        basic_kwargs = captured_kwargs[-1]["basic_kwargs"]
+        assert basic_kwargs["working_size"] == "auto"
+
+    def test_candidate_working_size_auto_flows_unmodified_to_fit_mosaic(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from tests.test_auto_strategy_resolver import _mock_fast_fit, _mock_no_cuda
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        out_dir = tmp_path / "artifacts"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=3, n_rows=2, n_cols=2, tile=8)
+
+        _mock_no_cuda(monkeypatch)
+        _mock_fast_fit(monkeypatch)
+        monkeypatch.setattr(bench, "_cuda_available", lambda: False)
+
+        rc = bench.main(
+            [
+                "baseline",
+                "--input",
+                str(zarr_in),
+                "--subject-id",
+                "syn",
+                "--output-dir",
+                str(out_dir),
+                "--z-sample",
+                "2",
+                "--strategy",
+                "sequential",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "0",
+            ]
+        )
+        assert rc == 0
+        baseline_id = json.loads(next(next(out_dir.glob("baseline-*")).glob("*bundle*.json")).read_text(encoding="utf-8"))[
+            "baseline_id"
+        ]
+
+        captured_kwargs: list[dict] = []
+        original_fit = bench.fit_mosaic
+
+        def _capturing_fit(mosaic, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            return original_fit(mosaic, **kwargs)
+
+        monkeypatch.setattr(bench, "fit_mosaic", _capturing_fit)
+
+        rc = bench.main(
+            [
+                "candidate",
+                "--input",
+                str(zarr_in),
+                "--baseline-id",
+                baseline_id,
+                "--output-dir",
+                str(out_dir),
+                "--subject-id",
+                "syn",
+                "--strategy",
+                "sequential",
+                "--working-size",
+                "auto",
+                "--synthetic",
+                "--repeats",
+                "1",
+                "--warmup",
+                "0",
+            ]
+        )
+        assert rc == 0
+        assert captured_kwargs
+        basic_kwargs = captured_kwargs[-1]["basic_kwargs"]
+        assert basic_kwargs["working_size"] == "auto"
