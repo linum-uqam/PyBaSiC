@@ -176,3 +176,28 @@ print(torch.cuda.is_available(), torch.version.cuda)
 If `nvidia-smi` shows another process on `cuda:0`, see
 [Avoiding resource conflicts](#avoiding-resource-conflicts) and either wait or
 switch devices with `LINUM_BASIC_GPU_SMOKE_DEVICE=1`.
+
+---
+
+## Validation Log
+
+Dated evidence that the smoke procedure above was executed end-to-end on real
+server-side CUDA hardware. Each entry records a successful operator run; append
+a new dated entry on each future validation run. This is the in-repo proof for
+requirement R050 (server-side CUDA smoke).
+
+### 2026-07-14 — A6000 (`sn4622125853`), commit `155a0dd`
+
+- **Result:** PASS — `PASS: GPU smoke passed in 9s (budget 300s).`
+- **Server host:** `sn4622125853` (`132.207.157.41`)
+- **GPU:** NVIDIA RTX A6000, smoke on `cuda:0` (`CUDA_VISIBLE_DEVICES=0`)
+- **Git commit:** `155a0dd660d271663bd564bc929705d50773e63d` (branch `modernisation`)
+- **Software:** torch `2.12.1+cu130`, CUDA `13.0`, Python `3.14.3`, pytest `9.1.1`
+- **Test file:** `tests/test_alm_batched.py` — 3 passed, 0 failed
+- **Compile mode:** `LINUM_BASIC_ALM_COMPILE_MODE=off` (eager / production worker path)
+- **Wall-clock:** 9s (budget 300s)
+
+This run closes the live server-CUDA follow-up noted in R050's validation field.
+The initial run failed due to `warm_start_reweighting=True` numerical
+instability under compile-off; root-caused and fixed in commit `155a0dd` before
+this successful re-run (see the test comment in `tests/test_alm_batched.py`).
