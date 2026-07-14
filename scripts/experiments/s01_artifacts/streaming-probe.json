@@ -1,0 +1,47 @@
+{
+  "backend": "torch",
+  "darkfields_shape": [
+    5,
+    75,
+    75
+  ],
+  "device": "cuda:0",
+  "estimate_darkfield": true,
+  "flatfields_shape": [
+    5,
+    75,
+    75
+  ],
+  "git_commit": "4e924e0",
+  "gpu_memory": {
+    "max_memory_allocated_bytes": 408166912,
+    "max_memory_reserved_bytes": 551550976
+  },
+  "host": {
+    "host_node": "sn4622125853",
+    "numpy_version": "2.5.0",
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
+    "python_version": "3.14.3"
+  },
+  "input_path": "/scratch/workspace/sub-22/output/27/resample_mosaic_grid/mosaic_grid_z27_resampled.ome.zarr",
+  "lazy_load": true,
+  "max_reweighting_iterations": 15,
+  "mode": "streaming",
+  "n_z": 55,
+  "overlap": 0.2,
+  "peak_rss_bytes": 1785761792,
+  "peak_vram_bytes": 408166912,
+  "schema_version": 1,
+  "strategy": "sequential",
+  "streaming": true,
+  "timestamp_utc": "2026-07-14T23:35:55+00:00",
+  "wall_ms": 19529.448,
+  "working_size": 128,
+  "z_indices": [
+    0,
+    13,
+    27,
+    40,
+    54
+  ]
+}
