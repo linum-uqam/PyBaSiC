@@ -169,6 +169,13 @@ class WorkingSizeResolution:
         The shape mirrors the existing ``params["_strategy"]`` explainability
         pattern (D-19). Purely additive metadata — it never affects fit
         numerics.
+
+        Returns
+        -------
+        dict
+            The explainability metadata dict, with keys ``resolved_working_size``,
+            ``requested``, ``candidate_grid``, ``rule_path``, ``fallback_reason``,
+            ``gate_status``, ``signals``, and ``peak_memory_estimate_bytes``.
         """
         return {
             "resolved_working_size": self.resolved_working_size,
@@ -432,8 +439,14 @@ def build_working_size_context(
 
     Parameters
     ----------
-    n_z, n_tiles, field_mode, tile_shape
-        Workload shape metadata.
+    n_z : int
+        Number of z-planes in the mosaic workload.
+    n_tiles : int
+        Number of tiles in the mosaic grid.
+    field_mode : str
+        ``"per-z"`` or ``"global"``.
+    tile_shape : tuple of int or None
+        Representative tile shape ``(H, W)``, or ``None`` for non-mosaic inputs.
     mean_image : numpy.ndarray or None
         Pre-formed per-pixel mean image for the quality signal.
     memory_budget_bytes : int or None

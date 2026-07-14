@@ -129,6 +129,72 @@ $P = \text{working\_size}^2$.
 **Symptom of wrong value:** if the estimated flat-field looks blocky or
 misses a known gradient pattern, increase `working_size`.
 
+#### `working_size="auto"` (adaptive selection)
+
+| | |
+|---|---|
+| **Type** | `"auto"` sentinel (accepted by {func}`~linum_basic.fit.fit_mosaic`, {func}`~linum_basic.tuning.tune`, and the `basic fit` / `basic tune` CLI subcommands) |
+| **Default** | `128` (the BaSiC class still takes an `int`; `"auto"` is opt-in at the fit/tune layer) |
+
+{class}`~linum_basic.core.BaSiC` itself always receives a concrete
+integer — the literal `"auto"` **never** reaches the solver.  When a
+caller passes `working_size="auto"`, the fit/tune layer resolves the
+sentinel to a concrete integer drawn from the validated grid
+`{64, 96, 128, 160, 192}` *before* {class}`~linum_basic.core.BaSiC` is
+constructed.  This makes the adaptive rule purely additive: callers that
+never pass `"auto"` are byte-for-byte unaffected, and the production
+default remains `128`.
+
+The resolver is a **pure function** of cheap shape/memory signals — it
+never runs a probe fit at any candidate size (the *cost bound*).  It
+implements two deliberately asymmetric branches:
+
+1. **Memory-ceiling shrink** (always safe).  When the memory budget is
+   known and `128` does not fit, it returns the largest feasible size
+   `≤ 128` so constrained hardware (laptops, shared GPUs, large per-z
+   volumes) degrades gracefully instead of out-of-memory-ing.  If even
+   `64` does not fit, it fails safe to `128`.
+2. **Quality-floor raise** (opt-in, gated).  When `128` fits, the preview
+   DCT signal indicates high-frequency flat-field structure a `128²` grid
+   cannot represent, and memory permits enlarging, it returns the largest
+   feasible size `> 128` (i.e. `160` or `192`).
+
+Whenever a required signal is unavailable or ambiguous (unknown memory
+budget, unformable preview, out-of-range signal), the resolver **fails
+safe to `128`** and records a human-readable `fallback_reason`.
+
+**Where it is accepted:**
+
+```python
+from linum_basic import fit_mosaic, tune
+
+# Python API — pass the sentinel through basic_kwargs / working_size
+fit = fit_mosaic(mosaic, basic_kwargs={"working_size": "auto"})
+result = tune(mosaic, working_size="auto")
+
+# CLI — the --working-size flag accepts an integer or the literal 'auto'
+# basic fit  --input subject.ome.zarr --output corrected.ome.zarr --working-size auto
+# basic tune --input subject.ome.zarr --working-size auto
+```
+
+**Opt-in status.** `"auto"` is opt-in only.  Until the real-subject
+`seam_l1` / `seam_curvature` gate (K01) is passed in milestone M006 S03,
+the quality-floor *raise* branch is conservatively gated and the rule
+will rarely enlarge beyond `128` on real (typically smooth) illumination
+fields.  Passing an explicit integer always wins over `"auto"`.
+
+**Reproducibility / observability.**  Every resolution records full
+explainability metadata, mirroring the existing `params["_strategy"]`
+pattern.  After a fit it lives on
+`fit.params["_working_size_selector"]`; after a tune it lives on
+`result.working_size_selector`.  Both carry `resolved_working_size`,
+`requested`, `candidate_grid`, `rule_path`
+(`"baseline-default"` / `"memory-ceiling-shrink"` / `"quality-floor-raise"`
+/ `"fallback-safe-default"`), `fallback_reason`, `gate_status`, `signals`,
+and `peak_memory_estimate_bytes` per candidate — purely additive metadata
+that never affects fit numerics.  See `docs/adaptive_working_size.md` for
+the full design.
+
 ---
 
 ### `epsilon`

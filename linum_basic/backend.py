@@ -684,13 +684,9 @@ def clear_dct_caches() -> None:
     (already LRU-bounded) memory between independent runs, or whenever a
     guaranteed-cold DCT cache is required.
 
-    The caches are bounded by :data:`_DCT_CACHE_MAXSIZE` and evict
+    The caches are bounded by ``_DCT_CACHE_MAXSIZE`` and evict
     least-recently-used entries automatically, so calling this function is
     optional — it only forces an immediate, full release.
-
-    See Also
-    --------
-    _DCT_CACHE_MAXSIZE : Per-cache LRU bound.
     """
     _DCT_MATRIX_CACHE.clear()
     _DCT_TWIDDLE_CACHE.clear()
