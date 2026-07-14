@@ -33,6 +33,12 @@ from typing import Any, Literal
 import numpy as np
 
 from linum_basic._parallel import default_workers
+from linum_basic._working_size import (
+    PREVIEW_Z_SAMPLE,
+    WorkingSizeResolution,
+    build_working_size_context,
+    resolve_working_size,
+)
 from linum_basic.core import dct_energy
 from linum_basic.curvature import seam_curvature
 from linum_basic.fit import MosaicFit, make_model
@@ -50,6 +56,46 @@ _DEFAULT_SEARCH_SPACE: dict[str, list | tuple] = {
     "epsilon": (0.01, 1.0),
     "estimate_darkfield": [True, False],
 }
+
+
+def _resolve_working_size_auto(
+    mosaic: MosaicGrid,
+    *,
+    n_z: int,
+    device: str | None,
+) -> WorkingSizeResolution | None:
+    """Resolve the ``working_size="auto"`` sentinel for :func:`tune`.
+
+    Activates *only* when the caller asked for ``"auto"`` (opt-in). Builds a
+    :class:`WorkingSizeContext` from mosaic metadata, a bounded preview mean,
+    and a best-effort memory budget, then calls the pure resolver. Mirrors
+    :func:`linum_basic.fit._resolve_working_size_auto` but adapts to tune's
+    per-z evaluation context (``field_mode="per-z"``).
+
+    Returns the :class:`WorkingSizeResolution` (never ``None`` here since the
+    caller only invokes this when ``working_size == "auto"``). Always fails
+    safe to :data:`~linum_basic._working_size.SAFE_DEFAULT` (128).
+    """
+    sample_z = list(range(n_z))[:PREVIEW_Z_SAMPLE]
+    mean_image: np.ndarray | None = None
+    if sample_z:
+        try:
+            stacks = [mosaic.iter_tiles(z) for z in sample_z]
+            stacked = np.stack(stacks, axis=0)  # (n_sample_z, n_tiles, th, tw)
+            mean_image = stacked.mean(axis=(0, 1))
+        except ValueError, IndexError, OSError:
+            mean_image = None
+
+    ctx = build_working_size_context(
+        n_z=n_z,
+        n_tiles=mosaic.n_tiles,
+        field_mode="per-z",
+        tile_shape=tuple(mosaic.tile_shape),
+        mean_image=mean_image,
+        device=device,
+        requested="auto",
+    )
+    return resolve_working_size(ctx)
 
 
 def _basic_params(raw: dict[str, Any], dct_sum: float) -> dict[str, Any]:
@@ -103,6 +149,15 @@ class TuneResult:
     best_fit : MosaicFit or None
         Full-z fit with *best_params*.  Set only when
         ``run_full_fit=True`` is passed to :func:`tune`.
+    working_size_selector : dict or None
+        Explainability metadata for the ``working_size="auto"`` resolution
+        (M006/S02).  ``None`` unless the caller opted into ``"auto"``.  When
+        present, carries ``resolved_working_size``, ``requested``,
+        ``candidate_grid``, ``rule_path``, ``fallback_reason``,
+        ``gate_status``, ``signals``, and ``peak_memory_estimate_bytes``
+        per candidate, mirroring the ``params["_working_size_selector"]``
+        pattern on :class:`MosaicFit`.  Purely additive metadata that never
+        affects tune numerics.
     """
 
     best_params: dict[str, Any]
@@ -110,6 +165,7 @@ class TuneResult:
     objective: str
     trials_df: Any  # pandas.DataFrame when available, else None
     best_fit: MosaicFit | None
+    working_size_selector: dict[str, Any] | None
 
     def __init__(
         self,
@@ -118,6 +174,7 @@ class TuneResult:
         trials_df: Any,
         best_fit: MosaicFit | None = None,
         objective: str = "seam_l1",
+        working_size_selector: dict[str, Any] | None = None,
     ) -> None:
         """Construct a :class:`TuneResult`.
 
@@ -135,12 +192,16 @@ class TuneResult:
         objective : str
             Name of the minimised objective (e.g. ``"seam_l1"``,
             ``"curvature"``, ``"composite"``).
+        working_size_selector : dict or None
+            Explainability metadata for the ``working_size="auto"``
+            resolution.  ``None`` unless ``"auto"`` was requested.
         """
         self.best_params = best_params
         self.best_value = best_value
         self.objective = objective
         self.trials_df = trials_df
         self.best_fit = best_fit
+        self.working_size_selector = working_size_selector
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -339,6 +400,7 @@ def tune(
     n_extra_rows: int = 0,
     objective: Literal["seam_l1", "curvature", "composite"] = "seam_l1",
     composite_weights: tuple[float, float] = (1.0, 1.0),
+    working_size: int | str = 128,
     verbose: bool = False,
 ) -> TuneResult:
     """Tune BaSiC hyperparameters using the seam-consistency L1 metric.
@@ -411,6 +473,16 @@ def tune(
         Weights ``(w_seam, w_curvature)`` for the ``"composite"``
         objective.  Default is ``(1.0, 1.0)`` (equal contribution).  Has
         no effect unless ``objective="composite"``.
+    working_size : int or str
+        Controls the ``working_size`` search-space dimension.  An explicit
+        integer (default ``128``) leaves the dimension open for Optuna to
+        explore the full grid (backward compatible with callers that never
+        pass this parameter).  The sentinel ``"auto"`` (opt-in, M006/S02)
+        resolves to a concrete grid integer before the search space is built
+        and pins the dimension to that single value, recording the decision
+        in :attr:`TuneResult.working_size_selector`; the literal ``"auto"``
+        never reaches :data:`_DEFAULT_SEARCH_SPACE`.  Always fails safe
+        to ``128``.
     verbose : bool
         Enable Optuna logging and tqdm progress bars.
 
@@ -442,7 +514,19 @@ def tune(
     if not verbose:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    sp = {**_DEFAULT_SEARCH_SPACE, **(search_space or {})}
+    # Resolve the working_size="auto" sentinel (opt-in, M006/S02) before the
+    # search space is constructed, so the literal "auto" never reaches
+    # _DEFAULT_SEARCH_SPACE. The resolved value pins the working_size
+    # dimension; an explicit integer (including the default 128) leaves the
+    # search-space dimension open for exploration (backward compatible).
+    working_size_selector: dict[str, Any] | None = None
+    if working_size == "auto":
+        ws_resolution = _resolve_working_size_auto(mosaic, n_z=mosaic.n_z, device=device)
+        assert ws_resolution is not None  # the tune resolver always returns a value in the "auto" branch
+        sp = {**_DEFAULT_SEARCH_SPACE, **(search_space or {}), "working_size": [ws_resolution.resolved_working_size]}
+        working_size_selector = ws_resolution.metadata()
+    else:
+        sp = {**_DEFAULT_SEARCH_SPACE, **(search_space or {})}
 
     # Evenly spaced z-level subsample
     n_z = mosaic.n_z
@@ -565,4 +649,5 @@ def tune(
         trials_df=trials_df,
         best_fit=best_fit,
         objective=objective,
+        working_size_selector=working_size_selector,
     )

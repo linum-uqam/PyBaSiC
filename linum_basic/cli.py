@@ -35,6 +35,21 @@ def _validate_device(device: str | None) -> int | None:
     return None
 
 
+def _working_size_type(value: str) -> int | str:
+    """Parse a ``--working-size`` value into an int or the ``"auto"`` sentinel."""
+    if value == "auto":
+        return "auto"
+    try:
+        ws = int(value)
+    except TypeError, ValueError:
+        msg = f"working_size must be an integer or 'auto', got {value!r}"
+        raise argparse.ArgumentTypeError(msg) from None
+    if ws <= 0:
+        msg = f"working_size must be positive, got {ws}"
+        raise argparse.ArgumentTypeError(msg) from None
+    return ws
+
+
 def _add_backend_args(parser: argparse.ArgumentParser) -> None:
     """Add ``--backend`` and ``--device`` to *parser*."""
     g = parser.add_argument_group("Compute")
@@ -144,6 +159,17 @@ def _add_fit_subcommand(subs: argparse._SubParsersAction) -> None:  # type: igno
         default="per-z",
         help="'per-z': fit one field per z-level. 'global': average all per-z fields.",
     )
+    alg.add_argument(
+        "--working-size",
+        metavar="WS|auto",
+        default=None,
+        type=_working_size_type,
+        help=(
+            "BaSiC internal resolution (default 128, left to BaSiC when omitted). "
+            "Pass 'auto' (opt-in) to resolve a grid size from memory budget and "
+            "preview quality; the decision is recorded in the fit metadata."
+        ),
+    )
     alg.add_argument("--z-indices", metavar="Z", nargs="+", type=int, default=None, help="Z-levels to fit (default: all).")
     alg.add_argument(
         "--strategy",
@@ -213,6 +239,8 @@ def _run_fit(args: argparse.Namespace) -> int:
         basic_kwargs["backend"] = args.backend
     if args.device is not None:
         basic_kwargs["device"] = args.device
+    if args.working_size is not None:
+        basic_kwargs["working_size"] = args.working_size
     fit = fit_mosaic(
         mosaic,
         z_indices=args.z_indices,
@@ -303,6 +331,17 @@ def _add_tune_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ign
     )
     tuning.add_argument("--overlap", metavar="FRAC", type=float, default=0.2, help="Physical tile-overlap fraction (0-1).")
     tuning.add_argument(
+        "--working-size",
+        metavar="WS|auto",
+        default=128,
+        type=_working_size_type,
+        help=(
+            "Controls the working_size search dimension during tuning (default 128: "
+            "Optuna explores the full grid). Pass 'auto' (opt-in) to resolve a single "
+            "grid size from memory budget and preview quality before the search."
+        ),
+    )
+    tuning.add_argument(
         "--bounds-margin",
         metavar="FRAC",
         type=float,
@@ -344,6 +383,7 @@ def _run_tune(args: argparse.Namespace) -> int:
         storage=args.storage,
         study_name=args.study_name,
         run_full_fit=run_full_fit,
+        working_size=args.working_size,
         verbose=args.verbose,
     )
 

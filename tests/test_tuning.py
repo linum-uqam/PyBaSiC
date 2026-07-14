@@ -711,3 +711,191 @@ class TestRecommendBoundsNegative:
         )
         rec = recommend_bounds(_result_from_df(df), margin=0.10)
         assert rec.n_near_optimal == 1
+
+
+# ---------------------------------------------------------------------------
+# working_size="auto" wiring (M006/S02/T03)
+# ---------------------------------------------------------------------------
+
+_REQUIRED_SELECTOR_KEYS = frozenset(
+    {
+        "resolved_working_size",
+        "requested",
+        "candidate_grid",
+        "rule_path",
+        "fallback_reason",
+        "gate_status",
+        "signals",
+        "peak_memory_estimate_bytes",
+    }
+)
+
+
+class TestTuneWorkingSizeAuto:
+    """``working_size="auto"`` opt-in resolution in :func:`tune` (M006/S02/T03)."""
+
+    def test_auto_resolves_to_grid_member(self, synthetic_mosaic):
+        """``working_size="auto"`` resolves to a concrete grid member."""
+        from linum_basic._working_size import WORKING_SIZE_GRID
+
+        mosaic, _ = synthetic_mosaic
+        result = tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=1,
+            search_space=_TEST_SEARCH_SPACE,
+            working_size="auto",
+            seed=0,
+        )
+        selector = result.working_size_selector
+        assert selector is not None
+        assert selector["resolved_working_size"] in WORKING_SIZE_GRID
+        assert selector["requested"] == "auto"
+
+    def test_selector_has_required_keys(self, synthetic_mosaic):
+        mosaic, _ = synthetic_mosaic
+        result = tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=1,
+            search_space=_TEST_SEARCH_SPACE,
+            working_size="auto",
+            seed=0,
+        )
+        assert result.working_size_selector is not None
+        assert set(result.working_size_selector.keys()) >= _REQUIRED_SELECTOR_KEYS
+
+    def test_auto_pins_search_dimension_to_resolved_size(self, synthetic_mosaic, monkeypatch):
+        """The resolved working_size pins the Optuna dimension to one value."""
+        from linum_basic import tuning as tuning_mod
+
+        mosaic, _ = synthetic_mosaic
+
+        # Force the resolver to return 96 so the pinned dimension is predictable.
+        captured: dict = {}
+        original = tuning_mod._resolve_working_size_auto
+
+        class _FakeResolution:
+            resolved_working_size = 96
+
+            def metadata(self):
+                return {
+                    "resolved_working_size": 96,
+                    "requested": "auto",
+                    "candidate_grid": [64, 96, 128, 160, 192],
+                    "rule_path": "memory-ceiling-shrink",
+                    "fallback_reason": None,
+                    "gate_status": "opt-in",
+                    "signals": {},
+                    "peak_memory_estimate_bytes": {},
+                }
+
+        def _spy(mosaic, *, n_z, device):
+            captured["called"] = True
+            return _FakeResolution()
+
+        monkeypatch.setattr(tuning_mod, "_resolve_working_size_auto", _spy)
+        try:
+            result = tune(
+                mosaic,
+                n_trials=2,
+                z_subsample=1,
+                search_space=_TEST_SEARCH_SPACE,
+                working_size="auto",
+                seed=0,
+            )
+            assert captured.get("called") is True
+            # The resolved working_size flows into best_params as the pinned value.
+            assert result.best_params["working_size"] == 96
+            assert result.working_size_selector["resolved_working_size"] == 96
+        finally:
+            tuning_mod._resolve_working_size_auto = original
+
+    def test_explicit_int_leaves_dimension_open(self, synthetic_mosaic):
+        """An explicit int working_size leaves the search dimension open (backward compatible)."""
+        mosaic, _ = synthetic_mosaic
+        result = tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=1,
+            search_space=_TEST_SEARCH_SPACE,
+            working_size=16,
+            seed=0,
+        )
+        # No selector metadata is recorded for an explicit int.
+        assert result.working_size_selector is None
+
+    def test_default_omits_selector(self, synthetic_mosaic):
+        """Omitting working_size keeps the default 128 and adds no selector."""
+        mosaic, _ = synthetic_mosaic
+        result = tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=1,
+            search_space=_TEST_SEARCH_SPACE,
+            seed=0,
+        )
+        assert result.working_size_selector is None
+
+    def test_auto_fails_safe_to_128(self, synthetic_mosaic, monkeypatch):
+        """On a host where the budget cannot be probed, auto resolves to 128."""
+        from linum_basic import _working_size as wsm
+
+        monkeypatch.setattr(wsm, "_query_memory_budget", lambda device: None)
+        mosaic, _ = synthetic_mosaic
+        result = tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=1,
+            search_space=_TEST_SEARCH_SPACE,
+            working_size="auto",
+            seed=0,
+        )
+        selector = result.working_size_selector
+        assert selector["resolved_working_size"] == 128
+        assert selector["fallback_reason"] is not None
+        assert "128" in selector["fallback_reason"]
+
+    def test_resolver_called_at_most_once(self, synthetic_mosaic, monkeypatch):
+        """The sentinel-resolution helper runs exactly once per tune() call."""
+        import linum_basic.tuning as tuning_mod
+
+        mosaic, _ = synthetic_mosaic
+        call_count = {"n": 0}
+        original = tuning_mod._resolve_working_size_auto
+
+        def _counting(mosaic, *, n_z, device):
+            call_count["n"] += 1
+            return original(mosaic, n_z=n_z, device=device)
+
+        monkeypatch.setattr(tuning_mod, "_resolve_working_size_auto", _counting)
+        tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=1,
+            search_space=_TEST_SEARCH_SPACE,
+            working_size="auto",
+            seed=0,
+        )
+        assert call_count["n"] == 1
+
+    def test_resolver_not_called_without_sentinel(self, synthetic_mosaic, monkeypatch):
+        """Without the 'auto' sentinel the resolver helper is never invoked."""
+        import linum_basic.tuning as tuning_mod
+
+        mosaic, _ = synthetic_mosaic
+        call_count = {"n": 0}
+
+        def _counting(mosaic, *, n_z, device):
+            call_count["n"] += 1
+            return None
+
+        monkeypatch.setattr(tuning_mod, "_resolve_working_size_auto", _counting)
+        tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=1,
+            search_space=_TEST_SEARCH_SPACE,
+            seed=0,
+        )
+        assert call_count["n"] == 0

@@ -1150,3 +1150,283 @@ class TestTuneSubcommand:
         help_text = buf.getvalue()
         assert "--bounds-json" in help_text
         assert "--bounds-margin" in help_text
+
+
+class TestWorkingSizeFlag:
+    """Tests for ``--working-size`` on ``basic fit`` and ``basic tune`` (M006/S02/T03)."""
+
+    def test_fit_help_shows_working_size(self) -> None:
+        """``basic fit --help`` documents ``--working-size``."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+
+        buf = io.StringIO()
+        with pytest.raises(SystemExit) as excinfo, redirect_stdout(buf):
+            main(["fit", "--help"])
+        assert excinfo.value.code == 0
+        assert "--working-size" in buf.getvalue()
+
+    def test_fit_working_size_auto_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--working-size auto`` is forwarded into ``basic_kwargs["working_size"]``."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+
+        def _stub_fit(mosaic, **kwargs):
+            captured.update(kwargs)
+            th, tw = mosaic.tile_shape
+            return MosaicFit(
+                flatfields=np.ones((1, th, tw), dtype=np.float32),
+                darkfields=np.zeros((1, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=[0],
+                params={},
+            )
+
+        monkeypatch.setattr("linum_basic.fit.fit_mosaic", _stub_fit)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--working-size",
+                "auto",
+            ]
+        )
+        assert rc == 0
+        basic_kwargs = captured.get("basic_kwargs") or {}
+        assert basic_kwargs.get("working_size") == "auto"
+
+    def test_fit_working_size_int_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicit ``--working-size 64`` is forwarded as an integer."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+
+        def _stub_fit(mosaic, **kwargs):
+            captured.update(kwargs)
+            th, tw = mosaic.tile_shape
+            return MosaicFit(
+                flatfields=np.ones((1, th, tw), dtype=np.float32),
+                darkfields=np.zeros((1, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=[0],
+                params={},
+            )
+
+        monkeypatch.setattr("linum_basic.fit.fit_mosaic", _stub_fit)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(
+            [
+                "fit",
+                "--input",
+                str(zarr_in),
+                "--output",
+                str(zarr_out),
+                "--working-size",
+                "64",
+            ]
+        )
+        assert rc == 0
+        basic_kwargs = captured.get("basic_kwargs") or {}
+        assert basic_kwargs.get("working_size") == 64
+
+    def test_fit_working_size_default_omitted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Omitting ``--working-size`` leaves it out of ``basic_kwargs`` (backward compatible)."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+        from linum_basic.fit import MosaicFit
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        captured: dict = {}
+
+        def _stub_fit(mosaic, **kwargs):
+            captured.update(kwargs)
+            th, tw = mosaic.tile_shape
+            return MosaicFit(
+                flatfields=np.ones((1, th, tw), dtype=np.float32),
+                darkfields=np.zeros((1, th, tw), dtype=np.float32),
+                field_mode="per-z",
+                z_indices=[0],
+                params={},
+            )
+
+        monkeypatch.setattr("linum_basic.fit.fit_mosaic", _stub_fit)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *args, **kwargs: None)
+
+        rc = main(["fit", "--input", str(zarr_in), "--output", str(zarr_out)])
+        assert rc == 0
+        basic_kwargs = captured.get("basic_kwargs") or {}
+        assert "working_size" not in basic_kwargs
+
+    def test_fit_working_size_invalid_rejected(self, tmp_path: Path) -> None:
+        """Non-numeric, non-auto ``--working-size`` values are rejected by argparse."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(
+                [
+                    "fit",
+                    "--input",
+                    str(zarr_in),
+                    "--output",
+                    str(zarr_out),
+                    "--working-size",
+                    "turbo",
+                ]
+            )
+        assert excinfo.value.code == 2
+
+    def test_fit_working_size_negative_rejected(self, tmp_path: Path) -> None:
+        """Negative ``--working-size`` values are rejected by the type parser."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+
+        from linum_basic.cli import main
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "out.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=1, n_rows=2, n_cols=2, tile=8)
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(
+                [
+                    "fit",
+                    "--input",
+                    str(zarr_in),
+                    "--output",
+                    str(zarr_out),
+                    "--working-size",
+                    "-1",
+                ]
+            )
+        assert excinfo.value.code == 2
+
+    def test_tune_help_shows_working_size(self) -> None:
+        """``basic tune --help`` documents ``--working-size``."""
+        pytest.importorskip("optuna")
+
+        from linum_basic.cli import main
+
+        buf = io.StringIO()
+        with pytest.raises(SystemExit) as excinfo, redirect_stdout(buf):
+            main(["tune", "--help"])
+        assert excinfo.value.code == 0
+        assert "--working-size" in buf.getvalue()
+
+    def test_tune_working_size_auto_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``tune --working-size auto`` forwards ``working_size='auto'`` to :func:`tune`."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        captured: dict = {}
+        original = tuning_mod.tune
+
+        def _spy_tune(mosaic, **kwargs):
+            captured.update(kwargs)
+            return original(mosaic, **kwargs)
+
+        monkeypatch.setattr(tuning_mod, "tune", _spy_tune)
+        try:
+            zarr_in = tmp_path / "in.ome.zarr"
+            _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+            rc = cli.main(
+                [
+                    "tune",
+                    "--input",
+                    str(zarr_in),
+                    "--n-trials",
+                    "2",
+                    "--z-subsample",
+                    "1",
+                    "--working-size",
+                    "auto",
+                    "--seed",
+                    "0",
+                ]
+            )
+            assert rc == 0
+            assert captured.get("working_size") == "auto"
+        finally:
+            tuning_mod.tune = original
+
+    def test_tune_working_size_int_forwarded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``tune --working-size 64`` forwards an integer to :func:`tune`."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        captured: dict = {}
+        original = tuning_mod.tune
+
+        def _spy_tune(mosaic, **kwargs):
+            captured.update(kwargs)
+            return original(mosaic, **kwargs)
+
+        monkeypatch.setattr(tuning_mod, "tune", _spy_tune)
+        try:
+            zarr_in = tmp_path / "in.ome.zarr"
+            _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=3, n_cols=3, tile=16)
+
+            rc = cli.main(
+                [
+                    "tune",
+                    "--input",
+                    str(zarr_in),
+                    "--n-trials",
+                    "2",
+                    "--z-subsample",
+                    "1",
+                    "--working-size",
+                    "64",
+                    "--seed",
+                    "0",
+                ]
+            )
+            assert rc == 0
+            assert captured.get("working_size") == 64
+        finally:
+            tuning_mod.tune = original
