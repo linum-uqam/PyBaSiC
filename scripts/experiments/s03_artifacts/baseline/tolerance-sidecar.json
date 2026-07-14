@@ -1,0 +1,22 @@
+{
+  "baseline_id": "baseline-20260714T190137-4e924e0-sub-22",
+  "calibration_policy": "mean+3std",
+  "metric_definition_version": "1",
+  "min_abs": 1e-06,
+  "schema_version": "1",
+  "sigma": 3.0,
+  "tolerances": {
+    "seam_curvature": {
+      "abs_tol": 1e-06,
+      "mean": 0.03441198528195194,
+      "rel_tol": 2.9058798352041108e-05,
+      "std": 0.0
+    },
+    "seam_l1": {
+      "abs_tol": 1e-06,
+      "mean": 0.5717338383197784,
+      "rel_tol": 1.7490625600825944e-06,
+      "std": 0.0
+    }
+  }
+}
