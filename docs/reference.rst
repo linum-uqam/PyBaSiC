@@ -7,6 +7,7 @@ Reference
    getting_started
    algorithm
    parameters
+   adaptive_working_size
    runbooks
    tuning
    parallelism
