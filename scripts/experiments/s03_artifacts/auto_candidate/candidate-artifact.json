@@ -1,0 +1,355 @@
+{
+  "array_shape": [
+    55,
+    2325,
+    1200
+  ],
+  "baseline_id": "baseline-20260714T190137-4e924e0-sub-22",
+  "candidate_id": "candidate-20260714T192818-4e924e0-sub-22",
+  "environment": {
+    "cuda_version": "13.0",
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
+    "python_version": "3.14.3",
+    "torch_version": "2.12.1+cu130"
+  },
+  "input_fingerprint": "sha256:41ba18e223ab497f",
+  "metadata": {
+    "_strategy": {
+      "attempted_execution_path": null,
+      "backend": "torch",
+      "baseline_reference_id": "baseline-20260630T163351-e7c47a4-sub-22",
+      "batched_cuda_guard": null,
+      "chunk_size": null,
+      "device": "cuda:0",
+      "evidence_policy": "phase2-uat-20260630",
+      "execution_path": "sequential_scalar",
+      "memory_estimate_bytes": 1462763520,
+      "n_gpus": 1,
+      "n_tiles": 496,
+      "n_z": 5,
+      "name": "sequential",
+      "override_source": "strategy_lock",
+      "reason_codes": [
+        "STRATEGY_LOCK_SEQUENTIAL"
+      ],
+      "reason_summary": "Named strategy 'sequential' locks execution path (auto heuristics suppressed).",
+      "working_size": 192
+    },
+    "cache_mode": "persistent",
+    "concurrency": {
+      "compile_status": "enabled",
+      "fork_model": "baseline",
+      "gpu_map": {
+        "cuda:0": "worker-0",
+        "cuda:1": "worker-1"
+      },
+      "inductor_cache_path": "/tmp/torchinductor_frans",
+      "n_gpus": 2,
+      "peak_vram_bytes": 891987968,
+      "quality_verdict": {
+        "aggregate_deltas": {
+          "seam_curvature": {
+            "abs_delta": 0.004655001013656818,
+            "rel_delta": 0.13527266664554302
+          },
+          "seam_l1": {
+            "abs_delta": 0.03300223946571357,
+            "rel_delta": 0.05772308240964211
+          }
+        },
+        "failures": [
+          "seam_l1",
+          "seam_curvature"
+        ],
+        "passed": false,
+        "per_z_failures": [
+          {
+            "abs_delta": 0.2595158815383911,
+            "metric": "seam_l1",
+            "rel_delta": 0.7995879709405285,
+            "z": 0
+          },
+          {
+            "abs_delta": 0.028002164580387207,
+            "metric": "seam_curvature",
+            "rel_delta": 0.6588249999648496,
+            "z": 13
+          },
+          {
+            "abs_delta": 0.005568216902046008,
+            "metric": "seam_curvature",
+            "rel_delta": 0.12308464155934205,
+            "z": 27
+          },
+          {
+            "abs_delta": 0.021252334884278738,
+            "metric": "seam_curvature",
+            "rel_delta": 0.9250586782865627,
+            "z": 40
+          },
+          {
+            "abs_delta": 0.27136602997779846,
+            "metric": "seam_l1",
+            "rel_delta": 0.8390067478730973,
+            "z": 54
+          },
+          {
+            "abs_delta": 0.010056918622161567,
+            "metric": "seam_curvature",
+            "rel_delta": 0.40994377470514154,
+            "z": 54
+          }
+        ],
+        "worst_z": 54
+      },
+      "strategy": "baseline"
+    },
+    "convergence": {
+      "l_d": 0.207591796875,
+      "l_s": 0.5189794921875,
+      "max_reweighting_iterations": 15,
+      "reweight_iterations_median": 15.0,
+      "reweight_iterations_per_z": {
+        "0": 15,
+        "13": 15,
+        "27": 15,
+        "40": 15,
+        "54": 15
+      }
+    },
+    "cuda_available": true,
+    "cuda_devices": [
+      "cuda:0",
+      "cuda:1"
+    ],
+    "cuda_version": "13.0",
+    "deltas": {
+      "aggregate": {
+        "seam_curvature": {
+          "abs_delta": 0.004655001013656818,
+          "rel_delta": 0.13527266664554302
+        },
+        "seam_l1": {
+          "abs_delta": 0.03300223946571357,
+          "rel_delta": 0.05772308240964211
+        }
+      },
+      "per_z": [
+        {
+          "seam_curvature": {
+            "abs_delta": -0.02588544545176205,
+            "rel_delta": -0.7031922180210044
+          },
+          "seam_l1": {
+            "abs_delta": 0.2595158815383911,
+            "rel_delta": 0.7995879709405285
+          },
+          "z": 0
+        },
+        {
+          "seam_curvature": {
+            "abs_delta": 0.028002164580387207,
+            "rel_delta": 0.6588249999648496
+          },
+          "seam_l1": {
+            "abs_delta": -0.22139352560043335,
+            "rel_delta": -0.27767075643601363
+          },
+          "z": 13
+        },
+        {
+          "seam_curvature": {
+            "abs_delta": 0.005568216902046008,
+            "rel_delta": 0.12308464155934205
+          },
+          "seam_l1": {
+            "abs_delta": -0.013521969318389893,
+            "rel_delta": -0.02092182717223007
+          },
+          "z": 27
+        },
+        {
+          "seam_curvature": {
+            "abs_delta": 0.021252334884278738,
+            "rel_delta": 0.9250586782865627
+          },
+          "seam_l1": {
+            "abs_delta": -0.13095521926879883,
+            "rel_delta": -0.1707287184148444
+          },
+          "z": 40
+        },
+        {
+          "seam_curvature": {
+            "abs_delta": 0.010056918622161567,
+            "rel_delta": 0.40994377470514154
+          },
+          "seam_l1": {
+            "abs_delta": 0.27136602997779846,
+            "rel_delta": 0.8390067478730973
+          },
+          "z": 54
+        }
+      ]
+    },
+    "fx_graph_cache_enabled": null,
+    "git_commit": "4e924e0",
+    "host_node": "sn4622125853",
+    "inductor_cache_path": null,
+    "inductor_warm_passes": 0,
+    "numpy_version": "2.5.0",
+    "operator_timing": {
+      "end_to_end_ms": 140485.28125,
+      "n_tiles": 496,
+      "n_z": 5,
+      "per_z_ms": 28097.05625
+    },
+    "overall": "reject",
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
+    "precision": {
+      "allow_tf32_cudnn": true,
+      "allow_tf32_matmul": true,
+      "compile_fallback_reason": null,
+      "compile_requested": true,
+      "float32_matmul_precision": "high"
+    },
+    "python_version": "3.14.3",
+    "quality_verdict": {
+      "aggregate_deltas": {
+        "seam_curvature": {
+          "abs_delta": 0.004655001013656818,
+          "rel_delta": 0.13527266664554302
+        },
+        "seam_l1": {
+          "abs_delta": 0.03300223946571357,
+          "rel_delta": 0.05772308240964211
+        }
+      },
+      "failures": [
+        "seam_l1",
+        "seam_curvature"
+      ],
+      "passed": false,
+      "per_z_failures": [
+        {
+          "abs_delta": 0.2595158815383911,
+          "metric": "seam_l1",
+          "rel_delta": 0.7995879709405285,
+          "z": 0
+        },
+        {
+          "abs_delta": 0.028002164580387207,
+          "metric": "seam_curvature",
+          "rel_delta": 0.6588249999648496,
+          "z": 13
+        },
+        {
+          "abs_delta": 0.005568216902046008,
+          "metric": "seam_curvature",
+          "rel_delta": 0.12308464155934205,
+          "z": 27
+        },
+        {
+          "abs_delta": 0.021252334884278738,
+          "metric": "seam_curvature",
+          "rel_delta": 0.9250586782865627,
+          "z": 40
+        },
+        {
+          "abs_delta": 0.27136602997779846,
+          "metric": "seam_l1",
+          "rel_delta": 0.8390067478730973,
+          "z": 54
+        },
+        {
+          "abs_delta": 0.010056918622161567,
+          "metric": "seam_curvature",
+          "rel_delta": 0.40994377470514154,
+          "z": 54
+        }
+      ],
+      "worst_z": 54
+    },
+    "speed_verdict": {
+      "baseline_ms": 14606.6484375,
+      "candidate_ms": 140485.28125,
+      "label": "slower",
+      "ratio": 0.10397280275580471
+    },
+    "telemetry": {
+      "chunk_size": null,
+      "cold_cache_ms": 140763.296875,
+      "compile_status": "enabled",
+      "fx_graph_cache_enabled": null,
+      "inductor_cache_path": null,
+      "max_memory_allocated_bytes": 891987968,
+      "max_memory_reserved_bytes": 1199570944,
+      "steady_state_ms": 140485.28125,
+      "warm_cache_ms": 140446.7734375,
+      "warmup_ms": 147120.0
+    },
+    "torch_version": "2.12.1+cu130",
+    "warnings": [
+      "environment.cuda_version differs: candidate='13.0', baseline=None",
+      "environment.platform differs: candidate='Linux-7.0.0-27-generic-x86_64-with-glibc2.43', baseline=None",
+      "environment.python_version differs: candidate='3.14.3', baseline=None",
+      "environment.torch_version differs: candidate='2.12.1+cu130', baseline=None"
+    ]
+  },
+  "metric_definition_version": "1",
+  "metrics_aggregates": {
+    "seam_curvature": 0.03906698629560876,
+    "seam_l1": 0.604736077785492
+  },
+  "metrics_rows": [
+    {
+      "seam_curvature": 0.010925891176239218,
+      "seam_l1": 0.5840778946876526,
+      "z": 0
+    },
+    {
+      "seam_curvature": 0.07050535523326348,
+      "seam_l1": 0.5759303569793701,
+      "z": 13
+    },
+    {
+      "seam_curvature": 0.05080714217739352,
+      "seam_l1": 0.6327872276306152,
+      "z": 27
+    },
+    {
+      "seam_curvature": 0.044226374675617505,
+      "seam_l1": 0.6360816359519958,
+      "z": 40
+    },
+    {
+      "seam_curvature": 0.03458935268435744,
+      "seam_l1": 0.5948032736778259,
+      "z": 54
+    }
+  ],
+  "repeats": 3,
+  "run_label": "s03-auto-candidate",
+  "schema_version": "1",
+  "strategy_params": {
+    "backend": "torch",
+    "device": "cuda:0",
+    "estimate_darkfield": true,
+    "max_reweighting_iterations": 15,
+    "warm_start_reweighting": false,
+    "working_size": "auto"
+  },
+  "subject_id": "sub-22",
+  "tile_shape": [
+    75,
+    75
+  ],
+  "timestamp": "2026-07-14T19:18:48.972417+00:00",
+  "z_indices": [
+    0,
+    13,
+    27,
+    40,
+    54
+  ]
+}
