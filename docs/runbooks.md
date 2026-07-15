@@ -23,13 +23,14 @@ see {doc}`parameters`.
 | About to release or merge a CUDA/ALM change | {doc}`gpu_smoke` | Lightweight, manual CUDA regression check on the A6000 — the only place CUDA regressions are caught before release (no automated GPU CI exists yet). |
 | A mosaic volume is too large for RAM | {doc}`streaming` | Plane-by-plane fitting bounds peak memory to one focal plane; bit-identical output to the eager path. |
 | Default BaSiC params underperform on a dataset | {doc}`tuning` | Optuna search over `l_s`/`l_d`/`working_size`, then `recommend_bounds` narrows the next run. |
+| Want tuning applied automatically with a safety net | {ref}`runbook-auto-apply` | `basic tune --auto-apply` tunes once, gates the candidate on full-volume quality, and falls back to defaults on any regression. |
 | Need the fastest fit on a multi-GPU box | {doc}`parallelism` | Process / GPU fan-out and strategy selection — for wall time, not memory. |
 | Selecting or debugging the compute backend | {doc}`gpu` | Backend selection (`numpy`/`torch`), CUDA setup, MPS exclusion rationale. |
 
-The three runbooks in {ref}`runbooks-coverage` below — GPU smoke, streaming,
-and tuning — are the ones this index consolidates. Parallelism and GPU are
-linked for completeness because they answer the natural follow-up questions
-("how do I go faster?" and "which backend?").
+The four runbooks in {ref}`runbooks-coverage` below — GPU smoke, streaming,
+tuning, and auto-apply — are the ones this index consolidates. Parallelism
+and GPU are linked for completeness because they answer the natural
+follow-up questions ("how do I go faster?" and "which backend?").
 
 ---
 
@@ -41,6 +42,7 @@ linked for completeness because they answer the natural follow-up questions
 | {doc}`gpu_smoke` | Catch a CUDA regression before release | < 5 min, 1 GPU | A6000 server only | pytest pass/fail log |
 | {doc}`streaming` | Fit a volume that exceeds RAM | Wall-time penalty, 1 plane in memory | Any backend (NumPy on Mac) | corrected OME-Zarr |
 | {doc}`tuning` → `recommend_bounds` | Improve correction quality, then narrow the search | Minutes to hours (Optuna) | Any backend | best params + narrowed bounds |
+| `basic tune --auto-apply` | Tune once and apply a vetted result with a safety gate | Tune budget + two full-volume fits | Any backend | corrected OME-Zarr + gate verdict |
 
 ---
 
@@ -231,15 +233,127 @@ basic tune --input mosaic.ome.zarr \
 
 ---
 
+(runbook-auto-apply)=
+## Auto-apply (fully automated)
+
+**Full page:** {doc}`tuning` (the auto-apply workflow is the "Auto-apply
+safety gate" section)
+
+### When
+
+Use `--auto-apply` when you want the tuned result applied **without** a
+manual loop — i.e. you do not want to read best params, hand them to
+`fit_mosaic`, and judge whether they are safe yourself. The gate guarantees
+the applied result is never worse than the default-bounds fit on the full
+volume.
+
+Reach for it instead of the manual `tune` + `recommend_bounds` runbook
+(above) when:
+
+- You are correcting a *new* dataset and want one command that both tunes
+  and applies a vetted result.
+- You want the safety net: if tuning produces a worse full-volume fit, the
+  default-bounds fit is applied automatically and the reason is recorded.
+
+Prefer the **manual** tuning runbook when you want to *inspect* the
+near-optimal region, narrow the search, and run a second focused search —
+`--auto-apply` runs one tune pass and makes one apply decision per
+invocation.
+
+### Why it exists
+
+`tune()` optimises a *subsampled* objective (a handful of z-levels, ≤
+`max_tiles` tiles) on a single metric. A subsampled, single-metric score
+cannot prove the best trial holds on the *full* volume against *both*
+first-class metrics (`seam_l1` **and** `seam_curvature`). The auto-apply
+gate closes that gap: it runs one extra full-volume fit with the tuned best
+params, compares both metrics against the default-bounds full-volume fit,
+and applies the candidate only if it does not regress either metric (fixed
+`0.0` non-regression margin, D023). It adds no solver code and touches no
+BaSiC invariant. Full design contract: {doc}`auto_apply_safety_gate`.
+
+### Reproducible command
+
+```bash
+basic tune --input mosaic.ome.zarr \
+    --auto-apply \
+    --apply corrected.ome.zarr \
+    --out-json best_params.json \
+    --bounds-json narrowed_bounds.json \
+    --n-trials 50 \
+    --verbose
+```
+
+- `--auto-apply` switches on the guarded pipeline (baseline fit → tune →
+  recommend_bounds → candidate fit → non-regression gate).
+- `--apply corrected.ome.zarr` writes the **winning** fit: the tuned
+  candidate on a pass, the default-bounds baseline on any fallback. The
+  gate guarantees this is never worse than the default-bounds fit.
+- `--out-json` writes the candidate best params (skipped on a fallback that
+  fired before a candidate existed).
+- `--bounds-json` writes the narrowed `search_space` recommendation.
+- The non-regression margin is fixed at `0.0` (D023); it is not a CLI flag.
+
+### What to look for
+
+With `--verbose`, the verdict prints to stdout (deltas appear only when
+computed — on a pass or a fail, not a pre-candidate fallback):
+
+```
+Auto-apply gate verdict: pass
+  applied: candidate
+  seam_l1: abs_delta=-0.012000 rel_delta=-0.021000
+  seam_curvature: abs_delta=-0.000400 rel_delta=-0.012000
+```
+
+| Verdict / output | Meaning | Action |
+|---|---|---|
+| `verdict: pass`, `applied: candidate` | Candidate held both metrics ≤ baseline within the 0.0 margin | The `--apply` output is the tuned correction; safe to use |
+| `verdict: fail`, `applied: baseline-default`, `fallback_reason: regression-detected` | Candidate regressed ≥ 1 metric on the full volume | The `--apply` output is the default-bounds fit; inspect `failing_metrics` + deltas to understand the regression |
+| `verdict: fallback`, `applied: baseline-default` | An upstream step raised before a clean gate result | The `--apply` output is the default-bounds fit; check the `fallback_reason` |
+| `error: auto-apply failed: ...` (stderr, exit 1) | The *baseline* fit itself failed — there is no safe floor | This is **not** a fallback. Fix the input / backend, then re-run |
+
+`fallback_reason` enumeration (on a `fail` or `fallback`):
+
+| Reason | Meaning |
+|---|---|
+| `regression-detected` | Candidate failed the non-regression gate on ≥ 1 metric |
+| `tune-failed` | `tune()` raised (Optuna missing, all trials pruned, OOM in a trial) |
+| `degenerate-trial-history` | `recommend_bounds()` saw zero completed trials |
+| `invalid-margin` | `--bounds-margin` was outside `[0, 1]` |
+| `candidate-fit-failed` | The candidate full-volume fit raised (OOM, divergence) |
+| `quality-report-failed` | Quality report / deltas computation raised |
+
+### Gotchas
+
+- **A fallback is a success, not an error.** `--auto-apply` returns exit 0
+  and writes a valid (default-bounds) corrected volume on any fallback;
+  only the *baseline-fit* failure (`error: auto-apply failed: ...`, exit 1)
+  is a true error. Do not treat a `regression-detected` fallback as a crash.
+- **The applied fit is always safe.** Whether `applied` is `candidate` or
+  `baseline-default`, `--apply` writes a correction the gate has proven is
+  not worse than the default-bounds fit — you never receive a silently
+  degraded volume.
+- **One tune pass, one decision.** `--auto-apply` does not iterate the
+  tune → narrow → retune loop; for multi-pass narrowing use the manual
+  tuning runbook above.
+- **Do not conflate** the auto-apply gate (per-dataset, fixed margin, two
+  fits) with the `mean+3std` release gate in `linum_basic.benchmark.quality`
+  (repeated A/B calibration). They reuse the same quality primitives but
+  cannot disagree on what a metric means.
+
+---
+
 ## Cross-cutting notes
 
 - **No automated GPU CI.** The GPU smoke runbook is the only pre-release
   CUDA gate and it is manual; see its "Deferred automation" section for the
   self-hosted-runner plan.
 - **Numerics are never changed by these workflows.** Streaming is
-  bit-identical to the eager path; tuning and bounds recommendation only
-  change the *parameter values* fed to the same solver. The ALM invariants
-  documented in `AGENTS.md` are untouched by all three runbooks.
+  bit-identical to the eager path; tuning, bounds recommendation, and
+  auto-apply only change the *parameter values* fed to the same solver. The
+  ALM invariants documented in `AGENTS.md` are untouched by all four
+  runbooks.
 - **Apple Silicon / MPS.** None of the GPU paths support MPS (float64 SVD
   is unavailable on Metal). Use `backend="numpy"` (or `backend="auto"`,
   which falls back to NumPy without CUDA) locally; run the GPU smoke on the
