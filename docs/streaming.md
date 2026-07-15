@@ -137,6 +137,21 @@ go/no-go audit and the exact, falsifiable condition under which the write
 path would be revisited.
 ```
 
+```{note}
+The **Scale** boundary — RAM-bounded rather than terabyte-grade — is
+likewise a deliberate, *evaluated* deferral, not an open gap. A
+terabyte-scale distributed/cluster redesign (a coordination layer and
+multi-host worker model) was assessed against the same production-scale
+peak-memory evidence (M007/S03): the largest available real per-z mosaic
+volume peaks at 2.40 GB host RSS — ~416x below a terabyte and ~4.66% of a
+single A6000's 48 GB budget — and the codebase is single-host only (joblib
+processes and single-host CUDA multi-GPU fan-out), so a cluster layer would
+unlock work that does not otherwise fail. The redesign was re-deferred as
+*not justified*. See `scripts/experiments/m007_s03_artifacts/S03-DECISION.md`
+for the terminal go/no-go audit and the exact, falsifiable condition under
+which it would be revisited.
+```
+
 ---
 
 (streaming-numerics)=
