@@ -1152,6 +1152,459 @@ class TestTuneSubcommand:
         assert "--bounds-margin" in help_text
 
 
+class TestTuneAutoApply:
+    """Tests for ``basic tune --auto-apply`` (M008/S02/T03, D023 auto-apply gate).
+
+    The ``--auto-apply`` flag runs the full D023 pipeline via
+    :func:`linum_basic.tuning.auto_tune` and composes with
+    ``--out-json`` / ``--bounds-json`` / ``--apply`` / ``--verbose``. These
+    tests patch ``auto_tune`` (the lazy-imported entry point) to assert the
+    flag is forwarded, the winning fit is written, output flags compose, the
+    fallback path writes the baseline, and an ``AutoApplyError`` exits 1.
+    """
+
+    @staticmethod
+    def _make_fit(mosaic) -> object:
+        """Build a minimal :class:`MosaicFit` matching *mosaic* tile shape."""
+        from linum_basic.fit import MosaicFit
+
+        th, tw = mosaic.tile_shape
+        nz = getattr(mosaic, "n_z", 1)
+        return MosaicFit(
+            flatfields=np.ones((nz, th, tw), dtype=np.float32),
+            darkfields=np.zeros((nz, th, tw), dtype=np.float32),
+            field_mode="per-z",
+            z_indices=list(range(nz)),
+            params={},
+        )
+
+    @staticmethod
+    def _make_auto_result(
+        fit,
+        *,
+        gate_verdict: str = "pass",
+        applied: str = "candidate",
+        failing_metrics: list[str] | None = None,
+        fallback_reason: str | None = None,
+    ) -> object:
+        """Build a synthetic :class:`AutoTuneResult` with a full gate sub-dict."""
+        from linum_basic.tuning import AutoTuneResult, BoundsRecommendation
+
+        best_params = {
+            "working_size": 128,
+            "l_s": 1000.0,
+            "l_d": 3000.0,
+            "epsilon": 0.1,
+            "estimate_darkfield": True,
+        }
+        rec = BoundsRecommendation(
+            search_space={
+                "working_size": [128],
+                "l_s_divisor": (800.0, 1200.0),
+                "l_d_divisor": (2000.0, 4000.0),
+                "epsilon": (0.1, 0.3),
+                "estimate_darkfield": [True],
+            },
+            best_value=0.49,
+            n_near_optimal=2,
+            margin=0.10,
+        )
+        gate = {
+            "gate_verdict": gate_verdict,
+            "applied": applied,
+            "no_regression_margin": 0.0,
+            "failing_metrics": failing_metrics or [],
+            "fallback_reason": fallback_reason,
+            "deltas": {
+                "seam_l1": {"abs_delta": -0.012, "rel_delta": -0.021},
+                "seam_curvature": {"abs_delta": -0.0004, "rel_delta": -0.012},
+            },
+            "baseline": {
+                "bounds": "default",
+                "aggregates": {"seam_l1": 0.5717, "seam_curvature": 0.0344},
+            },
+            "candidate": {
+                "bounds": "tune-best-params",
+                "best_params": best_params,
+                "aggregates": {"seam_l1": 0.5597, "seam_curvature": 0.0340},
+            },
+            "recommendation": {
+                "search_space": rec.search_space,
+                "n_near_optimal": rec.n_near_optimal,
+                "margin": rec.margin,
+                "best_value": rec.best_value,
+            },
+        }
+        return AutoTuneResult(
+            fit,
+            applied=applied,
+            recommendation=rec,
+            gate=gate,
+        )
+
+    def test_tune_auto_apply_help_documented(self) -> None:
+        """``basic tune --help`` lists ``--auto-apply``."""
+        pytest.importorskip("optuna")
+
+        from linum_basic.cli import main
+
+        buf = io.StringIO()
+        with pytest.raises(SystemExit) as excinfo, redirect_stdout(buf):
+            main(["tune", "--help"])
+        assert excinfo.value.code == 0
+        help_text = buf.getvalue()
+        assert "--auto-apply" in help_text
+        # The help should explain the safety-gate semantics.
+        assert "non-regression" in help_text.lower()
+
+    def test_tune_auto_apply_flag_forwarded_to_auto_tune(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--auto-apply`` delegates to :func:`auto_tune` with forwarded kwargs."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        captured: dict = {}
+        zarr_in = tmp_path / "in.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+
+        def _spy_auto_tune(mosaic, **kwargs):
+            captured.update(kwargs)
+            captured["mosaic"] = mosaic
+            return self._make_auto_result(self._make_fit(mosaic))
+
+        monkeypatch.setattr(tuning_mod, "auto_tune", _spy_auto_tune)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *a, **k: None)
+
+        rc = cli.main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--auto-apply",
+                "--n-trials",
+                "3",
+                "--z-subsample",
+                "1",
+                "--bounds-margin",
+                "0.15",
+                "--seed",
+                "7",
+            ]
+        )
+        assert rc == 0
+        # auto_tune was called (not the manual tune path).
+        assert "mosaic" in captured
+        assert captured["n_trials"] == 3
+        assert captured["z_subsample"] == 1
+        # --bounds-margin maps to auto_tune's margin (feeds recommend_bounds).
+        assert captured["margin"] == pytest.approx(0.15)
+        assert captured["seed"] == 7
+
+    def test_tune_auto_apply_writes_winning_fit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--auto-apply --apply`` writes the winning fit via ``save_corrected``."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "applied.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+
+        saved: dict = {}
+
+        def _spy_auto_tune(mosaic, **kwargs):
+            fit = self._make_fit(mosaic)
+            return self._make_auto_result(fit, gate_verdict="pass", applied="candidate")
+
+        def _spy_save(mosaic, fit, out_path, **kwargs):
+            saved["fit"] = fit
+            saved["out_path"] = out_path
+
+        monkeypatch.setattr(tuning_mod, "auto_tune", _spy_auto_tune)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", _spy_save)
+
+        rc = cli.main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--auto-apply",
+                "--apply",
+                str(zarr_out),
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+            ]
+        )
+        assert rc == 0
+        # The winning candidate fit was passed to save_corrected.
+        assert saved.get("out_path") == zarr_out
+        assert saved.get("fit") is not None
+
+    def test_tune_auto_apply_compose_out_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--auto-apply --out-json`` writes the candidate best params."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        best_out = tmp_path / "best.json"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+
+        def _spy_auto_tune(mosaic, **kwargs):
+            return self._make_auto_result(self._make_fit(mosaic))
+
+        monkeypatch.setattr(tuning_mod, "auto_tune", _spy_auto_tune)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *a, **k: None)
+
+        rc = cli.main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--auto-apply",
+                "--out-json",
+                str(best_out),
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+            ]
+        )
+        assert rc == 0
+        assert best_out.exists()
+        import json
+
+        data = json.loads(best_out.read_text())
+        # The candidate best_params (from the gate sub-dict) are written.
+        assert "l_s" in data
+        assert data["working_size"] == 128
+
+    def test_tune_auto_apply_compose_bounds_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--auto-apply --bounds-json`` writes the narrowed recommendation."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        bounds_out = tmp_path / "bounds.json"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+
+        def _spy_auto_tune(mosaic, **kwargs):
+            return self._make_auto_result(self._make_fit(mosaic))
+
+        monkeypatch.setattr(tuning_mod, "auto_tune", _spy_auto_tune)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *a, **k: None)
+
+        rc = cli.main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--auto-apply",
+                "--bounds-json",
+                str(bounds_out),
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+            ]
+        )
+        assert rc == 0
+        assert bounds_out.exists()
+        import json
+
+        payload = json.loads(bounds_out.read_text())
+        assert "search_space" in payload
+        assert "l_s_divisor" in payload["search_space"]
+        assert payload["n_near_optimal"] == 2
+
+    def test_tune_auto_apply_fallback_writes_baseline(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On a regression-detected fallback, the baseline fit is written and rc is 0."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        zarr_out = tmp_path / "applied.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+
+        saved: dict = {}
+
+        def _spy_auto_tune(mosaic, **kwargs):
+            # Regression on seam_l1 -> gate fails, baseline returned.
+            return self._make_auto_result(
+                self._make_fit(mosaic),
+                gate_verdict="fail",
+                applied="baseline-default",
+                failing_metrics=["seam_l1"],
+                fallback_reason="regression-detected",
+            )
+
+        def _spy_save(mosaic, fit, out_path, **kwargs):
+            saved["fit"] = fit
+
+        monkeypatch.setattr(tuning_mod, "auto_tune", _spy_auto_tune)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", _spy_save)
+
+        rc = cli.main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--auto-apply",
+                "--apply",
+                str(zarr_out),
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+            ]
+        )
+        # A fallback is not a CLI error: the safe baseline fit is written, rc 0.
+        assert rc == 0
+        assert saved.get("fit") is not None
+
+    def test_tune_auto_apply_verbose_prints_verdict(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+        """``--auto-apply --verbose`` prints the gate verdict, applied, and deltas."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+
+        def _spy_auto_tune(mosaic, **kwargs):
+            return self._make_auto_result(
+                self._make_fit(mosaic),
+                gate_verdict="fail",
+                applied="baseline-default",
+                failing_metrics=["seam_curvature"],
+                fallback_reason="regression-detected",
+            )
+
+        monkeypatch.setattr(tuning_mod, "auto_tune", _spy_auto_tune)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *a, **k: None)
+
+        rc = cli.main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--auto-apply",
+                "--verbose",
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Auto-apply gate verdict: fail" in out
+        assert "baseline-default" in out
+        assert "regression-detected" in out
+        assert "seam_curvature" in out
+        # Per-metric deltas are printed for both first-class metrics.
+        assert "abs_delta=" in out
+        assert "rel_delta=" in out
+
+    def test_tune_auto_apply_baseline_failure_exits_nonzero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """An ``AutoApplyError`` (baseline fit failed) exits 1 with a stderr message."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+        from linum_basic.tuning import AutoApplyError
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+
+        def _raising_auto_tune(mosaic, **kwargs):
+            raise AutoApplyError("baseline (default-bounds) fit failed: OOM")
+
+        monkeypatch.setattr(tuning_mod, "auto_tune", _raising_auto_tune)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", lambda *a, **k: None)
+
+        rc = cli.main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--auto-apply",
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "auto-apply failed" in err.lower()
+
+    def test_tune_auto_apply_without_apply_exits_zero(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--auto-apply`` without ``--apply`` runs the gate and exits 0 (no fit write)."""
+        pytest.importorskip("zarr")
+        pytest.importorskip("ome_zarr")
+        pytest.importorskip("optuna")
+
+        import linum_basic.tuning as tuning_mod
+        from linum_basic import cli
+
+        zarr_in = tmp_path / "in.ome.zarr"
+        _write_synthetic_mosaic_zarr(zarr_in, n_z=2, n_rows=2, n_cols=2, tile=8)
+
+        save_called = {"n": 0}
+
+        def _spy_auto_tune(mosaic, **kwargs):
+            return self._make_auto_result(self._make_fit(mosaic))
+
+        def _fail_save(*a, **k):
+            save_called["n"] += 1
+
+        monkeypatch.setattr(tuning_mod, "auto_tune", _spy_auto_tune)
+        monkeypatch.setattr("linum_basic.fit.save_corrected", _fail_save)
+
+        rc = cli.main(
+            [
+                "tune",
+                "--input",
+                str(zarr_in),
+                "--auto-apply",
+                "--n-trials",
+                "2",
+                "--z-subsample",
+                "1",
+            ]
+        )
+        assert rc == 0
+        # No --apply -> save_corrected must not be called.
+        assert save_called["n"] == 0
+
+
 class TestWorkingSizeFlag:
     """Tests for ``--working-size`` on ``basic fit`` and ``basic tune`` (M006/S02/T03)."""
 

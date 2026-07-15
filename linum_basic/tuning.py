@@ -39,13 +39,44 @@ from linum_basic._working_size import (
     build_working_size_context,
     resolve_working_size,
 )
+from linum_basic.benchmark.quality import (
+    FIRST_CLASS_METRICS,
+    MetricDelta,
+    compute_deltas,
+    compute_quality_report,
+)
 from linum_basic.core import dct_energy
 from linum_basic.curvature import seam_curvature
-from linum_basic.fit import MosaicFit, make_model
+from linum_basic.fit import MosaicFit, fit_mosaic, make_model
 from linum_basic.metrics import seam_l1
 from linum_basic.mosaic import MosaicGrid
 
-__all__ = ["BoundsRecommendation", "TuneResult", "recommend_bounds", "tune"]
+__all__ = [
+    "FLOAT_NOISE_EPS",
+    "NO_REGRESSION_MARGIN",
+    "AutoApplyError",
+    "AutoTuneResult",
+    "BoundsRecommendation",
+    "TuneResult",
+    "auto_tune",
+    "recommend_bounds",
+    "tune",
+]
+
+# --- Auto-apply safety gate constants (D023, docs/auto_apply_safety_gate.md) ---
+#
+# The non-regression rule is a *fixed* margin comparison (never the
+# ``mean+3std`` release gate). The candidate must not be measurably worse
+# than the default-bounds baseline on either first-class metric.
+NO_REGRESSION_MARGIN: float = 0.0
+# Absorb pure float jitter in the aggregate scalars so an equal-quality
+# candidate is not rejected on round-off.
+FLOAT_NOISE_EPS: float = 1e-9
+
+# Default-bounds BaSiC kwargs for the auto-apply baseline floor: the
+# production default an operator gets without tuning (working_size=128,
+# estimate_darkfield=True, l_s / l_d auto-tuned by BaSiC.prepare()).
+_BASELINE_BOUNDS_LABEL = "default"
 
 # Default Optuna search space.
 # Categorical values → suggest_categorical; length-2 tuples → log-uniform float.
@@ -651,3 +682,470 @@ def tune(
         objective=objective,
         working_size_selector=working_size_selector,
     )
+
+
+# ===========================================================================
+# Auto-apply safety gate (M008/S02, D023 — docs/auto_apply_safety_gate.md)
+# ===========================================================================
+# This section implements the guarded ``auto_tune`` entry point: it runs
+# ``tune()`` + ``recommend_bounds()``, fits exactly one default-bounds
+# baseline and one narrowed-bounds candidate, and gates the candidate on
+# full-volume ``seam_l1`` + ``seam_curvature`` :class:`QualityReport` deltas
+# with a fixed :data:`NO_REGRESSION_MARGIN` (0.0). On any regression or
+# upstream failure it falls back to the baseline fit and records why.
+#
+# It reuses ``tune`` / ``recommend_bounds`` / ``fit_mosaic`` /
+# ``compute_quality_report`` / ``compute_deltas`` verbatim and calls **no**
+# ``calibrate_tolerances`` / ``evaluate_quality_gate`` release-gate machinery
+# (D015 distinction). It adds no solver code and touches no ``_alm.py`` /
+# ``backend.py`` invariant (K02).
+
+
+class AutoApplyError(RuntimeError):
+    """Raised when the auto-apply *baseline* (default-bounds) fit itself fails.
+
+    The fallback-to-defaults contract (docs/auto_apply_safety_gate.md) says
+    every failure path returns the baseline fit — *except* a baseline-fit
+    failure, which has no safe floor to return. In that one case
+    :func:`auto_tune` raises this typed exception carrying the partial state
+    and the underlying cause rather than silently returning an undefined
+    correction.
+
+    Attributes
+    ----------
+    cause : BaseException or None
+        The underlying exception that made the baseline fit fail, if any.
+    """
+
+    def __init__(self, message: str, *, cause: BaseException | None = None) -> None:
+        """Initialise an :class:`AutoApplyError`.
+
+        Parameters
+        ----------
+        message : str
+            Human-readable description of the baseline-fit failure.
+        cause : BaseException or None
+            The underlying exception that made the baseline fit fail.
+        """
+        super().__init__(message)
+        self.cause = cause
+
+
+def _regresses(delta: MetricDelta, *, margin: float) -> bool:
+    """Return whether a candidate *delta* regresses a "lower-is-better" metric.
+
+    Per D023: a candidate is measurably worse than the baseline iff
+    ``rel_delta > margin`` (both metrics are lower-is-better, so a positive
+    relative delta means the candidate got worse). :data:`FLOAT_NOISE_EPS`
+    absorbs pure float jitter so an equal-quality candidate is not rejected
+    on round-off.
+
+    Parameters
+    ----------
+    delta : MetricDelta
+        Candidate-minus-baseline delta for one first-class metric.
+    margin : float
+        Non-regression margin (default :data:`NO_REGRESSION_MARGIN` = 0.0).
+
+    Returns
+    -------
+    bool
+        ``True`` if the candidate regressed this metric beyond the margin.
+    """
+    return delta.rel_delta > margin + FLOAT_NOISE_EPS
+
+
+def _evaluate_regression(
+    deltas_aggregate: dict[str, MetricDelta],
+    *,
+    margin: float,
+) -> tuple[list[str], str]:
+    """Apply the D023 non-regression rule to aggregate metric deltas.
+
+    Parameters
+    ----------
+    deltas_aggregate : dict
+        ``compute_deltas(...)['aggregate']`` mapping each first-class metric
+        to its :class:`MetricDelta`.
+    margin : float
+        Non-regression margin passed to :func:`_regresses`.
+
+    Returns
+    -------
+    tuple of (list[str], str)
+        ``(failing_metrics, gate_verdict)``. *failing_metrics* is the subset of
+        :data:`FIRST_CLASS_METRICS` that regressed (ordered as in the tuple);
+        *gate_verdict* is ``"pass"`` when none regressed, else ``"fail"``.
+    """
+    failing = [m for m in FIRST_CLASS_METRICS if m in deltas_aggregate and _regresses(deltas_aggregate[m], margin=margin)]
+    verdict = "pass" if not failing else "fail"
+    return failing, verdict
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class AutoTuneResult:
+    """Result of a guarded :func:`auto_tune` run (M008/S02, D023).
+
+    Carries the winning :class:`MosaicFit`, the
+    :class:`BoundsRecommendation`, and a nested :attr:`gate` explainability
+    sub-dict mirroring the existing ``params["_strategy"]`` /
+    ``TuneResult.working_size_selector`` pattern so a future agent or
+    operator can inspect *why* auto-apply did or did not apply the narrowed
+    bounds without re-deriving it.
+
+    Attributes
+    ----------
+    fit : MosaicFit
+        The winning fit — the candidate on ``applied == "candidate"``, the
+        default-bounds baseline on any fallback (``applied ==
+        "baseline-default"``).
+    applied : {"candidate", "baseline-default"}
+        Which bounds the returned ``fit`` used.
+    recommendation : BoundsRecommendation or None
+        The narrowed search space from :func:`recommend_bounds`. ``None`` on
+        a fallback that fired before a recommendation could be produced
+        (e.g. ``tune-failed``).
+    gate : dict
+        Explainability sub-dict with keys ``gate_verdict``, ``applied``,
+        ``no_regression_margin``, ``failing_metrics``, ``fallback_reason``,
+        ``deltas``, ``baseline``, ``candidate``, ``recommendation`` (see the
+        observability contract in docs/auto_apply_safety_gate.md).
+    """
+
+    fit: MosaicFit
+    applied: str
+    recommendation: BoundsRecommendation | None
+    gate: dict[str, Any]
+
+    def __init__(
+        self,
+        fit: MosaicFit,
+        *,
+        applied: str,
+        recommendation: BoundsRecommendation | None,
+        gate: dict[str, Any],
+    ) -> None:
+        """Initialise an :class:`AutoTuneResult`.
+
+        Parameters
+        ----------
+        fit : MosaicFit
+            The winning fit (candidate on pass, baseline on fallback).
+        applied : {"candidate", "baseline-default"}
+            Which bounds ``fit`` used.
+        recommendation : BoundsRecommendation or None
+            The narrowed search space, or ``None`` when tuning failed.
+        gate : dict
+            The explainability sub-dict (observability contract).
+        """
+        object.__setattr__(self, "fit", fit)
+        object.__setattr__(self, "applied", str(applied))
+        object.__setattr__(self, "recommendation", recommendation)
+        object.__setattr__(self, "gate", dict(gate))
+
+
+def _baseline_bounds_kwargs(
+    *,
+    backend: str,
+    device: str | None,
+) -> dict[str, Any]:
+    """Build the default-bounds BaSiC kwargs for the auto-apply baseline floor.
+
+    Per the S02 integration contract the baseline is the production default an
+    operator gets without tuning: ``working_size=128``,
+    ``estimate_darkfield=True``, and ``l_s`` / ``l_d`` left ``None`` so
+    :meth:`BaSiC.prepare` auto-tunes them.
+    """
+    kw: dict[str, Any] = {"working_size": 128, "estimate_darkfield": True, "backend": backend}
+    if device is not None:
+        kw["device"] = device
+    return kw
+
+
+def _deltas_to_jsonable(deltas_aggregate: dict[str, MetricDelta]) -> dict[str, dict[str, float]]:
+    """Serialise aggregate :class:`MetricDelta` values to plain dicts.
+
+    Mirrors the shape in the observability contract::
+
+        {"seam_l1": {"abs_delta": ..., "rel_delta": ...}, ...}
+    """
+    return {m: {"abs_delta": float(d.abs_delta), "rel_delta": float(d.rel_delta)} for m, d in deltas_aggregate.items()}
+
+
+def auto_tune(
+    mosaic: MosaicGrid,
+    *,
+    n_trials: int = 50,
+    z_subsample: int = 4,
+    search_space: dict[str, list | tuple] | None = None,
+    margin: float = 0.10,
+    no_regression_margin: float = NO_REGRESSION_MARGIN,
+    seed: int = 0,
+    n_workers: int | None = None,
+    backend: str = "numpy",
+    device: str | None = None,
+    max_tiles: int | None = 64,
+    n_extra_rows: int = 0,
+    objective: Literal["seam_l1", "curvature", "composite"] = "seam_l1",
+    verbose: bool = False,
+) -> AutoTuneResult:
+    """Tune BaSiC and *auto-apply* the narrowed bounds under a safety gate.
+
+    Runs the full D023 auto-apply pipeline (M008/S02). The default-bounds
+    baseline fit is computed *first* so it is available as the fallback floor
+    for every failure path (the baseline does not depend on ``tune()``):
+
+    1. ``baseline_fit = fit_mosaic(mosaic, basic_kwargs=<BaSiC defaults>)``.
+    2. ``result = tune(mosaic, ...)`` — one Optuna study.
+    3. ``rec = recommend_bounds(result, margin=margin)`` — narrowed
+       ``search_space`` plus a degeneracy guard.
+    4. ``candidate_fit = fit_mosaic(mosaic, basic_kwargs=result.best_params)``.
+    5. Build :class:`QualityReport` for both fits and compute deltas.
+    6. Apply the non-regression margin rule over :data:`FIRST_CLASS_METRICS`.
+    7. Return an :class:`AutoTuneResult` whose ``.fit`` is the candidate on a
+       ``"pass"`` and the baseline on a ``"fail"`` / fallback.
+
+    The total cost is the ``tune()`` trial budget plus **exactly two**
+    full-volume fits; it never runs a repeated ``mean+3std`` calibration and
+    never calls ``calibrate_tolerances`` / ``evaluate_quality_gate`` (D015
+    distinction). It adds no solver code and touches no BaSiC invariant (K02).
+
+    Parameters
+    ----------
+    mosaic : MosaicGrid
+        The mosaic grid to tune and auto-correct.
+    n_trials : int
+        Forwarded verbatim to :func:`tune`; the number of Optuna trials.
+    z_subsample : int
+        Forwarded verbatim to :func:`tune`; the number of z-levels sampled
+        per trial (evenly spaced).
+    search_space : dict or None
+        Forwarded verbatim to :func:`tune`; override the default search
+        space (categorical → list; continuous → ``(low, high)`` tuple).
+    margin : float
+        Relative width of the near-optimal band for :func:`recommend_bounds`.
+    no_regression_margin : float
+        Fixed non-regression margin (D023). The candidate must not be
+        measurably worse than the baseline on either first-class metric beyond
+        this margin. Default :data:`NO_REGRESSION_MARGIN` (``0.0``).
+    seed : int
+        Forwarded verbatim to :func:`tune`; random seed for reproducibility.
+    n_workers : int or None
+        Forwarded verbatim to :func:`tune`; threads evaluating z-levels in
+        parallel within each trial (``None`` → ``cpu_count() - 2``).
+    backend : str
+        Forwarded verbatim to :func:`tune`; compute backend for BaSiC
+        (``"numpy"`` or ``"torch"``).
+    device : str or None
+        Forwarded verbatim to :func:`tune`; Torch device string
+        (e.g. ``"cuda:0"``). Ignored when *backend* is ``"numpy"``.
+    max_tiles : int or None
+        Forwarded verbatim to :func:`tune`; maximum number of tiles
+        subsampled for the per-trial seam-metric objective.
+    n_extra_rows : int
+        Forwarded verbatim to :func:`tune`; leading rows per tile dropped
+        before fitting (galvo fly-back artefact).
+    objective : {"seam_l1", "curvature", "composite"}
+        Forwarded verbatim to :func:`tune`; the objective minimised during
+        the Optuna search.
+    verbose : bool
+        Forwarded verbatim to :func:`tune`; enable Optuna logging and
+        progress bars.
+
+    Returns
+    -------
+    AutoTuneResult
+        The winning fit plus the ``gate`` explainability sub-dict.
+
+    Raises
+    ------
+    AutoApplyError
+        If the *baseline* (default-bounds) fit itself fails — there is then no
+        safe floor to return. All other failure paths fall back to the
+        baseline fit with a recorded ``fallback_reason``.
+
+    Notes
+    -----
+    This is a distinct mechanism from both the advisory
+    :func:`recommend_bounds` (D015) and the ``mean+3std`` release gate in
+    :mod:`linum_basic.benchmark.quality`. See docs/auto_apply_safety_gate.md.
+    """
+    # --- Step 1: baseline (default-bounds) full-volume fit ---
+    # Computed FIRST so it is the fallback floor for every downstream failure
+    # path (tune-failed, degenerate-trial-history, candidate-fit-failed, ...).
+    # The baseline does not depend on tune(), so computing it first adds no
+    # cost and makes the full fallback-to-defaults contract satisfiable.
+    # A baseline-fit failure is the one path that cannot fall back: raise.
+    baseline_bounds = _baseline_bounds_kwargs(backend=backend, device=device)
+    try:
+        baseline_fit = fit_mosaic(
+            mosaic,
+            basic_kwargs=baseline_bounds,
+            n_extra_rows=n_extra_rows,
+            n_workers=n_workers,
+            verbose=verbose,
+        )
+    except Exception as exc:
+        msg = f"auto_tune baseline (default-bounds) fit failed: {exc!r}"
+        raise AutoApplyError(msg, cause=exc) from exc
+
+    baseline_report = compute_quality_report(mosaic, baseline_fit)
+
+    # Helper to build a fallback result using the (already-computed) baseline
+    # fit as the floor. Defined here so every fallback path resolves through
+    # one location, satisfying the fallback-to-defaults contract.
+    def _fallback(reason: str, *, recommendation: BoundsRecommendation | None) -> AutoTuneResult:
+        gate = {
+            "gate_verdict": "fallback",
+            "applied": "baseline-default",
+            "no_regression_margin": float(no_regression_margin),
+            "failing_metrics": [],
+            "fallback_reason": reason,
+            "deltas": {},
+            "baseline": {
+                "bounds": _BASELINE_BOUNDS_LABEL,
+                "aggregates": dict(baseline_report.aggregates),
+            },
+            "candidate": {},
+            "recommendation": _recommendation_jsonable(recommendation),
+        }
+        return AutoTuneResult(
+            baseline_fit,
+            applied="baseline-default",
+            recommendation=recommendation,
+            gate=gate,
+        )
+
+    # --- Step 2: tune (one Optuna study) ---
+    # tune() can fail (Optuna ImportError, every trial pruned so no
+    # study.best_trial -> ValueError, OOM in a trial fit). Fall back to the
+    # baseline fit (design contract row: tune-failed).
+    try:
+        result = tune(
+            mosaic,
+            n_trials=n_trials,
+            z_subsample=z_subsample,
+            search_space=search_space,
+            seed=seed,
+            n_workers=n_workers,
+            backend=backend,
+            device=device,
+            max_tiles=max_tiles,
+            n_extra_rows=n_extra_rows,
+            objective=objective,
+            verbose=verbose,
+        )
+    except Exception:
+        return _fallback("tune-failed", recommendation=None)
+
+    # --- Step 3: recommend_bounds (narrowed search space) ---
+    recommendation: BoundsRecommendation | None
+    try:
+        recommendation = recommend_bounds(result, margin=margin)
+    except ValueError:
+        # recommend_bounds raises ValueError on a degenerate trial history
+        # (no COMPLETE trials) or an invalid margin.
+        if not 0.0 <= margin <= 1.0:
+            return _fallback("invalid-margin", recommendation=None)
+        return _fallback("degenerate-trial-history", recommendation=None)
+
+    # --- Step 4: candidate (narrowed-bounds) full-volume fit ---
+    candidate_params = dict(result.best_params)
+    candidate_bounds = {"backend": backend}
+    if device is not None:
+        candidate_bounds["device"] = device
+    try:
+        candidate_fit = fit_mosaic(
+            mosaic,
+            basic_kwargs={**candidate_params, **candidate_bounds},
+            n_extra_rows=n_extra_rows,
+            n_workers=n_workers,
+            verbose=verbose,
+        )
+    except Exception:
+        return _fallback("candidate-fit-failed", recommendation=recommendation)
+
+    # --- Step 5: quality reports + deltas ---
+    try:
+        candidate_report = compute_quality_report(mosaic, candidate_fit)
+        deltas = compute_deltas(candidate_report, baseline_report)
+    except Exception:
+        return _fallback("quality-report-failed", recommendation=recommendation)
+
+    deltas_aggregate: dict[str, MetricDelta] = deltas["aggregate"]
+
+    # --- Step 6: non-regression gate ---
+    failing_metrics, gate_verdict = _evaluate_regression(deltas_aggregate, margin=no_regression_margin)
+
+    if gate_verdict == "fail":
+        # Regression detected: fall back to the baseline, recording which
+        # metric(s) regressed (the design requires K01 — both metrics).
+        gate = {
+            "gate_verdict": "fail",
+            "applied": "baseline-default",
+            "no_regression_margin": float(no_regression_margin),
+            "failing_metrics": list(failing_metrics),
+            "fallback_reason": "regression-detected",
+            "deltas": _deltas_to_jsonable(deltas_aggregate),
+            "baseline": {
+                "bounds": _BASELINE_BOUNDS_LABEL,
+                "aggregates": dict(baseline_report.aggregates),
+            },
+            "candidate": {
+                "bounds": "tune-best-params",
+                "best_params": dict(candidate_params),
+                "aggregates": dict(candidate_report.aggregates),
+            },
+            "recommendation": _recommendation_jsonable(recommendation),
+        }
+        return AutoTuneResult(
+            baseline_fit,
+            applied="baseline-default",
+            recommendation=recommendation,
+            gate=gate,
+        )
+
+    # --- gate_verdict == "pass": apply the candidate ---
+    gate = {
+        "gate_verdict": "pass",
+        "applied": "candidate",
+        "no_regression_margin": float(no_regression_margin),
+        "failing_metrics": [],
+        "fallback_reason": None,
+        "deltas": _deltas_to_jsonable(deltas_aggregate),
+        "baseline": {
+            "bounds": _BASELINE_BOUNDS_LABEL,
+            "aggregates": dict(baseline_report.aggregates),
+        },
+        "candidate": {
+            "bounds": "tune-best-params",
+            "best_params": dict(candidate_params),
+            "aggregates": dict(candidate_report.aggregates),
+        },
+        "recommendation": _recommendation_jsonable(recommendation),
+    }
+    return AutoTuneResult(
+        candidate_fit,
+        applied="candidate",
+        recommendation=recommendation,
+        gate=gate,
+    )
+
+
+def _recommendation_jsonable(rec: BoundsRecommendation | None) -> dict[str, Any]:
+    """Serialise a :class:`BoundsRecommendation` for the gate sub-dict.
+
+    ``None`` (tuning failed before a recommendation) becomes an empty dict so
+    the gate sub-dict always carries the ``recommendation`` key.
+    """
+    if rec is None:
+        return {}
+    space: dict[str, Any] = {}
+    for key, val in rec.search_space.items():
+        space[key] = list(val) if isinstance(val, tuple) else val
+    return {
+        "search_space": space,
+        "n_near_optimal": int(rec.n_near_optimal),
+        "margin": float(rec.margin),
+        "best_value": float(rec.best_value),
+    }

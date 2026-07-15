@@ -52,7 +52,15 @@ from linum_basic.data import load_sample_image
 from linum_basic.fit import MosaicFit, apply_fit, fit_mosaic
 from linum_basic.metrics import evaluate_correction, evaluate_correction_volume
 from linum_basic.mosaic import MosaicGrid, SeamPair
-from linum_basic.tuning import BoundsRecommendation, TuneResult, recommend_bounds, tune
+from linum_basic.tuning import (
+    AutoApplyError,
+    AutoTuneResult,
+    BoundsRecommendation,
+    TuneResult,
+    auto_tune,
+    recommend_bounds,
+    tune,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -127,6 +135,8 @@ def correct_images(
 
 __version__ = "2.0.0"
 __all__ = [
+    "AutoApplyError",
+    "AutoTuneResult",
     "BaSiC",
     "BoundsRecommendation",
     "GaussianParams",
@@ -136,6 +146,7 @@ __all__ = [
     "TuneResult",
     "__version__",
     "apply_fit",
+    "auto_tune",
     "correct_images",
     "curvature_depth_profile",
     "evaluate_correction",

@@ -11,12 +11,21 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from linum_basic.benchmark.quality import (
+    MetricDelta,
+    PerZMetricRow,
+    QualityReport,
+)
 from linum_basic.core import dct_energy
 from linum_basic.mosaic import MosaicGrid
 from linum_basic.tuning import (
+    NO_REGRESSION_MARGIN,
+    AutoApplyError,
+    AutoTuneResult,
     BoundsRecommendation,
     TuneResult,
     _subsample_tiles,
+    auto_tune,
     recommend_bounds,
     tune,
 )
@@ -899,3 +908,343 @@ class TestTuneWorkingSizeAuto:
             seed=0,
         )
         assert call_count["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# auto_tune — guarded auto-apply safety gate (M008/S02, D023)
+# ---------------------------------------------------------------------------
+# These tests exercise linum_basic.tuning.auto_tune -> AutoTuneResult against
+# the D023 integration contract in docs/auto_apply_safety_gate.md:
+#   - happy-path gate pass (candidate applied),
+#   - regression-detected gate fail (baseline returned),
+#   - all five fallback_reason rows in the failure table,
+#   - baseline-fit failure raises AutoApplyError (the one non-fallback path),
+#   - the cost bound: exactly 2 full-volume fit_mosaic calls, never a
+#     calibrate_tolerances / evaluate_quality_gate call.
+
+_REQUIRED_GATE_KEYS = frozenset(
+    {
+        "gate_verdict",
+        "applied",
+        "no_regression_margin",
+        "failing_metrics",
+        "fallback_reason",
+        "deltas",
+        "baseline",
+        "candidate",
+        "recommendation",
+    }
+)
+
+
+def _fake_quality_report(*, seam_l1: float, seam_curvature: float) -> QualityReport:
+    """Build a minimal valid QualityReport for delta control."""
+    return QualityReport(
+        rows=(PerZMetricRow(z=0, seam_l1=seam_l1, seam_curvature=seam_curvature),),
+        aggregates={"seam_l1": seam_l1, "seam_curvature": seam_curvature},
+        metric_definition_version="1",
+    )
+
+
+def _deltas(*, seam_l1_rel: float, seam_curvature_rel: float) -> dict:
+    """Build a compute_deltas()-shaped dict with controlled relative deltas."""
+    return {
+        "aggregate": {
+            "seam_l1": MetricDelta(abs_delta=seam_l1_rel, rel_delta=seam_l1_rel),
+            "seam_curvature": MetricDelta(abs_delta=seam_curvature_rel, rel_delta=seam_curvature_rel),
+        },
+        "per_z": [],
+    }
+
+
+class TestAutoTuneHappyPath:
+    """End-to-end happy path: real tune + 2 real fits on the synthetic mosaic."""
+
+    def test_returns_autotuneresult_with_gate_subdict(self, synthetic_mosaic):
+        mosaic, _ = synthetic_mosaic
+        result = auto_tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=2,
+            search_space=_TEST_SEARCH_SPACE,
+            seed=0,
+        )
+        assert isinstance(result, AutoTuneResult)
+        assert result.applied in {"candidate", "baseline-default"}
+        gate = result.gate
+        assert set(gate.keys()) >= _REQUIRED_GATE_KEYS
+        assert gate["no_regression_margin"] == NO_REGRESSION_MARGIN
+        # gate_verdict must be consistent with applied
+        if result.applied == "candidate":
+            assert gate["gate_verdict"] == "pass"
+            assert gate["fallback_reason"] is None
+        else:
+            assert gate["gate_verdict"] in {"fail", "fallback"}
+            assert gate["fallback_reason"] is not None
+        # recommendation sub-dict is always present (populated on pass/fail,
+        # empty dict only on pre-recommendation fallbacks).
+        assert isinstance(gate["recommendation"], dict)
+
+    def test_fit_is_mosaicfit_shaped(self, synthetic_mosaic):
+        mosaic, _ = synthetic_mosaic
+        result = auto_tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=2,
+            search_space=_TEST_SEARCH_SPACE,
+            seed=0,
+        )
+        # The winning fit carries per-z flatfields for every mosaic depth.
+        assert result.fit.flatfields.shape == (mosaic.n_z, 12, 12)
+
+
+class TestAutoTuneGatePass:
+    """Deterministic gate-pass: candidate does not regress -> applied."""
+
+    def test_candidate_applied_on_no_regression(self, synthetic_mosaic, monkeypatch):
+        mosaic, _ = synthetic_mosaic
+        monkeypatch.setattr(
+            "linum_basic.tuning.compute_deltas",
+            lambda cand, base: _deltas(seam_l1_rel=-0.1, seam_curvature_rel=0.0),
+        )
+        result = auto_tune(
+            mosaic,
+            n_trials=2,
+            z_subsample=2,
+            search_space=_TEST_SEARCH_SPACE,
+            seed=0,
+        )
+        assert result.applied == "candidate"
+        assert result.gate["gate_verdict"] == "pass"
+        assert result.gate["fallback_reason"] is None
+        assert result.gate["failing_metrics"] == []
+        assert result.gate["applied"] == "candidate"
+
+    def test_equal_quality_is_not_rejected_as_regression(self, synthetic_mosaic, monkeypatch):
+        """rel_delta == 0.0 must pass (FLOAT_NOISE_EPS absorbs jitter)."""
+        mosaic, _ = synthetic_mosaic
+        monkeypatch.setattr(
+            "linum_basic.tuning.compute_deltas",
+            lambda cand, base: _deltas(seam_l1_rel=0.0, seam_curvature_rel=0.0),
+        )
+        result = auto_tune(mosaic, n_trials=2, z_subsample=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        assert result.applied == "candidate"
+        assert result.gate["gate_verdict"] == "pass"
+
+
+class TestAutoTuneGateFailRegression:
+    """Deterministic regression-detected gate fail -> baseline returned."""
+
+    def test_regression_on_both_metrics_returns_baseline(self, synthetic_mosaic, monkeypatch):
+        mosaic, _ = synthetic_mosaic
+        monkeypatch.setattr(
+            "linum_basic.tuning.compute_deltas",
+            lambda cand, base: _deltas(seam_l1_rel=0.5, seam_curvature_rel=0.5),
+        )
+        result = auto_tune(mosaic, n_trials=2, z_subsample=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        assert result.applied == "baseline-default"
+        gate = result.gate
+        assert gate["gate_verdict"] == "fail"
+        assert gate["fallback_reason"] == "regression-detected"
+        assert set(gate["failing_metrics"]) == {"seam_l1", "seam_curvature"}
+        # deltas are populated and serialised to plain dicts on a fail.
+        assert "seam_l1" in gate["deltas"]
+        assert gate["deltas"]["seam_l1"]["rel_delta"] == pytest.approx(0.5)
+
+    def test_regression_on_single_metric_fails_gate(self, synthetic_mosaic, monkeypatch):
+        """Regressing seam_l1 alone is enough to fail (both metrics are gated)."""
+        mosaic, _ = synthetic_mosaic
+        monkeypatch.setattr(
+            "linum_basic.tuning.compute_deltas",
+            lambda cand, base: _deltas(seam_l1_rel=0.2, seam_curvature_rel=-0.3),
+        )
+        result = auto_tune(mosaic, n_trials=2, z_subsample=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        assert result.applied == "baseline-default"
+        assert result.gate["fallback_reason"] == "regression-detected"
+        assert result.gate["failing_metrics"] == ["seam_l1"]
+
+
+class TestAutoTuneFallbackContract:
+    """Every failure-table row resolves to applied='baseline-default' with the
+    correct fallback_reason, EXCEPT baseline-fit failure which raises."""
+
+    def test_tune_failed_falls_back(self, synthetic_mosaic, monkeypatch):
+        mosaic, _ = synthetic_mosaic
+
+        def _boom(*a, **kw):
+            raise RuntimeError("optuna exploded (simulated)")
+
+        monkeypatch.setattr("linum_basic.tuning.tune", _boom)
+        result = auto_tune(mosaic, n_trials=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        assert result.applied == "baseline-default"
+        assert result.gate["gate_verdict"] == "fallback"
+        assert result.gate["fallback_reason"] == "tune-failed"
+        # Tune failed before a recommendation existed.
+        assert result.recommendation is None
+        assert result.gate["recommendation"] == {}
+
+    def test_degenerate_trial_history_falls_back(self, synthetic_mosaic, monkeypatch):
+        mosaic, _ = synthetic_mosaic
+
+        def _degenerate(*a, **kw):
+            raise ValueError("recommend_bounds needs at least one COMPLETE trial")
+
+        monkeypatch.setattr("linum_basic.tuning.recommend_bounds", _degenerate)
+        result = auto_tune(mosaic, n_trials=2, search_space=_TEST_SEARCH_SPACE, seed=0, margin=0.10)
+        assert result.applied == "baseline-default"
+        assert result.gate["fallback_reason"] == "degenerate-trial-history"
+
+    def test_invalid_margin_falls_back(self, synthetic_mosaic, monkeypatch):
+        mosaic, _ = synthetic_mosaic
+
+        def _bad_margin(*a, **kw):
+            raise ValueError("margin must be in [0, 1]")
+
+        monkeypatch.setattr("linum_basic.tuning.recommend_bounds", _bad_margin)
+        result = auto_tune(mosaic, n_trials=2, search_space=_TEST_SEARCH_SPACE, seed=0, margin=1.5)
+        assert result.applied == "baseline-default"
+        assert result.gate["fallback_reason"] == "invalid-margin"
+
+    def test_candidate_fit_failed_falls_back(self, synthetic_mosaic, monkeypatch):
+        mosaic, _ = synthetic_mosaic
+        call = {"n": 0}
+        real = __import__("linum_basic.tuning", fromlist=["fit_mosaic"]).fit_mosaic
+
+        def _fail_second(m, **kw):
+            call["n"] += 1
+            if call["n"] == 2:  # second call is the candidate fit
+                raise RuntimeError("OOM in candidate fit (simulated)")
+            return real(m, **kw)
+
+        monkeypatch.setattr("linum_basic.tuning.fit_mosaic", _fail_second)
+        result = auto_tune(mosaic, n_trials=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        assert result.applied == "baseline-default"
+        assert result.gate["fallback_reason"] == "candidate-fit-failed"
+        # A recommendation existed (tune + recommend_bounds succeeded).
+        assert result.recommendation is not None
+
+    def test_quality_report_failed_falls_back(self, synthetic_mosaic, monkeypatch):
+        mosaic, _ = synthetic_mosaic
+
+        def _boom(*a, **kw):
+            raise ValueError("z-index set mismatch")
+
+        monkeypatch.setattr("linum_basic.tuning.compute_deltas", _boom)
+        result = auto_tune(mosaic, n_trials=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        assert result.applied == "baseline-default"
+        assert result.gate["fallback_reason"] == "quality-report-failed"
+
+    def test_baseline_fit_failed_raises_autoapplyerror(self, synthetic_mosaic, monkeypatch):
+        """Baseline-fit failure is the one path that does NOT fall back."""
+        mosaic, _ = synthetic_mosaic
+        cause = RuntimeError("unreadable tile (simulated)")
+
+        def _always_fail(m, **kw):
+            raise cause
+
+        monkeypatch.setattr("linum_basic.tuning.fit_mosaic", _always_fail)
+        with pytest.raises(AutoApplyError) as excinfo:
+            auto_tune(mosaic, n_trials=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        # The typed exception carries the underlying cause.
+        assert excinfo.value.cause is cause
+
+
+class TestAutoTuneCostBound:
+    """D023 cost bound: exactly 2 full-volume fit_mosaic calls per auto_tune,
+    and never a calibrate_tolerances / evaluate_quality_gate call."""
+
+    def test_exactly_two_fit_calls_on_happy_path(self, synthetic_mosaic, monkeypatch):
+        import linum_basic.tuning as tuning_mod
+
+        mosaic, _ = synthetic_mosaic
+        real = tuning_mod.fit_mosaic
+        calls = {"n": 0}
+
+        def _count(m, **kw):
+            calls["n"] += 1
+            return real(m, **kw)
+
+        monkeypatch.setattr(tuning_mod, "fit_mosaic", _count)
+        auto_tune(mosaic, n_trials=2, z_subsample=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        assert calls["n"] == 2
+
+    def test_exactly_two_fit_calls_on_regression_fallback(self, synthetic_mosaic, monkeypatch):
+        """A regression-detected fallback adds NO extra full-volume solve."""
+        import linum_basic.tuning as tuning_mod
+
+        mosaic, _ = synthetic_mosaic
+        real = tuning_mod.fit_mosaic
+        calls = {"n": 0}
+
+        def _count(m, **kw):
+            calls["n"] += 1
+            return real(m, **kw)
+
+        monkeypatch.setattr(tuning_mod, "fit_mosaic", _count)
+        monkeypatch.setattr(
+            tuning_mod,
+            "compute_deltas",
+            lambda cand, base: _deltas(seam_l1_rel=0.9, seam_curvature_rel=0.9),
+        )
+        auto_tune(mosaic, n_trials=2, z_subsample=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        assert calls["n"] == 2
+
+    def test_no_release_gate_machinery_invoked(self, synthetic_mosaic, monkeypatch):
+        """auto_tune must never call the mean+3std release-gate functions."""
+        import linum_basic.benchmark.quality as quality_mod
+
+        mosaic, _ = synthetic_mosaic
+        for fn_name in ("calibrate_tolerances", "evaluate_quality_gate"):
+            called = {"hit": False}
+            orig = getattr(quality_mod, fn_name)
+
+            def _spy(*a, _orig=orig, _c=called, **kw):
+                _c["hit"] = True
+                return _orig(*a, **kw)
+
+            monkeypatch.setattr(quality_mod, fn_name, _spy)
+            auto_tune(mosaic, n_trials=2, z_subsample=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+            assert not called["hit"], f"{fn_name} must never be called by auto_tune"
+
+
+class TestAutoTuneObservability:
+    """The gate sub-dict matches the D023 observability contract shape."""
+
+    def test_pass_gate_carries_baseline_and_candidate_aggregates(self, synthetic_mosaic, monkeypatch):
+        mosaic, _ = synthetic_mosaic
+        monkeypatch.setattr(
+            "linum_basic.tuning.compute_deltas",
+            lambda cand, base: _deltas(seam_l1_rel=-0.05, seam_curvature_rel=-0.05),
+        )
+        result = auto_tune(mosaic, n_trials=2, z_subsample=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        gate = result.gate
+        assert gate["gate_verdict"] == "pass"
+        assert set(gate["baseline"].keys()) >= {"bounds", "aggregates"}
+        assert set(gate["candidate"].keys()) >= {"bounds", "aggregates", "best_params"}
+        assert "seam_l1" in gate["baseline"]["aggregates"]
+        assert "seam_curvature" in gate["candidate"]["aggregates"]
+        assert set(gate["deltas"]) == {"seam_l1", "seam_curvature"}
+
+    def test_recommendation_subdict_serialised_to_plain_dict(self, synthetic_mosaic, monkeypatch):
+        mosaic, _ = synthetic_mosaic
+        monkeypatch.setattr(
+            "linum_basic.tuning.compute_deltas",
+            lambda cand, base: _deltas(seam_l1_rel=-0.05, seam_curvature_rel=-0.05),
+        )
+        result = auto_tune(mosaic, n_trials=2, z_subsample=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        rec = result.gate["recommendation"]
+        assert isinstance(rec, dict)
+        assert "search_space" in rec
+        assert "n_near_optimal" in rec
+
+    def test_autotuneresult_is_immutable(self, synthetic_mosaic, monkeypatch):
+        from dataclasses import FrozenInstanceError
+
+        mosaic, _ = synthetic_mosaic
+        monkeypatch.setattr(
+            "linum_basic.tuning.compute_deltas",
+            lambda cand, base: _deltas(seam_l1_rel=-0.05, seam_curvature_rel=-0.05),
+        )
+        result = auto_tune(mosaic, n_trials=2, z_subsample=2, search_space=_TEST_SEARCH_SPACE, seed=0)
+        with pytest.raises(FrozenInstanceError):
+            result.applied = "tampered"  # type: ignore[misc]

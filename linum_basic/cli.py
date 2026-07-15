@@ -18,6 +18,10 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from linum_basic.mosaic import MosaicGrid
 
 # ---------------------------------------------------------------------------
 # Shared argument helpers
@@ -303,6 +307,18 @@ def _add_tune_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ign
         type=Path,
         help="Write the recommended narrowed search-space bounds (recommend_bounds) as JSON to this file.",
     )
+    io.add_argument(
+        "--auto-apply",
+        action="store_true",
+        default=False,
+        help=(
+            "Run the auto-apply safety gate: fit one default-bounds baseline and one "
+            "narrowed-bounds candidate, gate the candidate on full-volume seam_l1 + "
+            "seam_curvature deltas (fixed 0.0 non-regression margin), and write the "
+            "winning fit to --apply (or report the fallback). Independent of "
+            "--bounds-json / --bounds-margin / --out-json / --apply."
+        ),
+    )
 
     tuning = p.add_argument_group("Tuning")
     tuning.add_argument("--n-trials", metavar="N", type=int, default=50, help="Number of Optuna trials.")
@@ -360,14 +376,110 @@ def _add_tune_subcommand(subs: argparse._SubParsersAction) -> None:  # type: ign
     p.add_argument("--verbose", action="store_true", default=False, help="Enable Optuna logging and progress bars.")
 
 
+def _run_auto_apply(args: argparse.Namespace, mosaic: MosaicGrid) -> int:
+    """Run the D023 auto-apply safety gate via :func:`auto_tune` and write outputs.
+
+    Delegates the full pipeline (baseline fit + tune + recommend_bounds +
+    candidate fit + non-regression gate) to :func:`auto_tune`, then composes
+    with the existing output flags: ``--out-json`` writes the candidate best
+    params, ``--bounds-json`` writes the narrowed recommendation, and
+    ``--apply`` writes the *winning* fit (candidate on ``pass``, baseline on
+    fallback). ``--auto-apply`` is independent of those flags but composes
+    with all of them.
+    """
+    from linum_basic.tuning import AutoApplyError, auto_tune
+
+    try:
+        at = auto_tune(
+            mosaic,
+            n_trials=args.n_trials,
+            z_subsample=args.z_subsample,
+            margin=args.bounds_margin,
+            seed=args.seed,
+            n_workers=args.n_jobs,
+            backend=args.backend,
+            device=args.device,
+            max_tiles=args.max_tiles if args.max_tiles > 0 else None,
+            n_extra_rows=args.n_extra_rows,
+            verbose=args.verbose,
+        )
+    except AutoApplyError as exc:
+        print(f"error: auto-apply failed: {exc}", file=sys.stderr)
+        return 1
+
+    gate = at.gate
+
+    if args.verbose:
+        print(f"Auto-apply gate verdict: {gate['gate_verdict']}")
+        print(f"  applied: {gate['applied']}")
+        if gate.get("failing_metrics"):
+            print(f"  failing_metrics: {', '.join(gate['failing_metrics'])}")
+        if gate.get("fallback_reason") is not None:
+            print(f"  fallback_reason: {gate['fallback_reason']}")
+        deltas = gate.get("deltas") or {}
+        for metric in ("seam_l1", "seam_curvature"):
+            if metric in deltas:
+                d = deltas[metric]
+                print(f"  {metric}: abs_delta={d['abs_delta']:.6f} rel_delta={d['rel_delta']:.6f}")
+
+    # ``--out-json``: write the candidate best params when available. On a
+    # fallback that fired before a candidate existed (e.g. tune-failed) the
+    # candidate sub-dict is empty, so skip the write.
+    candidate_meta = gate.get("candidate") or {}
+    if args.out_json and candidate_meta.get("best_params"):
+        import json
+
+        args.out_json.parent.mkdir(parents=True, exist_ok=True)
+        with args.out_json.open("w") as fh:
+            json.dump(candidate_meta["best_params"], fh, indent=2)
+        if args.verbose:
+            print(f"Wrote best params to '{args.out_json}'.")
+
+    # ``--bounds-json``: write the narrowed recommendation when one was produced.
+    rec_meta = gate.get("recommendation") or {}
+    if args.bounds_json and rec_meta:
+        import json
+
+        args.bounds_json.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "search_space": rec_meta.get("search_space", {}),
+            "best_value": rec_meta.get("best_value"),
+            "n_near_optimal": rec_meta.get("n_near_optimal"),
+            "margin": rec_meta.get("margin"),
+        }
+        with args.bounds_json.open("w") as fh:
+            json.dump(payload, fh, indent=2)
+        if args.verbose:
+            print(f"Wrote recommended bounds to '{args.bounds_json}'.")
+
+    # ``--apply``: write the *winning* fit (candidate on pass, baseline on
+    # fallback). The safety gate guarantees this is never worse than the
+    # default-bounds baseline.
+    if args.apply:
+        from linum_basic.fit import save_corrected
+
+        save_corrected(mosaic, at.fit, args.apply, input_path=args.input, overwrite=True)
+        if args.verbose:
+            print(f"Saved corrected mosaic to '{args.apply}' (applied={at.applied}).")
+
+    return 0
+
+
 def _run_tune(args: argparse.Namespace) -> int:
     if (rc := _validate_device(args.device)) is not None:
         return rc
 
     from linum_basic.mosaic import MosaicGrid
-    from linum_basic.tuning import recommend_bounds, tune
 
     mosaic = MosaicGrid.from_ome_zarr(str(args.input), overlap_fraction=args.overlap)
+
+    # ``--auto-apply`` runs the full D023 pipeline via auto_tune() and composes
+    # with --out-json / --bounds-json / --apply / --verbose. It short-circuits
+    # the manual tune()+recommend_bounds() path below to avoid double-tuning.
+    if getattr(args, "auto_apply", False):
+        return _run_auto_apply(args, mosaic)
+
+    from linum_basic.tuning import recommend_bounds, tune
 
     run_full_fit = args.apply is not None
     result = tune(

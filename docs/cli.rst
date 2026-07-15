@@ -168,6 +168,9 @@ seam-consistency L1 metric over a subsample of z-levels.
    * - ``--bounds-json FILE``
      - ``None``
      - Write the recommended narrowed search-space bounds (``recommend_bounds``) as JSON.
+   * - ``--auto-apply``
+     - off
+     - Run the auto-apply safety gate: fit one default-bounds baseline and one narrowed-bounds candidate, gate the candidate on full-volume ``seam_l1`` + ``seam_curvature`` deltas (fixed 0.0 non-regression margin), and write the winning fit to ``--apply`` (or report the fallback). Independent of ``--bounds-json`` / ``--bounds-margin`` / ``--out-json`` / ``--apply``.
    * - ``--n-trials N``
      - ``50``
      - Number of Optuna trials.
@@ -240,6 +243,27 @@ The ``bounds.json`` payload carries a ``search_space`` dict (in the
 scale-invariant ``l_s_divisor`` / ``l_d_divisor`` parametrisation) that plugs
 straight back into a follow-up ``tune`` call via the library's ``tune(...)``
 ``search_space=`` argument.
+
+Tune and auto-apply under the safety gate (D023)::
+
+    basic tune \
+        --input mosaic.ome.zarr \
+        --n-trials 50 \
+        --auto-apply \
+        --apply corrected.ome.zarr \
+        --verbose
+
+With ``--auto-apply``, the command runs the full pipeline — a default-bounds
+baseline fit, one Optuna study, a narrowed-bounds candidate fit, and a
+non-regression gate on full-volume ``seam_l1`` + ``seam_curvature`` — then
+writes the *winning* fit (the candidate on a pass, the baseline on any
+fallback) to ``--apply``. ``--auto-apply`` composes with ``--out-json``
+(candidate best params), ``--bounds-json`` (the narrowed recommendation), and
+``--verbose`` (which prints the gate verdict, failing metrics, fallback
+reason, and per-metric deltas). If the default-bounds baseline fit itself
+fails, the command exits 1 with an ``AutoApplyError`` message rather than
+writing an undefined correction. See :doc:`auto_apply_safety_gate` for the
+full design contract.
 
 Distributed tuning with persistent SQLite storage::
 
