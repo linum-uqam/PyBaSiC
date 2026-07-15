@@ -638,6 +638,32 @@ validation run (see {doc}`gpu_smoke` for the precedent this mirrors).
 <!-- Operators: append new entries below this marker. T04/T05 (M008/S03) -->
 <!-- populate the first pass-path and fallback entries. -->
 
+#### 2026-07-15 — PENDING: A6000 unreachable (pass-path attempt, sub-22)
+
+- **Result:** PENDING — the A6000 server (132.207.157.41) was unreachable
+  from the executing environment (SSH connect timed out, `exit 255`; `ping`
+  no reply), so the real-subject pass-path run could not be performed in this
+  session. No `gate_verdict` / `applied` / `deltas` were produced on real data.
+- **Host attempted from:** `MacBookPro.localdomain` (local macOS dev checkout,
+  CUDA unavailable). Target host: `sn4622125853` (`132.207.157.41`).
+- **Git commit:** `a42da2e` (branch `modernisation`)
+- **Software (probe host):** Python `3.14.4`, NumPy backend (no CUDA)
+- **What was proven locally:** the validation probe
+  (`scripts/experiments/m008_s03/auto_apply_validation.py --smoke`) exercised
+  the real `auto_tune()` path end-to-end on a synthetic mosaic and faithfully
+  captured the full `.gate` dict (`gate_verdict=pass`, `applied=candidate`,
+  `deltas` for both first-class metrics, baseline + candidate aggregates,
+  provenance). The plumbing is known-good for the real-subject run.
+- **Attempt log:** `scripts/experiments/m008_s03/auto-apply-pass.log`
+- **To close this entry:** re-run on the A6000 with the command in the attempt
+  log, then replace this PENDING block with the dated PASS entry citing the
+  `gate_verdict` / `applied` / `deltas` / `fallback_reason` from the resulting
+  `auto-apply-pass.json` (mirroring the `gpu_smoke` Validation Log format).
+
+This PENDING entry is the honest record that the pass-path validation was
+attempted but blocked by environment, not skipped. It leaves R057's
+real-subject validation gap explicitly open rather than fabricated.
+
 ---
 
 ## API Reference
