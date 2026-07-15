@@ -435,6 +435,211 @@ visual check before re-running.
 
 ---
 
+## Auto-apply safety gate
+
+`recommend_bounds` (above) narrows the search space but still leaves the
+operator in the loop: someone must feed the narrowed bounds back into a
+`tune()` or `fit_mosaic()` call by hand. `auto_tune` closes that loop. It
+runs the whole workflow — tune, recommend narrowed bounds, *and apply them* —
+behind a per-dataset safety gate that guarantees the tuned result is never
+worse than the default-bounds fit on the full volume.
+
+The design contract, failure modes, and the full observability schema live
+in {doc}`auto_apply_safety_gate`; this section is the operator-facing how-to.
+
+### Why the gate exists
+
+`tune()` minimises a *subsampled* objective (a handful of z-levels and ≤
+`max_tiles` tiles) on a single metric (`seam_l1`, `curvature`, or
+`composite`). A subsampled, single-metric score cannot prove the best trial
+holds quality on the *full* volume against *both* first-class metrics
+(`seam_l1` **and** `seam_curvature`). It is especially unsafe because `tune()`
+may explore `working_size > 128`, which regresses real-subject seam quality.
+
+The gate answers one question, once, per dataset: **is applying the tuned
+best params at least as good as the default-bounds fit on the full volume?**
+If yes, it applies the candidate; if no — for any reason — it falls back to
+the default-bounds fit and records why.
+
+### The workflow
+
+`auto_tune(mosaic, ...) -> AutoTuneResult` runs six steps:
+
+1. **Baseline (default-bounds) fit.** A full-volume `fit_mosaic` with the
+   production defaults (`working_size=128`, `estimate_darkfield=True`,
+   `l_s`/`l_d` auto-tuned by `BaSiC.prepare()`). This is the floor the
+   candidate must beat, and it is computed *first* so it is always available
+   as the fallback.
+2. **Tune.** One `tune()` Optuna study (`n_trials`, `objective`, ...).
+3. **Recommend bounds.** `recommend_bounds()` collapses the near-optimal
+   region (the `margin` argument sets the band width).
+4. **Candidate (narrowed-bounds) fit.** A full-volume `fit_mosaic` with
+   `tune_result.best_params`.
+5. **Quality reports + deltas.** `compute_quality_report()` on both fits,
+   then `compute_deltas(candidate, baseline)`.
+6. **Non-regression gate.** Apply the fixed-margin rule over
+   `seam_l1` + `seam_curvature`.
+
+The total cost is the `tune()` trial budget plus **exactly two full-volume
+fits** — never a repeated multi-run calibration.
+
+```python
+from linum_basic.mosaic import MosaicGrid
+from linum_basic.tuning import auto_tune
+
+mosaic = MosaicGrid.from_ome_zarr("my_mosaic.ome.zarr", overlap_fraction=0.2)
+
+result = auto_tune(
+    mosaic,
+    n_trials=50,           # forwarded to tune()
+    margin=0.10,           # near-optimal band for recommend_bounds
+    no_regression_margin=0.0,  # D023 default: candidate must not be measurably worse
+    objective="seam_l1",
+    seed=42,
+    verbose=True,
+)
+
+# The winning fit — candidate on a pass, baseline-default on any fallback.
+corrected = apply_fit(mosaic, result.fit)
+print(result.applied)   # "candidate" | "baseline-default"
+```
+
+### The safety gate
+
+Both first-class metrics are **lower is better**, so a positive delta
+(candidate minus baseline) directly indicates a regression. The gate passes
+only if **neither** metric regresses beyond `NO_REGRESSION_MARGIN` (default
+`0.0`, i.e. the candidate must be ≤ the baseline within float noise on both):
+
+```python
+# "lower is better" → candidate regresses a metric iff rel_delta > margin
+NO_REGRESSION_MARGIN = 0.0
+failing = [m for m in ("seam_l1", "seam_curvature")
+           if deltas[m].rel_delta > NO_REGRESSION_MARGIN]
+gate_verdict = "pass" if not failing else "fail"
+```
+
+A regression on *either* metric fails the gate, because both must hold (the
+K01 real-subject seam gate). The margin is a single named constant
+(`linum_basic.tuning.NO_REGRESSION_MARGIN`), overridable via the
+`no_regression_margin` argument.
+
+### The fallback-to-defaults contract
+
+On *any* path where the narrowed bounds cannot be proven safe, `auto_tune`
+returns the default-bounds baseline fit and records why. The fallback fit is
+always the **already-computed** baseline, so a fallback adds no extra
+full-volume solve.
+
+| Outcome | `gate_verdict` | `applied` | When |
+|---|---|---|---|
+| Pass | `"pass"` | `"candidate"` | Candidate held both metrics ≤ baseline within the margin |
+| Regression | `"fail"` | `"baseline-default"` | Candidate regressed ≥ 1 metric; `failing_metrics` populated, `fallback_reason="regression-detected"` |
+| Fallback | `"fallback"` | `"baseline-default"` | An upstream step raised before a clean gate result |
+
+The fallback reasons (`fallback_reason` on the gate sub-dict):
+
+| Reason | Meaning |
+|---|---|
+| `regression-detected` | Candidate failed the non-regression gate on ≥ 1 metric |
+| `tune-failed` | `tune()` raised (Optuna missing, all trials pruned, OOM in a trial) |
+| `degenerate-trial-history` | `recommend_bounds()` saw zero `COMPLETE` trials |
+| `invalid-margin` | `margin` was outside `[0, 1]` |
+| `candidate-fit-failed` | The candidate full-volume `fit_mosaic` raised (OOM, divergence) |
+| `quality-report-failed` | `compute_quality_report` / `compute_deltas` raised (e.g. z-index mismatch) |
+
+The one path that does **not** fall back gracefully is a *baseline-fit*
+failure: if the default-bounds fit itself cannot be produced there is no safe
+floor to return, and `auto_tune` raises `AutoApplyError` (a typed exception
+carrying the underlying `.cause`) rather than silently returning an undefined
+correction. Wrap the call if an unreachable A6000 or unreadable tiles could
+make the baseline fit fail:
+
+```python
+from linum_basic.tuning import auto_tune, AutoApplyError
+
+try:
+    result = auto_tune(mosaic, n_trials=50)
+except AutoApplyError as exc:
+    print(f"baseline fit failed: {exc!r}; cause={exc.cause!r}")
+    raise
+```
+
+### The `.gate` observability sub-dict
+
+Every decision is recorded on `AutoTuneResult.gate`, mirroring the existing
+`_strategy` / `working_size_selector` explainability pattern so you can
+inspect *why* auto-apply did or did not apply the narrowed bounds without
+re-deriving it. It is purely additive and never affects the numerics:
+
+```python
+result.gate
+# {
+#   "gate_verdict": "pass",            # "pass" | "fail" | "fallback"
+#   "applied": "candidate",            # "candidate" | "baseline-default"
+#   "no_regression_margin": 0.0,
+#   "failing_metrics": [],             # ⊆ ["seam_l1", "seam_curvature"]; [] on pass
+#   "fallback_reason": None,           # None, or a reason from the table above
+#   "deltas": {                        # compute_deltas()["aggregate"], per first-class metric
+#       "seam_l1": {"abs_delta": -0.012, "rel_delta": -0.021},
+#       "seam_curvature": {"abs_delta": -0.0004, "rel_delta": -0.012},
+#   },
+#   "baseline":  {"bounds": "default",        "aggregates": {"seam_l1": ..., "seam_curvature": ...}},
+#   "candidate": {"bounds": "tune-best-params", "best_params": {...}, "aggregates": {...}},
+#   "recommendation": {"search_space": {...}, "n_near_optimal": ..., "margin": ..., "best_value": ...},
+# }
+```
+
+A quick inspection helper:
+
+```python
+g = result.gate
+print(f"verdict={g['gate_verdict']}  applied={g['applied']}")
+if g["fallback_reason"]:
+    print(f"fell back: {g['fallback_reason']}")
+if g["failing_metrics"]:
+    print(f"regressed: {g['failing_metrics']}")
+for m, d in g["deltas"].items():
+    print(f"  {m}: rel_delta={d['rel_delta']:+.4f}  (negative = candidate better)")
+```
+
+### Three mechanisms — do not conflate them
+
+There are now three distinct mechanisms in this area. The primary design
+error this table exists to prevent is conflating them:
+
+| Mechanism | Lives in | What it decides | Fits | Repeats / calibration |
+|---|---|---|---|---|
+| `recommend_bounds` (advisory) | `linum_basic.tuning` | Narrows a *search space* for a follow-up `tune()` | 0 | none |
+| **Auto-apply gate** (D023) | `linum_basic.tuning.auto_tune` | Per-dataset: *apply* the tuned params only if not worse than default on the full volume | exactly 2 | none — fixed margin |
+| `mean+3std` release gate | `linum_basic.benchmark.quality` | A/B-harness strategy promotion vs a frozen baseline | N repeats + candidate | yes — variance estimate |
+
+The auto-apply gate **reuses the release gate's primitives**
+(`QualityReport`, `compute_quality_report`, `compute_deltas`,
+`FIRST_CLASS_METRICS`) but **not its policy**
+(`calibrate_tolerances` / `evaluate_quality_gate`). They can never disagree
+on *what* a metric means, only on *how strictly* it is applied.
+
+```{note}
+`auto_tune` adds no solver code and touches no BaSiC invariant. It composes
+`tune`, `recommend_bounds`, `fit_mosaic`, and the quality primitives as-is —
+the two full-volume fits are exactly the shapes an operator would issue by
+hand. See {doc}`auto_apply_safety_gate` for the full design contract.
+```
+
+### Validation Log
+
+Dated evidence that the guarded auto-apply loop was exercised end-to-end on
+real production-shaped subjects. Each entry records the gate verdict, what
+was applied, the metric deltas, and (on a fallback) the reason — the in-repo
+proof for requirement R057. Append a new dated entry on each future
+validation run (see {doc}`gpu_smoke` for the precedent this mirrors).
+
+<!-- Operators: append new entries below this marker. T04/T05 (M008/S03) -->
+<!-- populate the first pass-path and fallback entries. -->
+
+---
+
 ## API Reference
 
 | Symbol | Module | Description |
@@ -459,5 +664,9 @@ visual check before re-running.
 | `tune` | `linum_basic.tuning` | Optuna-based hyperparameter search |
 | `recommend_bounds` | `linum_basic.tuning` | Quality-aware search-space narrowing from a `TuneResult` |
 | `BoundsRecommendation` | `linum_basic.tuning` | Frozen dataclass holding narrowed bounds + metadata |
+| `auto_tune` | `linum_basic.tuning` | Tune + auto-apply the narrowed bounds under the D023 safety gate |
+| `AutoTuneResult` | `linum_basic.tuning` | Winning fit + the `.gate` explainability sub-dict |
+| `AutoApplyError` | `linum_basic.tuning` | Raised when the default-bounds baseline fit itself fails |
+| `NO_REGRESSION_MARGIN` | `linum_basic.tuning` | Fixed non-regression margin constant (D023 default `0.0`) |
 
 See the {doc}`API reference <api/index>` for full parameter documentation.
