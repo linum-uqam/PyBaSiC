@@ -10,6 +10,7 @@ Reference
    adaptive_working_size
    runbooks
    tuning
+   auto_apply_safety_gate
    parallelism
    streaming
    gpu
