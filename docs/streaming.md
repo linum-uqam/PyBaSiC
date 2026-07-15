@@ -127,7 +127,14 @@ Because the write path stays eager, the *overall* process can still need a
 full volume's worth of memory at correction time. Streaming makes large
 **fits** feasible on modest hosts; it does not by itself make large
 **correction write-outs** feasible. If your bottleneck is writing the
-corrected output, that is out of MVP scope.
+corrected output, that is out of MVP scope — and that boundary is
+deliberate, not unaddressed. The write path was evaluated against
+production-scale peak-memory evidence (M007/S01) and explicitly deferred as
+*not yet justified*: at measured scale the corrected output is only a few
+hundred KB and the eager write adds no memory pressure. See
+`scripts/experiments/m007_s02_artifacts/S02-DECISION.md` for the terminal
+go/no-go audit and the exact, falsifiable condition under which the write
+path would be revisited.
 ```
 
 ---
