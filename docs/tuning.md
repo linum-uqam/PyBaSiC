@@ -664,6 +664,49 @@ This PENDING entry is the honest record that the pass-path validation was
 attempted but blocked by environment, not skipped. It leaves R057's
 real-subject validation gap explicitly open rather than fabricated.
 
+#### 2026-07-15 — PENDING: A6000 unreachable (fallback attempt, sub-22)
+
+- **Result:** PENDING — the A6000 server (132.207.157.41) remained
+  unreachable from the executing environment (SSH connect timed out, same
+  session as the pass-path entry above), so the real-subject fallback run
+  could not be performed. No real-subject `gate_verdict` / `applied` /
+  `deltas` were produced. Crucially, the substantive fallback behavior — the
+  gate DETECTING a regression and REFUSING to apply the candidate — *was*
+  proven locally (see below), so this entry leaves only the real-subject
+  (vignetted tissue) sign-off open, not the gate-refusal mechanism itself.
+- **Host attempted from:** `MacBookPro.localdomain` (local macOS dev checkout,
+  CUDA unavailable). Target host: `sn4622125853` (`132.207.157.41`).
+- **Git commit:** `9143b52` (branch `modernisation`)
+- **Software (probe host):** Python `3.14.4`, NumPy backend (no CUDA)
+- **What was proven locally:** the fallback probe
+  (`scripts/experiments/m008_s03/force_fallback.py --smoke`) ran the real
+  `auto_tune()` path end-to-end on a *vignetted* synthetic mosaic under an
+  adversarially over-regularised search space (tiny `l_s_divisor` → huge
+  `l_s` → flat candidate flat-field). The gate genuinely refused:
+  `gate_verdict=fail`, `applied=baseline-default`,
+  `fallback_reason=regression-detected`, `failing_metrics=['seam_l1']`, with
+  `seam_l1 rel_delta=+0.418` (well beyond the `+0.0` margin) while
+  `seam_curvature` improved (`rel_delta=-0.438`). The refusal was robust: the
+  same adversarial space triggered `regression-detected` on 5/5 vignetted
+  mosaic seeds (0, 1, 2, 3, 7), always failing on `seam_l1`, always returning
+  the baseline-default fit. This drives the refusal through the *production*
+  code path (`auto_tune → tune → recommend_bounds → two fit_mosaic calls →
+  compute_quality_report → compute_deltas → _evaluate_regression`), with no
+  monkeypatch — distinct from the unit-test fallback coverage.
+- **Attempt log:** `scripts/experiments/m008_s03/auto-apply-fallback.log`
+- **Gate artifact (smoke):** `scripts/experiments/m008_s03/auto-apply-fallback.json`
+  (`smoke=true`)
+- **To close this entry:** re-run on the A6000 with the command in the attempt
+  log, then replace this PENDING block with the dated REAL-SUBJECT fallback
+  entry citing the `gate_verdict` / `applied` / `failing_metrics` /
+  `fallback_reason` / `deltas` from the resulting `auto-apply-fallback.json`
+  (`smoke=false`). Expected: `gate_verdict=fail`,
+  `fallback_reason=regression-detected` on real vignetted tissue.
+
+This PENDING entry records that the fallback path was exercised (the gate
+refuses, proven locally on vignetted data) but the real-subject sign-off
+remains blocked by the unreachable A6000 rather than fabricated.
+
 ---
 
 ## API Reference

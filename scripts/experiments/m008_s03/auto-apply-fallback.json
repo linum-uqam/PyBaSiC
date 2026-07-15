@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-07-15T21:26:44.807235+00:00",
+  "probe": "force_fallback",
+  "intent": "deliberately trigger a regression-detected fallback via an adversarially over-regularised search space",
+  "outcome": "gate-refused-regression-detected",
+  "smoke": true,
+  "provenance": {
+    "git_commit": "9143b52",
+    "host_node": "MacBookPro.localdomain",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "software": {
+      "python_version": "3.14.4",
+      "torch_version": "2.12.1",
+      "cuda_available": false,
+      "cuda_version": null
+    },
+    "backend": "numpy",
+    "device": null,
+    "search_space": "adversarial-over-regularisation (NOT a ship default)",
+    "label": null,
+    "n_trials": 4,
+    "z_subsample": 2
+  },
+  "gate": {
+    "gate_verdict": "fail",
+    "applied": "baseline-default",
+    "no_regression_margin": 0.0,
+    "failing_metrics": [
+      "seam_l1"
+    ],
+    "fallback_reason": "regression-detected",
+    "deltas": {
+      "seam_l1": {
+        "abs_delta": 0.04387928918004036,
+        "rel_delta": 0.4179184965835638
+      },
+      "seam_curvature": {
+        "abs_delta": -0.008614165841438594,
+        "rel_delta": -0.4379929047426434
+      }
+    },
+    "baseline": {
+      "bounds": "default",
+      "aggregates": {
+        "seam_l1": 0.10499484837055206,
+        "seam_curvature": 0.01966736389599763
+      }
+    },
+    "candidate": {
+      "bounds": "tune-best-params",
+      "best_params": {
+        "working_size": 16,
+        "l_s": 3.0046069665541286,
+        "l_d": 0.6256712773445074,
+        "epsilon": 0.915174253389402,
+        "estimate_darkfield": false
+      },
+      "aggregates": {
+        "seam_l1": 0.14887413755059242,
+        "seam_curvature": 0.011053198054559036
+      }
+    },
+    "recommendation": {
+      "search_space": {
+        "working_size": [
+          16
+        ],
+        "l_s_divisor": [
+          8.08634308714319,
+          9.137356971464282
+        ],
+        "l_d_divisor": [
+          31.854053496650955,
+          53.27382119343757
+        ],
+        "epsilon": [
+          0.915174253389402,
+          0.9919243639058887
+        ],
+        "estimate_darkfield": [
+          false
+        ]
+      },
+      "n_near_optimal": 3,
+      "margin": 0.1,
+      "best_value": 0.15161558985710144
+    }
+  },
+  "wall_clock_seconds": 4.307
+}
