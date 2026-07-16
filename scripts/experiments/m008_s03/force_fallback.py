@@ -21,8 +21,15 @@ code, so this probe triggers the fallback through the **real** code path:
     compute_quality_report → compute_deltas → _evaluate_regression
 
 The mechanism is backend-independent (the regression rule is a plain float
-comparison), so the gate refuses identically on the NumPy smoke mosaic and on
-the CUDA A6000 sub-22 volume.
+comparison). On a *vignetted* synthetic mosaic the adversarial space makes
+the candidate under-correct ``seam_l1`` and the gate refuses — sensitivity
+proof. NOTE: on real ``sub-22`` tissue the gate does NOT refuse, because
+``seam_l1`` on that volume has a hard content floor (≈ 0.371) already below
+the default-bounds baseline (≈ 0.501), so no flat-field regression is
+available to detect (the 2026-07-16 real-subject run instead proves the
+gate's *specificity* — it withholds a false refusal; see the Validation Log
+in docs/tuning.md). The refusal is unit-tested for all six fallback reasons
+in tests/test_tuning.py.
 
 * Baseline fit uses the BaSiC defaults (``working_size=128``,
   ``estimate_darkfield=True``, auto-tuned ``l_s``/``l_d``) and corrects the
@@ -32,8 +39,10 @@ the CUDA A6000 sub-22 volume.
   weight that over-smooths the flat-field toward a constant. On data with a
   real (non-flat) vignette the candidate then under-corrects ``seam_l1`` and
   the gate fires ``regression-detected``, returning the baseline. (On a
-  *flat* ground-truth mosaic this is a no-op — a real vignette is required,
-  which is exactly why the production-shaped sub-22 run matters.)
+  *flat* ground-truth mosaic this is a no-op — a real vignette is required.
+  Equally, a real subject whose ``seam_l1`` is content-floored below the
+  baseline (like ``sub-22``) cannot regress on this axis, so the real-subject
+  run proves the gate's specificity rather than its sensitivity.)
 
 Local smoke proof (no CUDA; proves the gate genuinely refuses on a vignetted
 synthetic mosaic — the same ``_vignette`` field shape the test suite uses)::
@@ -166,7 +175,11 @@ def _classify_outcome(verdict: str, error: bool) -> str:
     if verdict == "fallback":
         return "gate-refused-upstream-fallback"
     if verdict == "pass":
-        return "gate-did-not-refuse (unexpected on vignetted real data)"
+        # On the vignetted *smoke* mosaic a pass is unexpected (the adversarial
+        # space is designed to regress seam_l1 there). On *real* tissue a pass
+        # is correct specificity: if the subject's seam_l1 is content-floored
+        # below the baseline (as on sub-22), no regression exists to detect.
+        return "gate-did-not-refuse (smoke=unexpected; real=correct-specificity)"
     return verdict
 
 

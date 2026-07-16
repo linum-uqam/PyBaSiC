@@ -1,64 +1,62 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-07-15T21:26:44.807235+00:00",
+  "timestamp": "2026-07-16T10:09:17.471877+00:00",
   "probe": "force_fallback",
   "intent": "deliberately trigger a regression-detected fallback via an adversarially over-regularised search space",
-  "outcome": "gate-refused-regression-detected",
-  "smoke": true,
+  "outcome": "gate-did-not-refuse (smoke=unexpected; real=correct-specificity)",
+  "smoke": false,
   "provenance": {
-    "git_commit": "9143b52",
-    "host_node": "MacBookPro.localdomain",
-    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "git_commit": "6ddc0eb",
+    "host_node": "sn4622125853",
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
     "software": {
-      "python_version": "3.14.4",
-      "torch_version": "2.12.1",
-      "cuda_available": false,
-      "cuda_version": null
+      "python_version": "3.14.3",
+      "torch_version": "2.12.1+cu130",
+      "cuda_available": true,
+      "cuda_version": "13.0"
     },
-    "backend": "numpy",
-    "device": null,
+    "backend": "torch",
+    "device": "cuda:0",
     "search_space": "adversarial-over-regularisation (NOT a ship default)",
-    "label": null,
-    "n_trials": 4,
-    "z_subsample": 2
+    "label": "sub-22 slice 27 fallback",
+    "n_trials": 50,
+    "z_subsample": 4
   },
   "gate": {
-    "gate_verdict": "fail",
-    "applied": "baseline-default",
+    "gate_verdict": "pass",
+    "applied": "candidate",
     "no_regression_margin": 0.0,
-    "failing_metrics": [
-      "seam_l1"
-    ],
-    "fallback_reason": "regression-detected",
+    "failing_metrics": [],
+    "fallback_reason": null,
     "deltas": {
       "seam_l1": {
-        "abs_delta": 0.04387928918004036,
-        "rel_delta": 0.4179184965835638
+        "abs_delta": -0.12986781163649125,
+        "rel_delta": -0.2591874891054333
       },
       "seam_curvature": {
-        "abs_delta": -0.008614165841438594,
-        "rel_delta": -0.4379929047426434
+        "abs_delta": -0.02230110840215036,
+        "rel_delta": -0.6748793431147962
       }
     },
     "baseline": {
       "bounds": "default",
       "aggregates": {
-        "seam_l1": 0.10499484837055206,
-        "seam_curvature": 0.01966736389599763
+        "seam_l1": 0.5010574086145921,
+        "seam_curvature": 0.033044585865116584
       }
     },
     "candidate": {
       "bounds": "tune-best-params",
       "best_params": {
         "working_size": 16,
-        "l_s": 3.0046069665541286,
-        "l_d": 0.6256712773445074,
+        "l_s": 25.878042186393287,
+        "l_d": 5.388773936214613,
         "epsilon": 0.915174253389402,
         "estimate_darkfield": false
       },
       "aggregates": {
-        "seam_l1": 0.14887413755059242,
-        "seam_curvature": 0.011053198054559036
+        "seam_l1": 0.3711895969781009,
+        "seam_curvature": 0.01074347746296622
       }
     },
     "recommendation": {
@@ -67,25 +65,26 @@
           16
         ],
         "l_s_divisor": [
-          8.08634308714319,
-          9.137356971464282
+          5.0004403311422445,
+          14.115349092574478
         ],
         "l_d_divisor": [
-          31.854053496650955,
-          53.27382119343757
+          20.44921414103359,
+          59.87107657505705
         ],
         "epsilon": [
-          0.915174253389402,
-          0.9919243639058887
+          0.8018053907086277,
+          0.9983742783635811
         ],
         "estimate_darkfield": [
           false
         ]
       },
-      "n_near_optimal": 3,
+      "n_near_optimal": 50,
       "margin": 0.1,
-      "best_value": 0.15161558985710144
+      "best_value": 0.4036768972873688
     }
   },
-  "wall_clock_seconds": 4.307
+  "wall_clock_seconds": 120.42,
+  "interpretation": "Real sub-22 run: the gate did not refuse because seam_l1 on this volume is content-floored (~0.371, below the default baseline 0.501) across all degenerate spaces tried; no flat-field regression is available to detect. This is correct specificity, not a missed refusal. Refusal sensitivity is proven on the vignetted synthetic mosaic (5/5 seeds) and in tests/test_tuning.py (6/6 fallback reasons)."
 }

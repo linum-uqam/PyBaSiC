@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-07-16T10:06:50.666321+00:00",
+  "provenance": {
+    "git_commit": "6ddc0eb",
+    "host_node": "sn4622125853",
+    "platform": "Linux-7.0.0-27-generic-x86_64-with-glibc2.43",
+    "software": {
+      "python_version": "3.14.3",
+      "torch_version": "2.12.1+cu130",
+      "cuda_available": true,
+      "cuda_version": "13.0"
+    },
+    "backend": "torch",
+    "device": "cuda:0",
+    "label": "sub-22 slice 27 (pass-path)",
+    "n_trials": 50,
+    "z_subsample": 4
+  },
+  "gate": {
+    "gate_verdict": "pass",
+    "applied": "candidate",
+    "no_regression_margin": 0.0,
+    "failing_metrics": [],
+    "fallback_reason": null,
+    "deltas": {
+      "seam_l1": {
+        "abs_delta": -0.1857579838145863,
+        "rel_delta": -0.37073193734067567
+      },
+      "seam_curvature": {
+        "abs_delta": -0.001367778396664035,
+        "rel_delta": -0.041391906143024966
+      }
+    },
+    "baseline": {
+      "bounds": "default",
+      "aggregates": {
+        "seam_l1": 0.5010574086145921,
+        "seam_curvature": 0.033044585865116584
+      }
+    },
+    "candidate": {
+      "bounds": "tune-best-params",
+      "best_params": {
+        "working_size": 64,
+        "l_s": 0.08952046930731539,
+        "l_d": 0.04039310607793039,
+        "epsilon": 0.9898881678788174,
+        "estimate_darkfield": false
+      },
+      "aggregates": {
+        "seam_l1": 0.31529942480000583,
+        "seam_curvature": 0.03167680746845255
+      }
+    },
+    "recommendation": {
+      "search_space": {
+        "working_size": [
+          64,
+          96,
+          128,
+          160,
+          192
+        ],
+        "l_s_divisor": [
+          109.45724476030314,
+          4605.425696140517
+        ],
+        "l_d_divisor": [
+          531.2204016544513,
+          9446.580746834301
+        ],
+        "epsilon": [
+          0.01810725406663109,
+          0.9977632251045572
+        ],
+        "estimate_darkfield": [
+          false
+        ]
+      },
+      "n_near_optimal": 38,
+      "margin": 0.1,
+      "best_value": 0.3309163227677345
+    }
+  },
+  "wall_clock_seconds": 234.199
+}
