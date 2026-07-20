@@ -1,23 +1,186 @@
-[tool.poetry]
-name = "pybasic-illumination-correction"
-version = "0.1.2"
-description = "Python Implementation of the BaSiC shading correction algorithm"
-authors = ["Joël Lefebvre <lefebvre.joel@uqam.ca>"]
-repository = "https://github.com/linum-uqam/PyBaSiC"
-packages = [{include = "pybasic"}, {include = "scripts"}]
+[project]
+name = "linum-basic"
+version = "2.0.0"
+description = "Python implementation of the BaSiC shading correction algorithm"
+authors = [{ name = "Joël Lefebvre", email = "lefebvre.joel@uqam.ca" }]
+readme = "README.md"
+requires-python = ">=3.14"
+license = "GPL-3.0-or-later"
+keywords = ["shading correction", "illumination", "microscopy", "BaSiC"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+]
+dependencies = [
+    "numpy>=2.2",
+    "scipy>=1.15",
+    "opencv-python>=4.11",
+    "tqdm>=4.67",
+    "zarr>=3",
+    "ome-zarr>=0.10",
+    "optuna>=3.6",
+    "joblib>=1.4",
+]
 
-[tool.poetry.scripts]
-basic_shading_correction = "scripts.basic_shading_correction:main"
+[project.optional-dependencies]
+gpu = ["torch>=2.7"]
+viz = [
+    "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
+]
+docs = [
+    "sphinx>=9.1",
+    "pydata-sphinx-theme>=0.17",
+    "sphinx-autoapi>=3.8",
+    "sphinx-argparse>=0.5",
+    "sphinx-design>=0.7",
+    "sphinxcontrib-mermaid>=1.0",
+    "myst-parser>=5.0",
+    "linkify-it-py>=2.1",
+    "sphinx-copybutton>=0.5",
+    "sphinx-notfound-page>=1.0",
+    "sphinx-sitemap>=2.6",
+    "sphinxext-opengraph>=0.9",
+    "nbsphinx>=0.9",
+    "ipykernel>=6.29",
+    "ipywidgets>=8.0",
+    "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
+]
+validation = [
+    "sbh-simulator @ git+https://github.com/linum-uqam/sbh_simulator.git@110a59d7b0c150eb096fd4b9c63cc7633f785cd3",
+]
+dev = [
+    "pytest>=8.4",
+    "pytest-cov>=6.1",
+    "ruff>=0.11",
+    "ty>=0.0.1a14",
+    "numpydoc>=1.9",
+    "pre-commit>=4.2",
+    "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
+    "pandas>=2.2",
+    "pyyaml>=6",
+]
+notebooks = [
+    "matplotlib>=3.10",
+    "matplotlib-scalebar>=0.9",
+    "scienceplots>=2.1",
+    "notebook>=7.3",
+    "ipykernel>=6.29",
+    "ipywidgets>=8.0",
+]
+# Supplementary BaSiCPy reference comparison for harness sidecars (D-09); not required for core fitting.
+basicpy = ["basicpy>=2.0"]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.12"
-numpy = "^1.23.2"
-opencv-python = "^4.6.0"
-tqdm = "^4.64.0"
-scipy = "^1.9.0"
+[tool.uv]
+# basicpy 2.0.0 pins scipy<1.13; linum-basic requires scipy>=1.15. Override only for BaSiCPy resolution.
+override-dependencies = [
+    { package = { name = "basicpy" }, dependencies = ["scipy>=1.15"] },
+]
 
-[tool.poetry.dev-dependencies]
+[project.scripts]
+basic = "linum_basic.cli:main"
+
+[project.urls]
+Repository = "https://github.com/linum-uqam/Linum-BaSiC"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["linum_basic"]
+
+# ---------------------------------------------------------------------------
+# Ruff — linter + formatter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py314"
+line-length = 127
+fix = true
+include = ["linum_basic*", "tests*", "scripts/**/*.py"]
+exclude = ["tests/data", "tests/fixtures", "linum_basic/data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "RUF", "SIM", "C4", "PIE", "PTH",
+            "N", "PERF", "FLY", "G", "D", "ANN", "ARG", "ERA", "FURB"]
+# N813: camelcase imports (e.g. OpenCV, SimpleITK) — excluded globally.
+# D212/D213 conflict: numpy convention picks D213 (summary on second line of multi-line docstrings).
+# ANN401: Any is legitimately unavoidable in array-namespace override signatures.
+# Note: flake8-type-checking (TCH/TC) is intentionally not selected — under
+# PEP 649 (Python 3.14 default), annotations are lazily evaluated, so gating
+# typing-only imports inside TYPE_CHECKING blocks no longer reduces import cost.
+ignore = ["N813", "ANN401"]
+extend-select = ["D417"]
+# Scientific codebase: Greek letters and the info-icon glyph are intentional.
+allowed-confusables = ["\u03c3", "\u2139"]
+
+[tool.ruff.lint.pydocstyle]
+# numpy-style docstrings across the whole codebase.
+# This disables D203, D212, D215 (conflicting numpy-incompatible rules).
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+# Test files: type annotations, docstrings, unused-arg checks, naming conventions
+# and commented-out code are not required in tests.
+"tests/**" = ["ANN", "D", "ARG", "N", "ERA"]
+"linum_basic/cli.py" = ["D", "ANN"]  # CLI entry-point; docstrings and annotations optional
+"linum_basic/_alm.py" = [
+    "N806",  # algorithm uses conventional uppercase math variable names
+]
+"linum_basic/core.py" = ["N806"]  # math variable names (Ib, Ir, D) mirror _alm.py convention
+"linum_basic/backend.py" = ["N806"]  # V is a conventional math variable in DCT algorithms
+"scripts/**" = ["D", "ANN"]  # CLI scripts; docstrings and annotations optional
+
+[tool.ruff.lint.isort]
+known-first-party = ["linum_basic"]
+
+[tool.ruff.format]
+# Use default (black-compatible) formatting
+
+# ---------------------------------------------------------------------------
+# ty — static type checker
+# ---------------------------------------------------------------------------
+[tool.ty.src]
+include = ["linum_basic", "scripts", "tests"]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.rules]
+# possibly-unresolved-reference defaults to "warn" in ty; raise it to "error"
+# so that variables only assigned inside conditional branches are caught.
+possibly-unresolved-reference = "error"
+
+[tool.ty.analysis]
+# Optional GPU dep — not installed in the standard dev env.
+# Using replace-imports-with-any so downstream attribute/subscript access
+# on the imported module is typed as Any rather than causing cascading errors.
+replace-imports-with-any = ["torch.**"]
+
+# --- ty overrides ---
+
+# Relax rules in test files
+[[tool.ty.overrides]]
+include = ["tests/**", "**/test_*.py", "**/conftest.py"]
+
+[tool.ty.overrides.rules]
+possibly-unresolved-reference = "ignore"
+unresolved-attribute = "ignore"
+invalid-assignment = "ignore"
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=linum_basic --cov-report=term-missing"

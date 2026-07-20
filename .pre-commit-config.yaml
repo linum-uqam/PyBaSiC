@@ -1,0 +1,17 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.8
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: [--fix]
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty (type check)
+        entry: uv run --frozen ty check linum_basic/
+        language: system
+        types: [python]
+        files: ^linum_basic/
+        pass_filenames: false
+        verbose: true
