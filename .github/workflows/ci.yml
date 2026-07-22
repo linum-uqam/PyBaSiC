@@ -1,0 +1,347 @@
+name: CI
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+
+# Cancel in-progress runs for the same ref when a new push arrives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: "Lint & format (ruff)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dev extras
+        run: uv sync --extra dev
+
+      # No explicit path: ruff resolves targets from [tool.ruff] include in
+      # pyproject.toml. A bare invocation tolerates a foundation-only tree
+      # (no linum_basic/ yet) and exits 0 with a "No Python files found"
+      # warning until S04 lands the library modules.
+      - name: ruff lint
+        run: uv run ruff check
+
+      - name: ruff format check
+        run: uv run ruff format --check
+
+  typecheck:
+    name: "Type-check (ty)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dev extras
+        run: uv sync --extra dev
+
+      # Scope typecheck to the library dir: [tool.ty.src] in pyproject.toml
+      # includes linum_basic, scripts, AND tests, so a bare `uv run ty check`
+      # surfaces ~14 pre-existing test-file ty diagnostics that are unrelated
+      # to this library modernisation (D030). `ty check linum_basic` returns
+      # 0 errors and matches the modernisation branch posture. The dir gate
+      # keeps the foundation-only tree (no linum_basic/ yet) green — mirrors
+      # the docs/tests transitional gates.
+      - name: ty check (scoped to linum_basic)
+        run: |
+          if [ -d linum_basic ]; then
+            uv run ty check linum_basic
+          else
+            echo "::notice::linum_basic/ not present - skipping typecheck (foundation-only tree)"
+          fi
+
+  docs:
+    name: "Docs (sphinx -W)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Transitional gate: docs/conf.py and the docs source tree land in S05.
+      # Skip the install + build entirely on the foundation-only PR so CI
+      # stays green until the docs source exists (sphinx-build hard-fails
+      # with ConfigError when docs/conf.py is absent).
+      - name: Check docs source exists
+        id: docs_check
+        run: |
+          if [ -f docs/conf.py ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::docs/conf.py not present — skipping docs build (foundation-only tree)"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up uv
+        if: steps.docs_check.outputs.exists == 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install docs extras
+        if: steps.docs_check.outputs.exists == 'true'
+        run: uv sync --extra docs --extra validation --frozen
+
+      # nbsphinx requires the pandoc binary to render notebooks. The RTD
+      # image ships pandoc preinstalled; the GitHub ubuntu runner does not
+      # (nbsphinx.NotebookError: PandocMissing). Install it before sphinx.
+      - name: Install pandoc for notebook rendering
+        if: steps.docs_check.outputs.exists == 'true'
+        run: sudo apt-get update && sudo apt-get install -y pandoc
+
+      - name: Build docs
+        if: steps.docs_check.outputs.exists == 'true'
+        run: uv run sphinx-build -W --keep-going -n -b html docs docs/_build/html
+
+  test-cpu:
+    name: "Tests — CPU (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      # Transitional gate: tests/ lands in S05. Skip the install + run on the
+      # foundation-only PR — pytest 9.x exits 5 (no tests collected) even with
+      # a bare invocation, so the run must be gated rather than tolerated.
+      - name: Check tests exist
+        id: tests_check
+        run: |
+          if [ -d tests ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::tests/ not present — skipping CPU test run (foundation-only tree)"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up uv
+        if: steps.tests_check.outputs.exists == 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dev extras
+        if: steps.tests_check.outputs.exists == 'true'
+        run: uv sync --extra dev
+
+      - name: Run tests
+        if: steps.tests_check.outputs.exists == 'true'
+        run: uv run python -m pytest tests/ -v --tb=short --cov=linum_basic --cov-report=term-missing --cov-report=xml --ignore=tests/test_demo_fitting.py
+
+      - name: Upload coverage to Codecov
+        if: steps.tests_check.outputs.exists == 'true' && matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v6
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
+  test-gpu-cpu-wheel:
+    name: "Tests — Torch CPU wheel (ubuntu)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check tests exist
+        id: tests_check
+        run: |
+          if [ -d tests ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::tests/ not present — skipping GPU backend parity test run (foundation-only tree)"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up uv
+        if: steps.tests_check.outputs.exists == 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install dev + gpu extras (CPU-only torch)
+        if: steps.tests_check.outputs.exists == 'true'
+        run: uv sync --extra dev --extra gpu
+
+      - name: Run tests (including backend parity)
+        if: steps.tests_check.outputs.exists == 'true'
+        run: uv run pytest tests/ -v --tb=short -k "not cli" --ignore=tests/test_demo_fitting.py
+
+  test-vignette-validation:
+    name: "Tests — vignette validation (sbh-simulator)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      # Transitional gate: tests/ lands in S05. Skip the entire vignette
+      # pipeline (install, run, upload, ci-artifacts push, PR comment) until
+      # the test files exist — every downstream step is gated on this output.
+      - name: Check tests exist
+        id: tests_check
+        run: |
+          if [ -d tests ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::tests/ not present — skipping vignette validation (foundation-only tree)"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up uv
+        if: steps.tests_check.outputs.exists == 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install linum-basic dev extras
+        if: steps.tests_check.outputs.exists == 'true'
+        run: uv sync --extra dev --extra validation --frozen
+
+      - name: Run vignette validation tests
+        if: steps.tests_check.outputs.exists == 'true'
+        run: |
+          mkdir -p vignette-results
+          LINUM_BASIC_VIGNETTE_ARTIFACT_DIR=${{ github.workspace }}/vignette-results \
+          uv run pytest tests/test_vignette_validation.py tests/test_demo_fitting.py -v --tb=short -s
+
+      - name: Upload vignette images (ZIP artifact)
+        if: always() && steps.tests_check.outputs.exists == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: vignette-correction-images
+          path: |
+            vignette-results/*.png
+            vignette-results/*.json
+            vignette-results/*.md
+
+      - name: Push images to ci-artifacts branch
+        if: always() && steps.tests_check.outputs.exists == 'true'
+        run: |
+          # Clone the existing ci-artifacts branch (or start fresh) and add
+          # images under a per-run subdirectory so old PR comments stay valid.
+          DEST="runs/${{ github.run_id }}"
+          git clone --depth 1 --branch ci-artifacts \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            ci-artifacts-repo 2>/dev/null || \
+          ( git clone --depth 1 \
+              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+              ci-artifacts-repo && \
+            cd ci-artifacts-repo && git checkout --orphan ci-artifacts && git rm -rf . )
+          cd ci-artifacts-repo
+          mkdir -p "$DEST"
+          find ../vignette-results -maxdepth 1 \( -name "*.png" -o -name "*.json" -o -name "*.md" \) -exec cp {} "$DEST/" \;
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add "$DEST"
+          git commit -m "ci: vignette results from run ${{ github.run_id }} (commit ${{ github.sha }})"
+          git push origin ci-artifacts
+
+      - name: Write step summary
+        if: always() && steps.tests_check.outputs.exists == 'true'
+        run: |
+          BASE="https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts/runs/${{ github.run_id }}"
+          {
+            echo '## Linum BaSiC — CI Visualisation'
+            echo ''
+            echo '### Demo Fit — Bundled Image'
+            echo "![Demo fitting]($BASE/demo_fitting.png)"
+            echo ''
+            echo '### Vignette Correction — Gaussian'
+            echo "![Gaussian vignette correction]($BASE/vignette_correction_gaussian.png)"
+            echo ''
+            echo '### Vignette Correction — Zernike'
+            echo "![Zernike vignette correction]($BASE/vignette_correction_zernike.png)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment vignette images on PR
+        if: always() && steps.tests_check.outputs.exists == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const base = `https://raw.githubusercontent.com/${{ github.repository }}/ci-artifacts/runs/${{ github.run_id }}`;
+            const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            const sha = '${{ github.sha }}';
+            const shortSha = sha.substring(0, 7);
+            const commitUrl = `${{ github.server_url }}/${{ github.repository }}/commit/${sha}`;
+
+            let metricsTable = '';
+            try {
+              metricsTable = fs.readFileSync('vignette-results/metrics_table.md', 'utf8').trim();
+            } catch (e) { /* metrics file not available */ }
+
+            const sections = [
+              '## Linum BaSiC — CI Visualisation',
+              '',
+              `_Run [#${{ github.run_id }}](${runUrl}) · commit [${shortSha}](${commitUrl})_`,
+              '',
+            ];
+            if (metricsTable) {
+              sections.push('### Validation Metrics', '', metricsTable, '', '---', '');
+            }
+            sections.push(
+              '### Demo Fit — Bundled Image',
+              '',
+              '_BaSiC applied to the bundled Landsat image (no synthetic vignette, no ground truth). Shows shading fields estimated from image statistics alone._',
+              '',
+              `![Demo fitting](${base}/demo_fitting.png)`,
+              '',
+              '---',
+              '',
+              '### Vignette Correction — Gaussian',
+              '',
+              '_Rows: flat-field (GT · estimated · error) · dark-field (GT · estimated · error) · sample tile (clean · corrupted · corrected)_',
+              '',
+              `![Gaussian correction](${base}/vignette_correction_gaussian.png)`,
+              '',
+              '### Vignette Correction — Zernike',
+              '',
+              `![Zernike correction](${base}/vignette_correction_zernike.png)`,
+            );
+            const body = sections.join('\n');
+
+            const marker = '<!-- vignette-validation-comment -->';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: marker + '\n' + body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: marker + '\n' + body,
+              });
+            }

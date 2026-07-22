@@ -4,8 +4,8 @@ authors:
   - family-names: "Lefebvre"
     given-names: "Joël"
     orcid: "https://orcid.org/0000-0002-6652-2130"
-title: "linum-uqam/PyBaSiC: v1.0.0"
+title: "linum-uqam/Linum-BaSiC: v1.0.0"
 version: v1.0.0
 doi: 10.5281/zenodo.7305570
 date-released: 2022-11-08
-url: "https://github.com/linum-uqam/PyBaSiC"
+url: "https://github.com/linum-uqam/Linum-BaSiC"

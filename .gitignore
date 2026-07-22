@@ -65,6 +65,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/api/
 
 # PyBuilder
 target/
@@ -102,3 +103,37 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# JetBrains folders
+.idea/
+
+# Editor / AI-aide local config
+.vscode/
+.DS_Store
+Thumbs.db
+nul
+nul.*
+con
+con.*
+prn
+prn.*
+aux
+aux.*
+com[1-9]
+com[1-9].*
+lpt[1-9]
+lpt[1-9].*
+*.swp
+*.swo
+*~
+*.code-workspace
+.env.*
+!.env.example
+node_modules/
+.next/
+*.pyc
+.venv/
+vendor/
+coverage/
+.cache/
+tmp/
